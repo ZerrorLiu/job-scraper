@@ -49,6 +49,23 @@ def test_dashboard_keeps_online_sources_before_preseeded_email() -> None:
     assert rendered.index("LinkedIn") < rendered.index("Indeed") < rendered.index("Email")
 
 
+def test_dashboard_can_show_cloud_state_instead_of_fake_numeric_progress() -> None:
+    dashboard = LiveRunTable()
+    dashboard.update(
+        "Core C++",
+        "Indeed",
+        stage="Fetching",
+        keywords_done=0,
+        keywords_total=8,
+        progress_text="Running",
+    )
+
+    rendered = dashboard.render_text()
+
+    assert "Running" in rendered
+    assert "0/8" not in rendered
+
+
 def test_email_ingest_receives_the_shared_dashboard(monkeypatch) -> None:
     received: list[object] = []
 
@@ -129,3 +146,46 @@ def test_completed_source_is_yielded_while_another_source_is_still_fetching() ->
     finally:
         release_slow_source.set()
     assert next(completed) is slow
+
+
+def test_email_preparation_starts_before_online_tracks_finish(monkeypatch, tmp_path) -> None:
+    email_started = Event()
+    online_finished = Event()
+    preparation = object()
+
+    def fake_prepare(_argv: list[str], _dashboard: LiveRunTable | None) -> object:
+        email_started.set()
+        assert online_finished.wait(timeout=2)
+        return preparation
+
+    def fake_daily(_argv: list[str], _runtime: object) -> int:
+        assert email_started.wait(timeout=2)
+        online_finished.set()
+        return 0
+
+    monkeypatch.setattr(run_all_tracks, "_invoke_email_prepare", fake_prepare)
+    monkeypatch.setattr(run_all_tracks, "_invoke_run_daily", fake_daily)
+    monkeypatch.setattr(
+        run_all_tracks.ingest_email_recommendations,
+        "finish",
+        lambda value, *, dashboard=None: 0 if value is preparation else 1,
+    )
+
+    args = run_all_tracks.parse_args(
+        [
+            "--config",
+            str(tmp_path / "track.toml"),
+            "--post-age-days",
+            "1",
+            "--skip-export",
+        ]
+    )
+
+    assert (
+        run_all_tracks._execute(
+            args,
+            run_all_tracks.run_daily.RuntimeServices(),
+            LiveRunTable(),
+        )
+        == 0
+    )

@@ -237,7 +237,7 @@ def main(
 
     notion = NotionClient(config.notion)
 
-    if notion.enabled():
+    if notion.enabled() and not args.skip_notion:
         synced_statuses = sync_processed_statuses_from_notion(
             database,
             notion,
@@ -322,6 +322,7 @@ def main(
                 stage="Filtering",
                 keywords_done=execution.keyword_total,
                 keywords_total=execution.keyword_total,
+                progress_text="",
                 seen=len(execution.records or []),
                 detail="Applying policy",
             )
@@ -356,6 +357,7 @@ def main(
                 stage="Done",
                 keywords_done=execution.keyword_total,
                 keywords_total=execution.keyword_total,
+                progress_text="",
                 seen=stats.jobs_seen,
                 accepted=stats.jobs_new + stats.jobs_updated,
                 filtered=stats.jobs_filtered,
@@ -846,6 +848,7 @@ def _acquire_sources(
                     stage="Filtering" if not execution.acquisition_error else "Failed",
                     keywords_done=execution.keyword_total,
                     keywords_total=execution.keyword_total,
+                    progress_text="",
                     seen=len(execution.records or []),
                     detail=execution.acquisition_error or "Acquisition complete",
                 )
@@ -900,12 +903,26 @@ def _update_indeed_progress(
         return
     dashboard.record_message(f"{track_label} | {message}")
     detail = message.rsplit("|", maxsplit=1)[-1].strip() or "Cloud snapshot running"
+    progress_text = _indeed_progress_text(message)
     dashboard.update(
         track_label,
         "Indeed",
         stage="Fetching",
+        progress_text=progress_text,
         detail=detail,
     )
+
+
+def _indeed_progress_text(message: str) -> str:
+    lowered = message.casefold()
+    for status in ("ready", "running", "queued", "failed"):
+        if f"status {status}" in lowered:
+            return status.title()
+    if "snapshot downloaded" in lowered:
+        return "Ready"
+    if "snapshot" in lowered:
+        return "Running"
+    return ""
 
 
 def determine_post_age_hours(

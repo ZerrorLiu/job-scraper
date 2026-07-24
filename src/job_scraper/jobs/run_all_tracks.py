@@ -136,8 +136,19 @@ def _execute(
                 display_track_label(config.project.track_label),
                 "Email",
                 stage="Waiting",
-                detail="Waiting for online cache",
+                progress_text="Starting",
+                detail="Starting mailbox",
             )
+    email_argv = build_email_argv(args, config_paths)
+    email_executor: ThreadPoolExecutor | None = None
+    email_future = None
+    if email_argv is not None:
+        email_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="email-prepare")
+        email_future = email_executor.submit(
+            _invoke_email_prepare,
+            email_argv,
+            dashboard if dashboard.interactive else None,
+        )
     calls: list[tuple[Path, list[str]]] = []
     for config_path in config_paths:
         sub_argv = ["--config", str(config_path)]
@@ -155,64 +166,90 @@ def _execute(
             sub_argv.extend(["--query", query])
         calls.append((config_path, sub_argv))
 
-    worker_count = min(args.profile_workers, len(calls))
-    if worker_count <= 1:
-        statuses = [(path, _invoke_run_daily(argv, runtime)) for path, argv in calls]
-    else:
-        statuses: list[tuple[Path, int]] = []
-        with ThreadPoolExecutor(
-            max_workers=worker_count,
-            thread_name_prefix="profile",
-        ) as executor:
-            future_paths = {
-                executor.submit(_invoke_run_daily, argv, runtime): path for path, argv in calls
-            }
-            for future in as_completed(future_paths):
-                statuses.append((future_paths[future], future.result()))
+    try:
+        worker_count = min(args.profile_workers, len(calls))
+        if worker_count <= 1:
+            statuses = [(path, _invoke_run_daily(argv, runtime)) for path, argv in calls]
+        else:
+            statuses: list[tuple[Path, int]] = []
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="profile",
+            ) as executor:
+                future_paths = {
+                    executor.submit(_invoke_run_daily, argv, runtime): path for path, argv in calls
+                }
+                for future in as_completed(future_paths):
+                    statuses.append((future_paths[future], future.result()))
 
-    for _config_path, status in statuses:
-        if status != 0:
-            overall_status = status
-        if status == 2:
-            return status
+        for _config_path, status in statuses:
+            if status != 0:
+                overall_status = status
+            if status == 2:
+                return status
 
-    if not args.init_db and not args.skip_email:
-        email_lookback_days = (
-            args.email_lookback_days
-            if args.email_lookback_days is not None
-            else args.post_age_days or configured_email_lookback_days(config_paths)
-        )
-        email_argv = [
-            "--config",
-            str(
-                Path(args.email_config).resolve()
-                if args.email_config
-                else (Path(args.config_dir) / "email.toml").resolve()
-            ),
-            "--lookback-days",
-            str(email_lookback_days),
-            "--max-messages",
-            str(args.email_max_messages),
-            "--detail-workers",
-            str(args.email_detail_workers),
-            "--skip-status-import",
-        ]
-        for config_path in config_paths:
-            email_argv.extend(["--track-config", str(config_path)])
-        if args.email_folder:
-            email_argv.extend(["--folder", args.email_folder])
-        if args.skip_notion:
-            email_argv.append("--skip-notion")
-        status = _invoke_email_ingest(
-            email_argv,
-            dashboard if dashboard.interactive else None,
-        )
-        if status != 0:
-            overall_status = status
-        if not args.skip_export and not refresh_exports(config_paths):
-            overall_status = overall_status or 1
+        if email_future is not None:
+            try:
+                preparation = email_future.result()
+            except Exception as exc:
+                dashboard.record_message(f"Email | Failed | {exc}", error=True)
+                overall_status = overall_status or 1
+            else:
+                status = ingest_email_recommendations.finish(
+                    preparation,
+                    dashboard=dashboard if dashboard.interactive else None,
+                )
+                if status != 0:
+                    overall_status = status
+            if not args.skip_export and not refresh_exports(config_paths):
+                overall_status = overall_status or 1
 
-    return overall_status
+        return overall_status
+    finally:
+        if email_executor is not None:
+            email_executor.shutdown(wait=True, cancel_futures=True)
+
+
+def build_email_argv(
+    args: argparse.Namespace,
+    config_paths: list[Path],
+) -> list[str] | None:
+    if args.init_db or args.skip_email:
+        return None
+    email_lookback_days = (
+        args.email_lookback_days
+        if args.email_lookback_days is not None
+        else args.post_age_days or configured_email_lookback_days(config_paths)
+    )
+    argv = [
+        "--config",
+        str(
+            Path(args.email_config).resolve()
+            if args.email_config
+            else (Path(args.config_dir) / "email.toml").resolve()
+        ),
+        "--lookback-days",
+        str(email_lookback_days),
+        "--max-messages",
+        str(args.email_max_messages),
+        "--detail-workers",
+        str(args.email_detail_workers),
+        "--skip-status-import",
+    ]
+    for config_path in config_paths:
+        argv.extend(["--track-config", str(config_path)])
+    if args.email_folder:
+        argv.extend(["--folder", args.email_folder])
+    if args.skip_notion:
+        argv.append("--skip-notion")
+    return argv
+
+
+def _invoke_email_prepare(
+    argv: list[str],
+    dashboard: LiveRunTable | None,
+) -> ingest_email_recommendations.EmailPreparation:
+    return ingest_email_recommendations.prepare(argv, dashboard=dashboard)
 
 
 def _invoke_email_ingest(

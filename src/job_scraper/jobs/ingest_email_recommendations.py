@@ -87,6 +87,21 @@ class TrackRuntime:
         return display_track_label(self.config.project.track_label)
 
 
+@dataclass(slots=True)
+class EmailPreparation:
+    args: argparse.Namespace
+    email_config: EmailIngestConfig
+    started_at: datetime
+    state: EmailIngestState
+    runtimes: list[TrackRuntime]
+    messages_to_mark: list[MailMessage]
+    accepted_by_message: dict[str, int]
+    candidate_tasks: list[tuple[MailMessage, EmailJobCandidate]]
+    prepared_details: dict[str, RawJobRecord]
+    fetched_messages: int
+    skipped_messages: int
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Ingest job recommendation emails and append matching jobs to Notion."
@@ -136,7 +151,22 @@ def main(
     *,
     dashboard: LiveRunTable | None = None,
 ) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    try:
+        preparation = prepare(argv or sys.argv[1:], dashboard=dashboard)
+    except Exception as exc:  # pragma: no cover
+        log_error(f"Email | Failed | {exc}")
+        return 1
+    return finish(preparation, dashboard=dashboard)
+
+
+def prepare(
+    argv: list[str],
+    *,
+    dashboard: LiveRunTable | None = None,
+) -> EmailPreparation:
+    """Fetch and resolve email cards without publishing or mutating message state."""
+
+    args = parse_args(argv)
     email_config = load_email_ingest_config(args.config)
     email_config = apply_overrides(email_config, args.max_messages, args.lookback_days, args.folder)
     if args.track_configs:
@@ -144,14 +174,12 @@ def main(
             Path(value).resolve() for value in dict.fromkeys(args.track_configs)
         ]
     if not email_config.host:
-        log_error("Email | Missing IMAP host in email ingest config")
-        return 2
+        raise ValueError("Missing IMAP host in email ingest config")
     if not email_config.username or not email_config.password:
-        log_error(
-            "Email | Missing mailbox credentials. Set "
+        raise ValueError(
+            "Missing mailbox credentials. Set "
             f"{email_config.username_env or 'username'} and {email_config.password_env or 'password'}."
         )
-        return 2
 
     started_at = datetime.now(UTC)
     state = EmailIngestState.load(email_config.state_path)
@@ -167,43 +195,137 @@ def main(
                 runtime.track_label,
                 "Email",
                 stage="Fetching",
+                progress_text="Mailbox",
                 detail="Reading mailbox",
             )
+    try:
+        return _prepare_with_runtimes(
+            args,
+            email_config,
+            started_at,
+            state,
+            runtimes,
+            dashboard,
+        )
+    except Exception as exc:
+        _mark_email_runs_failed(runtimes, exc, dashboard)
+        raise
+
+
+def _prepare_with_runtimes(
+    args: argparse.Namespace,
+    email_config: EmailIngestConfig,
+    started_at: datetime,
+    state: EmailIngestState,
+    runtimes: list[TrackRuntime],
+    dashboard: LiveRunTable | None,
+) -> EmailPreparation:
     messages_to_mark: list[MailMessage] = []
     accepted_by_message: dict[str, int] = {}
+    messages = ImapEmailClient(email_config).fetch_recent_messages()
+    log_line(
+        f"Email | Fetched {len(messages)} candidate recommendation emails | "
+        f"Lookback {email_config.lookback_days}d | Max {email_config.max_messages}"
+    )
+    skipped_messages = 0
+    for message in messages:
+        if state.is_processed(message.message_id) and not args.reprocess:
+            skipped_messages += 1
+            log_line(f"Email | Skip processed | {message.subject}")
+            continue
+        messages_to_mark.append(message)
+        accepted_by_message[message.message_id] = 0
+
+    candidate_tasks = collect_candidate_tasks(messages_to_mark, runtimes)
+    for runtime in runtimes:
+        if dashboard is not None:
+            dashboard.update(
+                runtime.track_label,
+                "Email",
+                stage="Resolving",
+                keywords_done=0,
+                keywords_total=len(candidate_tasks),
+                progress_text=(f"0/{len(candidate_tasks)}" if candidate_tasks else "0 cards"),
+                detail=f"{len(messages)} mail, {skipped_messages} old",
+            )
+    prepared_details = prepare_email_details(
+        candidate_tasks,
+        runtimes,
+        started_at,
+        dashboard=dashboard,
+    )
+    return EmailPreparation(
+        args=args,
+        email_config=email_config,
+        started_at=started_at,
+        state=state,
+        runtimes=runtimes,
+        messages_to_mark=messages_to_mark,
+        accepted_by_message=accepted_by_message,
+        candidate_tasks=candidate_tasks,
+        prepared_details=prepared_details,
+        fetched_messages=len(messages),
+        skipped_messages=skipped_messages,
+    )
+
+
+def _mark_email_runs_failed(
+    runtimes: list[TrackRuntime],
+    exc: Exception,
+    dashboard: LiveRunTable | None,
+) -> None:
+    for runtime in runtimes:
+        runtime.run.finished_at = datetime.now(UTC)
+        runtime.run.jobs_failed += 1
+        runtime.run.errors.append(str(exc))
+        runtime.database.finish_run(runtime.run, "failed")
+        if dashboard is not None:
+            dashboard.update(
+                runtime.track_label,
+                "Email",
+                stage="Failed",
+                progress_text="Failed",
+                detail=str(exc),
+            )
+
+
+def finish(
+    preparation: EmailPreparation,
+    *,
+    dashboard: LiveRunTable | None = None,
+) -> int:
+    """Filter, persist and publish a previously prepared email batch."""
+
+    args = preparation.args
+    runtimes = preparation.runtimes
+    started_at = preparation.started_at
     status = "completed"
-
     try:
-        messages = ImapEmailClient(email_config).fetch_recent_messages()
-        log_line(
-            f"Email | Fetched {len(messages)} candidate recommendation emails | "
-            f"Lookback {email_config.lookback_days}d | Max {email_config.max_messages}"
-        )
-        for message in messages:
-            if state.is_processed(message.message_id) and not args.reprocess:
-                log_line(f"Email | Skip processed | {message.subject}")
-                continue
-            messages_to_mark.append(message)
-            accepted_by_message[message.message_id] = 0
-
-        candidate_tasks = collect_candidate_tasks(messages_to_mark, runtimes)
         for runtime in runtimes:
             if dashboard is not None:
                 dashboard.update(
                     runtime.track_label,
                     "Email",
-                    stage="Resolving",
+                    stage="Filtering",
                     keywords_done=0,
-                    keywords_total=len(candidate_tasks),
-                    detail=f"{len(candidate_tasks)} cards",
+                    keywords_total=len(preparation.candidate_tasks),
+                    progress_text=(
+                        f"0/{len(preparation.candidate_tasks)}"
+                        if preparation.candidate_tasks
+                        else "0 cards"
+                    ),
+                    detail=(
+                        f"{preparation.fetched_messages} mail, {preparation.skipped_messages} old"
+                    ),
                 )
         process_candidate_tasks(
-            candidate_tasks,
+            preparation.candidate_tasks,
             runtimes,
             started_at,
-            accepted_by_message,
+            preparation.accepted_by_message,
             detail_workers=args.detail_workers,
             dashboard=dashboard,
+            prepared=preparation.prepared_details,
         )
 
         for runtime in runtimes:
@@ -214,10 +336,22 @@ def main(
                     runtime.track_label,
                     "Email",
                     stage="Done",
+                    progress_text=(
+                        f"{len(preparation.candidate_tasks)} cards"
+                        if preparation.candidate_tasks
+                        else "0 cards"
+                    ),
                     seen=runtime.run.jobs_seen,
                     accepted=runtime.run.jobs_new + runtime.run.jobs_updated,
                     filtered=runtime.run.jobs_filtered,
-                    detail=format_reasons(runtime.reject_counts),
+                    detail=(
+                        format_reasons(runtime.reject_counts)
+                        if preparation.candidate_tasks
+                        else (
+                            f"{preparation.fetched_messages} mail, "
+                            f"{preparation.skipped_messages} old"
+                        )
+                    ),
                 )
             log_line(
                 f"Email | Track {runtime.track_label} | Done | "
@@ -241,10 +375,13 @@ def main(
                     logger=log_line,
                 )
 
-        for message in messages_to_mark:
-            state.mark_processed(message, accepted_by_message.get(message.message_id, 0))
-        state.save()
-        log_line(f"Email | State updated | {email_config.state_path}")
+        for message in preparation.messages_to_mark:
+            preparation.state.mark_processed(
+                message,
+                preparation.accepted_by_message.get(message.message_id, 0),
+            )
+        preparation.state.save()
+        log_line(f"Email | State updated | {preparation.email_config.state_path}")
     except Exception as exc:  # pragma: no cover
         status = "failed"
         log_error(f"Email | Failed | {exc}")
@@ -258,6 +395,7 @@ def main(
                     runtime.track_label,
                     "Email",
                     stage="Failed",
+                    progress_text="Failed",
                     seen=runtime.run.jobs_seen,
                     accepted=runtime.run.jobs_new + runtime.run.jobs_updated,
                     filtered=runtime.run.jobs_filtered,
@@ -428,10 +566,13 @@ def process_candidate_tasks(
     accepted_by_message: dict[str, int],
     detail_workers: int,
     dashboard: LiveRunTable | None = None,
+    prepared: dict[str, RawJobRecord] | None = None,
 ) -> None:
     if not tasks:
         return
-    prepared = prepare_email_details(tasks, runtimes, started_at)
+    prepared_details = (
+        prepared if prepared is not None else prepare_email_details(tasks, runtimes, started_at)
+    )
     worker_count = max(1, detail_workers)
     completed = 0
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -441,7 +582,7 @@ def process_candidate_tasks(
                 candidate,
                 runtimes,
                 started_at,
-                prepared,
+                prepared_details,
             ): message
             for message, candidate in tasks
         }
@@ -473,6 +614,7 @@ def process_candidate_tasks(
                         stage="Filtering",
                         keywords_done=completed,
                         keywords_total=len(tasks),
+                        progress_text=f"{completed}/{len(tasks)}",
                         seen=runtime.run.jobs_seen,
                         accepted=runtime.run.jobs_new + runtime.run.jobs_updated,
                         filtered=runtime.run.jobs_filtered,
@@ -486,6 +628,8 @@ def prepare_email_details(
     tasks: list[tuple[MailMessage, EmailJobCandidate]],
     runtimes: list[TrackRuntime],
     scraped_at: datetime,
+    *,
+    dashboard: LiveRunTable | None = None,
 ) -> dict[str, RawJobRecord]:
     prepared: dict[str, RawJobRecord] = {}
     unresolved_indeed: list[EmailJobCandidate] = []
@@ -510,7 +654,11 @@ def prepare_email_details(
                 urls,
                 snapshot_database=runtimes[0].database,
                 request_timeout_seconds=runtimes[0].config.http.timeout_seconds,
-                event_logger=log_line,
+                event_logger=lambda message: _report_email_resolution(
+                    message,
+                    runtimes,
+                    dashboard,
+                ),
             )
         )
     except Exception as exc:
@@ -536,6 +684,30 @@ def prepare_email_details(
         raw.raw_payload["detail_error"] = "Bright Data returned no detail record"
         prepared[link_key] = raw
     return prepared
+
+
+def _report_email_resolution(
+    message: str,
+    runtimes: list[TrackRuntime],
+    dashboard: LiveRunTable | None,
+) -> None:
+    log_line(message)
+    if dashboard is None:
+        return
+    lowered = message.casefold()
+    progress = "Running"
+    for status in ("ready", "running", "queued", "failed"):
+        if f"status {status}" in lowered:
+            progress = status.title()
+            break
+    for runtime in runtimes:
+        dashboard.update(
+            runtime.track_label,
+            "Email",
+            stage="Resolving",
+            progress_text=progress,
+            detail="Bright Data details",
+        )
 
 
 def brightdata_url_resolution_enabled() -> bool:

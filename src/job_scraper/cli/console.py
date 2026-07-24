@@ -130,6 +130,7 @@ class _ProgressRow:
     stage: str = "Waiting"
     keywords_done: int = 0
     keywords_total: int = 0
+    progress_text: str = ""
     seen: int = 0
     accepted: int = 0
     filtered: int = 0
@@ -173,6 +174,7 @@ class LiveRunTable:
         stage: str | None = None,
         keywords_done: int | None = None,
         keywords_total: int | None = None,
+        progress_text: str | None = None,
         seen: int | None = None,
         accepted: int | None = None,
         filtered: int | None = None,
@@ -193,6 +195,8 @@ class LiveRunTable:
                 row.keywords_done = keywords_done
             if keywords_total is not None:
                 row.keywords_total = keywords_total
+            if progress_text is not None:
+                row.progress_text = compact_text(progress_text, 9)
             if seen is not None:
                 row.seen = seen
             if accepted is not None:
@@ -258,7 +262,7 @@ class LiveRunTable:
             lines.append("-" * 92)
             for track, rows in _group_rows_by_track(self._rows.values()):
                 for index, row in enumerate(rows):
-                    keyword_text = (
+                    keyword_text = row.progress_text or (
                         f"{row.keywords_done}/{row.keywords_total}" if row.keywords_total else "-"
                     )
                     row_end = row.finished_at or time.monotonic()
