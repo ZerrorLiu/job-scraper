@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import os
+import random
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,6 +26,9 @@ INDEED_VIEW_JOB_URL = "https://www.indeed.com/viewjob"
 BRIGHTDATA_API_BASE_URL = "https://api.brightdata.com/datasets/v3"
 BRIGHTDATA_TERMINAL_FAILURE_STATES = {"canceled", "cancelled", "empty", "failed"}
 BRIGHTDATA_READY_STATES = {"done", "ready"}
+BRIGHTDATA_RETRYABLE_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
+BRIGHTDATA_REQUEST_MAX_ATTEMPTS = 3
+BRIGHTDATA_RETRY_BASE_SECONDS = 0.5
 INDEED_MARKETS = {
     "AT": "at.indeed.com",
     "BE": "be.indeed.com",
@@ -78,6 +82,15 @@ class DataSyncError(RuntimeError):
     """Raised when an Indeed dataset cannot be loaded or normalized safely."""
 
 
+class _BrightDataHTTPError(DataSyncError):
+    """Retain HTTP metadata so transient API failures can be retried safely."""
+
+    def __init__(self, status_code: int, details: str, retry_after: float | None = None) -> None:
+        super().__init__(f"Bright Data API {status_code}: {details}")
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
 @dataclass(frozen=True, slots=True)
 class BrightDataSearchInput:
     search_query: str
@@ -103,6 +116,12 @@ class BrightDataBatchResult:
     snapshot_id: str
     request_hash: str
     records: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class BrightDataUrlResolutionResult:
+    batches: list[BrightDataBatchResult]
+    errors_by_url: dict[str, str]
 
 
 def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -415,6 +434,75 @@ async def execute_brightdata_url_batch_sync(
     )
 
 
+async def execute_resilient_brightdata_url_batches(
+    urls: Sequence[str],
+    *,
+    batch_size: int = 10,
+    max_concurrency: int = 3,
+    snapshot_database: Database | None = None,
+    poll_interval_seconds: float | None = None,
+    timeout_seconds: float = 900.0,
+    request_timeout_seconds: float = 30.0,
+    event_logger: Callable[[str], None] | None = None,
+) -> BrightDataUrlResolutionResult:
+    """Resolve URL batches independently and isolate a persistently bad input."""
+    unique_urls = list(dict.fromkeys(url.strip() for url in urls if url.strip()))
+    if not unique_urls:
+        return BrightDataUrlResolutionResult(batches=[], errors_by_url={})
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency must be at least 1")
+
+    semaphore = asyncio.Semaphore(max_concurrency)
+    batches: list[BrightDataBatchResult] = []
+    errors_by_url: dict[str, str] = {}
+
+    async def resolve_chunk(chunk: list[str], label: str) -> None:
+        try:
+            async with semaphore:
+                result = await execute_brightdata_url_batch_sync(
+                    chunk,
+                    snapshot_database=snapshot_database,
+                    poll_interval_seconds=poll_interval_seconds,
+                    timeout_seconds=timeout_seconds,
+                    request_timeout_seconds=request_timeout_seconds,
+                    event_logger=event_logger,
+                )
+        except Exception as exc:
+            if len(chunk) == 1:
+                errors_by_url[chunk[0]] = str(exc)
+                _log_cloud_event(
+                    f"Concrete URL resolution failed | Batch {label} | Inputs 1 | {exc}",
+                    event_logger,
+                )
+                return
+            midpoint = len(chunk) // 2
+            _log_cloud_event(
+                f"Concrete URL batch failed; splitting | Batch {label} | "
+                f"Inputs {len(chunk)} | {exc}",
+                event_logger,
+            )
+            await asyncio.gather(
+                resolve_chunk(chunk[:midpoint], f"{label}.1"),
+                resolve_chunk(chunk[midpoint:], f"{label}.2"),
+            )
+            return
+        batches.append(result)
+
+    initial_chunks = [
+        unique_urls[offset : offset + batch_size]
+        for offset in range(0, len(unique_urls), batch_size)
+    ]
+    await asyncio.gather(
+        *(resolve_chunk(chunk, str(index)) for index, chunk in enumerate(initial_chunks, start=1))
+    )
+    return BrightDataUrlResolutionResult(
+        batches=batches,
+        errors_by_url=errors_by_url,
+    )
+
+
 async def _execute_brightdata_snapshot(
     *,
     trigger_url: str,
@@ -560,14 +648,34 @@ async def _brightdata_json_request(
     body: Any = None,
     timeout_seconds: float,
 ) -> Any:
-    return await asyncio.to_thread(
-        _brightdata_json_request_blocking,
-        endpoint,
-        api_key,
-        method,
-        body,
-        timeout_seconds,
-    )
+    for attempt in range(1, BRIGHTDATA_REQUEST_MAX_ATTEMPTS + 1):
+        try:
+            return await asyncio.to_thread(
+                _brightdata_json_request_blocking,
+                endpoint,
+                api_key,
+                method,
+                body,
+                timeout_seconds,
+            )
+        except _BrightDataHTTPError as exc:
+            retryable = exc.status_code in BRIGHTDATA_RETRYABLE_HTTP_STATUSES
+            if not retryable or attempt == BRIGHTDATA_REQUEST_MAX_ATTEMPTS:
+                suffix = f" after {attempt} attempts" if attempt > 1 else ""
+                raise DataSyncError(f"{exc}{suffix}") from exc
+            exponential_delay = BRIGHTDATA_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            retry_delay = max(exc.retry_after or 0.0, exponential_delay)
+            retry_delay += random.uniform(0.0, BRIGHTDATA_RETRY_BASE_SECONDS)
+            LOGGER.warning(
+                "Transient Bright Data HTTP %s during %s; retrying attempt %s/%s in %.2fs",
+                exc.status_code,
+                method,
+                attempt + 1,
+                BRIGHTDATA_REQUEST_MAX_ATTEMPTS,
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+    raise AssertionError("Bright Data retry loop exited unexpectedly")
 
 
 def _brightdata_json_request_blocking(
@@ -588,7 +696,13 @@ def _brightdata_json_request_blocking(
             content = response.read().decode("utf-8")
     except HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
-        raise DataSyncError(f"Bright Data API {exc.code}: {details}") from exc
+        retry_after: float | None = None
+        if exc.headers is not None:
+            try:
+                retry_after = float(exc.headers.get("Retry-After", ""))
+            except (TypeError, ValueError):
+                retry_after = None
+        raise _BrightDataHTTPError(exc.code, details, retry_after) from exc
     except (TimeoutError, URLError) as exc:
         raise DataSyncError(f"Bright Data request failed: {exc}") from exc
     try:

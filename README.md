@@ -100,6 +100,28 @@ source-specific activation flags. The default mailbox lookback follows the
 widest configured online freshness window so one command covers the complete
 workflow consistently.
 
+### Repairing email detail enrichment
+
+Indeed links discovered in recommendation emails are resolved through Bright
+Data before filtering. Transient `408`, `429`, and `5xx` responses are retried
+with backoff. URL inputs are processed in small concurrent batches; a batch
+that still fails is split until a persistently bad URL is isolated, so one
+vendor error does not downgrade every email job.
+
+To deliberately revisit recently processed messages after an upstream outage:
+
+```powershell
+uv run python -m job_scraper.jobs.ingest_email_recommendations `
+  --reprocess `
+  --lookback-days 1
+```
+
+This is a repair command, not the normal daily entry point. It ignores the
+processed-message state, evaluates the same email cards against every enabled
+email profile, and keeps normal database/Notion deduplication. Add
+`--skip-status-import` when the current Notion application states do not need
+to be imported before the repair.
+
 ## Architecture
 
 ```text

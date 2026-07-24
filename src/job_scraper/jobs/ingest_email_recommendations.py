@@ -32,7 +32,7 @@ from job_scraper.cli.console import (
 )
 from job_scraper.collectors.data_integration_adapter import (
     BrightDataBatchResult,
-    execute_brightdata_url_batch_sync,
+    execute_resilient_brightdata_url_batches,
 )
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
@@ -648,28 +648,30 @@ def prepare_email_details(
     if not unresolved_indeed or not brightdata_url_resolution_enabled():
         return prepared
     urls = [indeed_detail_url(candidate.url) or candidate.url for candidate in unresolved_indeed]
-    try:
-        batch = asyncio.run(
-            execute_brightdata_url_batch_sync(
-                urls,
-                snapshot_database=runtimes[0].database,
-                request_timeout_seconds=runtimes[0].config.http.timeout_seconds,
-                event_logger=lambda message: _report_email_resolution(
-                    message,
-                    runtimes,
-                    dashboard,
-                ),
-            )
+    resolution = asyncio.run(
+        execute_resilient_brightdata_url_batches(
+            urls,
+            snapshot_database=runtimes[0].database,
+            request_timeout_seconds=runtimes[0].config.http.timeout_seconds,
+            event_logger=lambda message: _report_email_resolution(
+                message,
+                runtimes,
+                dashboard,
+            ),
         )
-    except Exception as exc:
-        log_error(f"Email | Bright Data URL resolution failed | {exc}")
-        batch = BrightDataBatchResult(snapshot_id="", request_hash="", records=[])
-    records_by_id = {str(record.get("record_id") or ""): record for record in batch.records}
+    )
+    records_by_id: dict[str, tuple[dict[str, object], BrightDataBatchResult]] = {}
+    for batch in resolution.batches:
+        for record in batch.records:
+            records_by_id[str(record.get("record_id") or "")] = (record, batch)
+    for failed_url, error in resolution.errors_by_url.items():
+        log_error(f"Email | Bright Data URL resolution failed | URL {failed_url} | {error}")
     for candidate in unresolved_indeed:
         link_key = canonical_link_key(candidate.url)
         _source_id, source_job_id = platform_job_reference(candidate.url)
-        record = records_by_id.get(source_job_id)
-        if record is not None:
+        resolved_record = records_by_id.get(source_job_id)
+        if resolved_record is not None:
+            record, batch = resolved_record
             prepared[link_key] = raw_from_brightdata_detail(
                 candidate,
                 record,
@@ -681,7 +683,11 @@ def prepare_email_details(
         raw.raw_payload["detail_status"] = (
             "email_fallback" if can_use_email_fallback(candidate, raw) else "too_sparse"
         )
-        raw.raw_payload["detail_error"] = "Bright Data returned no detail record"
+        detail_url = indeed_detail_url(candidate.url) or candidate.url
+        raw.raw_payload["detail_error"] = resolution.errors_by_url.get(
+            detail_url,
+            "Bright Data returned no detail record",
+        )
         prepared[link_key] = raw
     return prepared
 

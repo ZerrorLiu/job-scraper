@@ -46,3 +46,10 @@ Enabled profiles can run concurrently. Sources within a profile can run
 concurrently, and a source may use bounded query/detail workers. Duplicate
 requests in one run are coalesced. External writes that require structural
 consistency are serialized.
+
+Recommendation-email enrichment is also failure-isolated. Concrete Indeed
+URLs are resolved through bounded concurrent Bright Data batches. Retryable
+HTTP responses use exponential backoff, and a persistently failing batch is
+bisected until only the failing URL falls back to sparse email-card metadata.
+Successful sibling batches retain their full job descriptions and snapshot
+provenance.
