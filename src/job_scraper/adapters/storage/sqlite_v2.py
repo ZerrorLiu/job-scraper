@@ -1,0 +1,603 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from job_scraper.domain.decisions import Decision
+from job_scraper.domain.identity import (
+    canonical_identity,
+    canonical_job_id,
+    source_posting_id,
+    stable_id,
+)
+from job_scraper.domain.models import JobRecord
+
+SCHEMA_VERSION = 2
+
+SCHEMA = """
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    description TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS canonical_jobs (
+    id TEXT PRIMARY KEY,
+    identity_key TEXT NOT NULL UNIQUE,
+    normalized_title TEXT NOT NULL,
+    company_name TEXT NOT NULL,
+    country_code TEXT NOT NULL,
+    city TEXT NOT NULL,
+    location_text TEXT NOT NULL,
+    description_full TEXT NOT NULL,
+    employment_type TEXT NOT NULL,
+    remote_mode TEXT NOT NULL,
+    seniority TEXT NOT NULL,
+    salary_text TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_postings (
+    id TEXT PRIMARY KEY,
+    canonical_job_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    acquisition_mode TEXT NOT NULL,
+    source_job_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    application_url TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    raw_payload_json TEXT NOT NULL,
+    UNIQUE(source_id, source_job_id, canonical_url),
+    FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS source_observations (
+    id TEXT PRIMARY KEY,
+    posting_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    raw_payload_json TEXT NOT NULL,
+    FOREIGN KEY(posting_id) REFERENCES source_postings(id)
+);
+
+CREATE TABLE IF NOT EXISTS profile_matches (
+    canonical_job_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    accepted INTEGER NOT NULL,
+    rejection_reason TEXT NOT NULL,
+    decision_step TEXT NOT NULL,
+    first_evaluated_at TEXT NOT NULL,
+    last_evaluated_at TEXT NOT NULL,
+    PRIMARY KEY(canonical_job_id, profile_id),
+    FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS applications (
+    canonical_job_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'new',
+    applied_at TEXT,
+    updated_at TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS external_publications (
+    canonical_job_id TEXT NOT NULL,
+    sink_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    external_container_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_synced_at TEXT NOT NULL,
+    PRIMARY KEY(canonical_job_id, sink_id, external_id),
+    FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS legacy_job_links (
+    profile_id TEXT NOT NULL,
+    legacy_job_id TEXT NOT NULL,
+    canonical_job_id TEXT NOT NULL,
+    legacy_database_path TEXT NOT NULL,
+    PRIMARY KEY(profile_id, legacy_job_id),
+    FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_postings_canonical_job
+ON source_postings(canonical_job_id);
+
+CREATE INDEX IF NOT EXISTS idx_observations_run
+ON source_observations(run_id, profile_id);
+
+CREATE INDEX IF NOT EXISTS idx_matches_profile
+ON profile_matches(profile_id, accepted, last_evaluated_at);
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationReport:
+    profile_id: str
+    database_path: Path
+    jobs_read: int = 0
+    jobs_linked: int = 0
+    applications_migrated: int = 0
+    publications_migrated: int = 0
+
+
+class WorkspaceDatabase:
+    """V2 workspace store shared by all profiles and source channels."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 30000")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def initialize(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(SCHEMA)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at, description)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    SCHEMA_VERSION,
+                    datetime.now(UTC).isoformat(),
+                    "workspace canonical job schema",
+                ),
+            )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def record_candidate(
+        self,
+        job: JobRecord,
+        decision: Decision,
+        *,
+        profile_id: str,
+        run_id: str,
+        evaluated_at: datetime,
+        legacy_job_id: str = "",
+    ) -> str:
+        canonical_id = canonical_job_id(job)
+        posting_id = source_posting_id(job)
+        observed_at = job.scraped_at.astimezone(UTC).isoformat()
+        evaluated = evaluated_at.astimezone(UTC).isoformat()
+        platform, acquisition_mode = _source_provenance(job)
+
+        with self.connect() as connection:
+            self._upsert_canonical_job(connection, canonical_id, job)
+            connection.execute(
+                """
+                INSERT INTO source_postings(
+                    id, canonical_job_id, source_id, platform, acquisition_mode,
+                    source_job_id, source_url, canonical_url, application_url,
+                    first_seen_at, last_seen_at, raw_payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    canonical_job_id = excluded.canonical_job_id,
+                    platform = excluded.platform,
+                    acquisition_mode = excluded.acquisition_mode,
+                    source_url = excluded.source_url,
+                    canonical_url = excluded.canonical_url,
+                    application_url = excluded.application_url,
+                    last_seen_at = excluded.last_seen_at,
+                    raw_payload_json = excluded.raw_payload_json
+                """,
+                (
+                    posting_id,
+                    canonical_id,
+                    job.source,
+                    platform,
+                    acquisition_mode,
+                    job.source_job_id,
+                    job.source_url,
+                    job.canonical_url,
+                    job.application_url,
+                    job.first_seen_at.astimezone(UTC).isoformat(),
+                    observed_at,
+                    _json(job.raw_payload),
+                ),
+            )
+            observation_id = stable_id(
+                "observation",
+                posting_id,
+                run_id,
+                profile_id,
+                observed_at,
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO source_observations(
+                    id, posting_id, run_id, profile_id, observed_at, raw_payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    observation_id,
+                    posting_id,
+                    run_id,
+                    profile_id,
+                    observed_at,
+                    _json(job.raw_payload),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO profile_matches(
+                    canonical_job_id, profile_id, accepted, rejection_reason,
+                    decision_step, first_evaluated_at, last_evaluated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(canonical_job_id, profile_id) DO UPDATE SET
+                    accepted = excluded.accepted,
+                    rejection_reason = excluded.rejection_reason,
+                    decision_step = excluded.decision_step,
+                    last_evaluated_at = excluded.last_evaluated_at
+                """,
+                (
+                    canonical_id,
+                    profile_id,
+                    int(decision.accepted),
+                    "" if decision.reason is None else decision.reason.value,
+                    decision.step,
+                    evaluated,
+                    evaluated,
+                ),
+            )
+            if legacy_job_id:
+                connection.execute(
+                    """
+                    INSERT INTO legacy_job_links(
+                        profile_id, legacy_job_id, canonical_job_id,
+                        legacy_database_path
+                    ) VALUES (?, ?, ?, '')
+                    ON CONFLICT(profile_id, legacy_job_id) DO UPDATE SET
+                        canonical_job_id = excluded.canonical_job_id
+                    """,
+                    (profile_id, legacy_job_id, canonical_id),
+                )
+        return canonical_id
+
+    def migrate_v1(self, profile_id: str, database_path: Path) -> MigrationReport:
+        if not database_path.is_file():
+            return MigrationReport(profile_id=profile_id, database_path=database_path)
+
+        source = sqlite3.connect(database_path)
+        source.row_factory = sqlite3.Row
+        try:
+            if not _table_exists(source, "jobs"):
+                return MigrationReport(
+                    profile_id=profile_id,
+                    database_path=database_path,
+                )
+            rows = source.execute("SELECT * FROM jobs ORDER BY first_seen_at").fetchall()
+            applications = _rows_by_key(
+                source,
+                "application_state",
+                "job_id",
+            )
+            publications = _rows_by_key(
+                source,
+                "notion_sync_state",
+                "job_id",
+            )
+        finally:
+            source.close()
+
+        applications_migrated = 0
+        publications_migrated = 0
+        for row in rows:
+            job = _job_from_v1_row(row)
+            canonical_id = self.record_candidate(
+                job,
+                Decision.accept(),
+                profile_id=profile_id,
+                run_id=f"migration:{profile_id}",
+                evaluated_at=job.first_seen_at,
+                legacy_job_id=str(row["id"]),
+            )
+            self._set_legacy_database_path(
+                profile_id,
+                str(row["id"]),
+                database_path,
+            )
+            application = applications.get(str(row["id"]))
+            if application is not None:
+                self._migrate_application(canonical_id, application)
+                applications_migrated += 1
+            publication = publications.get(str(row["id"]))
+            if publication is not None:
+                self._migrate_publication(canonical_id, publication)
+                publications_migrated += 1
+
+        return MigrationReport(
+            profile_id=profile_id,
+            database_path=database_path,
+            jobs_read=len(rows),
+            jobs_linked=len(rows),
+            applications_migrated=applications_migrated,
+            publications_migrated=publications_migrated,
+        )
+
+    def counts(self) -> dict[str, int]:
+        tables = (
+            "canonical_jobs",
+            "source_postings",
+            "source_observations",
+            "profile_matches",
+            "applications",
+            "external_publications",
+            "legacy_job_links",
+        )
+        with self.connect() as connection:
+            return {
+                table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in tables
+            }
+
+    def _upsert_canonical_job(
+        self,
+        connection: sqlite3.Connection,
+        canonical_id: str,
+        job: JobRecord,
+    ) -> None:
+        first_seen = job.first_seen_at.astimezone(UTC).isoformat()
+        last_seen = job.scraped_at.astimezone(UTC).isoformat()
+        connection.execute(
+            """
+            INSERT INTO canonical_jobs(
+                id, identity_key, normalized_title, company_name, country_code,
+                city, location_text, description_full, employment_type,
+                remote_mode, seniority, salary_text, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                normalized_title = excluded.normalized_title,
+                company_name = excluded.company_name,
+                country_code = excluded.country_code,
+                city = excluded.city,
+                location_text = excluded.location_text,
+                description_full = CASE
+                    WHEN length(excluded.description_full) > length(canonical_jobs.description_full)
+                    THEN excluded.description_full
+                    ELSE canonical_jobs.description_full
+                END,
+                employment_type = excluded.employment_type,
+                remote_mode = excluded.remote_mode,
+                seniority = excluded.seniority,
+                salary_text = excluded.salary_text,
+                first_seen_at = min(canonical_jobs.first_seen_at, excluded.first_seen_at),
+                last_seen_at = max(canonical_jobs.last_seen_at, excluded.last_seen_at)
+            """,
+            (
+                canonical_id,
+                canonical_identity(job),
+                job.title,
+                job.company_name,
+                job.country,
+                job.city,
+                job.location_raw,
+                job.job_description,
+                job.employment_type,
+                job.remote_type,
+                job.seniority,
+                job.salary_text,
+                first_seen,
+                last_seen,
+            ),
+        )
+
+    def _set_legacy_database_path(
+        self,
+        profile_id: str,
+        legacy_job_id: str,
+        database_path: Path,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE legacy_job_links
+                SET legacy_database_path = ?
+                WHERE profile_id = ? AND legacy_job_id = ?
+                """,
+                (str(database_path.resolve()), profile_id, legacy_job_id),
+            )
+
+    def _migrate_application(
+        self,
+        canonical_id: str,
+        row: sqlite3.Row,
+    ) -> None:
+        updated_at = (
+            str(row["last_user_edit_at"] or "")
+            or str(row["applied_at"] or "")
+            or datetime.now(UTC).isoformat()
+        )
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO applications(
+                    canonical_job_id, status, applied_at, updated_at, notes
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(canonical_job_id) DO UPDATE SET
+                    status = CASE
+                        WHEN applications.status = 'applied' THEN applications.status
+                        ELSE excluded.status
+                    END,
+                    applied_at = COALESCE(excluded.applied_at, applications.applied_at),
+                    updated_at = excluded.updated_at,
+                    notes = CASE
+                        WHEN excluded.notes <> '' THEN excluded.notes
+                        ELSE applications.notes
+                    END
+                """,
+                (
+                    canonical_id,
+                    str(row["application_status"] or "new"),
+                    row["applied_at"],
+                    updated_at,
+                    str(row["notes"] or ""),
+                ),
+            )
+
+    def _migrate_publication(
+        self,
+        canonical_id: str,
+        row: sqlite3.Row,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO external_publications(
+                    canonical_job_id, sink_id, external_id, external_container_id,
+                    payload_hash, status, last_synced_at
+                ) VALUES (?, 'notion', ?, ?, ?, ?, ?)
+                ON CONFLICT(canonical_job_id, sink_id, external_id) DO UPDATE SET
+                    external_container_id = excluded.external_container_id,
+                    payload_hash = excluded.payload_hash,
+                    status = excluded.status,
+                    last_synced_at = excluded.last_synced_at
+                """,
+                (
+                    canonical_id,
+                    str(row["notion_page_id"]),
+                    str(row["notion_data_source_id"]),
+                    str(row["last_payload_hash"]),
+                    str(row["sync_status"]),
+                    str(row["last_synced_at"]),
+                ),
+            )
+
+
+def _source_provenance(job: JobRecord) -> tuple[str, str]:
+    source = job.source.strip().lower()
+    platforms = job.raw_payload.get("source_platforms")
+    if isinstance(platforms, list) and platforms:
+        platform = str(platforms[0]).strip().lower() or source
+    else:
+        platform = source
+    if source == "email":
+        return platform, "email"
+    if source == "indeed":
+        return "indeed", "managed_dataset"
+    return platform, "direct"
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _rows_by_key(
+    connection: sqlite3.Connection,
+    table: str,
+    key: str,
+) -> dict[str, sqlite3.Row]:
+    if not _table_exists(connection, table):
+        return {}
+    return {str(row[key]): row for row in connection.execute(f"SELECT * FROM {table}").fetchall()}
+
+
+def _job_from_v1_row(row: sqlite3.Row) -> JobRecord:
+    return JobRecord(
+        source=str(row["source"]),
+        source_job_id=str(row["source_job_id"]),
+        source_url=str(row["source_url"]),
+        canonical_url=str(row["canonical_url"]),
+        title=str(row["normalized_title"]),
+        company_name=str(row["company_name"]),
+        location_raw=str(row["location_text"]),
+        country=str(row["country_code"]),
+        city=str(row["city"]),
+        region=str(row["region"]),
+        remote_type=str(row["remote_mode"]),
+        employment_type=str(row["employment_type"]),
+        seniority=str(row["seniority"]),
+        posted_at=_optional_datetime(row["posted_at"]),
+        first_seen_at=_required_datetime(row["first_seen_at"]),
+        scraped_at=_required_datetime(row["last_seen_at"]),
+        job_description=str(row["description_full"]),
+        description_language=str(row["description_language"]),
+        english_ratio=float(row["english_ratio"]),
+        keyword_hits=_json_list(row["keyword_hits_json"]),
+        tech_stack=_json_list(row["tech_stack_json"]),
+        salary_text=str(row["salary_text"]),
+        salary_min=_optional_float(row["salary_min"]),
+        salary_max=_optional_float(row["salary_max"]),
+        salary_currency=None if row["currency"] is None else str(row["currency"]),
+        application_url=str(row["apply_url"]),
+        company_url=str(row["company_url"]),
+        dedupe_key=str(row["dedupe_key"]),
+        raw_payload=_json_object(row["raw_payload_json"]),
+    )
+
+
+def _required_datetime(value: object) -> datetime:
+    parsed = _optional_datetime(value)
+    if parsed is None:
+        raise ValueError(f"Expected datetime, got {value!r}")
+    return parsed
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(str(value))
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _json_list(value: object) -> list[str]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]
+
+
+def _json_object(value: object) -> dict[str, object]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}

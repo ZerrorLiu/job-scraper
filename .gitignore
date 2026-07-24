@@ -1,0 +1,41 @@
+# The complete runtime workspace is private. Agents create it locally from the
+# public configuration reference; no profile, query, location, watchlist, or
+# integration layout is committed.
+/config/
+.env
+.venv/
+.venv*/
+.agents/
+.codex/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+Thumbs.db
+session_credentials.json
+synchronized_dataset.json
+my_cookies.json
+*cookies*.json
+data/
+*.db-wal
+*.db-shm
+logs/
+output/
+tmp/
+exports/
+# Personal design history and one-off migration utilities are retained locally.
+/docs/*.md
+/src/job_scraper/jobs/migrate_notion_daily_tables.py
+/src/job_scraper/jobs/migrate_workspace_notion.py
+/src/job_scraper/jobs/organize_notion_hierarchy.py
+/tests/test_migrate_notion_daily_tables.py
+/tests/test_split_notion_tracks.py
+# The original regression suite mirrors the owner's private workspace. A
+# neutral public suite lives in public_tests/.
+/tests/

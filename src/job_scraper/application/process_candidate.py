@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+
+from job_scraper.domain.context import EvaluationContext
+from job_scraper.domain.decisions import Decision, RejectionReason
+from job_scraper.domain.models import JobRecord, RawJobRecord
+from job_scraper.domain.policies import FilterPolicy
+from job_scraper.ports.processors import CandidateEvaluator, JobNormalizer
+from job_scraper.ports.repositories import CandidateDecisionRecorder, JobRepository
+
+
+class HistoryMode(StrEnum):
+    STANDARD = "standard"
+    FIRST_SEEN = "first_seen"
+    PREVIOUSLY_PUBLISHED = "previously_published"
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateProcessingContext:
+    profile_id: str
+    run_id: str
+    started_at: datetime
+    policy: FilterPolicy
+    history_mode: HistoryMode = HistoryMode.STANDARD
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateProcessingResult:
+    job: JobRecord
+    decision: Decision
+    job_id: str = ""
+    is_new: bool = False
+
+
+class ProcessJobCandidate:
+    """Single normalization, evaluation, persistence and history use case."""
+
+    def __init__(
+        self,
+        repository: JobRepository,
+        pipeline: CandidateEvaluator,
+        normalizer: JobNormalizer,
+        *,
+        decision_recorder: CandidateDecisionRecorder | None = None,
+        processed_statuses: frozenset[str] = frozenset({"applied", "not fit"}),
+    ) -> None:
+        self._repository = repository
+        self._pipeline = pipeline
+        self._normalizer = normalizer
+        self._decision_recorder = decision_recorder
+        self._processed_statuses = processed_statuses
+
+    def process_raw(
+        self,
+        raw: RawJobRecord,
+        context: CandidateProcessingContext,
+    ) -> CandidateProcessingResult:
+        return self.process_normalized(self._normalizer(raw, context.policy), context)
+
+    def process_normalized(
+        self,
+        job: JobRecord,
+        context: CandidateProcessingContext,
+    ) -> CandidateProcessingResult:
+        decision = self._pipeline.evaluate(
+            job,
+            EvaluationContext(
+                profile_id=context.profile_id,
+                started_at=context.started_at,
+                policy=context.policy,
+            ),
+        )
+        if not decision.accepted:
+            self._record(job, decision, context)
+            return CandidateProcessingResult(job=job, decision=decision)
+
+        job_id, is_new = self._repository.upsert_job(job, context.run_id)
+        status = self._repository.get_application_status(job_id)
+        if status.strip().lower() in self._processed_statuses:
+            rejected = Decision.reject(
+                RejectionReason.ALREADY_PROCESSED,
+                step="processed_status",
+            )
+            self._record(job, rejected, context, legacy_job_id=job_id)
+            return CandidateProcessingResult(
+                job=job,
+                decision=rejected,
+                job_id=job_id,
+                is_new=is_new,
+            )
+
+        if self._should_reject_seen(job, job_id, is_new, context):
+            rejected = Decision.reject(
+                RejectionReason.ALREADY_SEEN,
+                step="history",
+            )
+            self._record(job, rejected, context, legacy_job_id=job_id)
+            return CandidateProcessingResult(
+                job=job,
+                decision=rejected,
+                job_id=job_id,
+                is_new=is_new,
+            )
+
+        self._record(job, Decision.accept(), context, legacy_job_id=job_id)
+        return CandidateProcessingResult(
+            job=job,
+            decision=Decision.accept(),
+            job_id=job_id,
+            is_new=is_new,
+        )
+
+    def _should_reject_seen(
+        self,
+        job: JobRecord,
+        job_id: str,
+        is_new: bool,
+        context: CandidateProcessingContext,
+    ) -> bool:
+        mode = context.history_mode
+        uses_first_seen = (
+            str(job.raw_payload.get("freshness_basis", "")).strip().lower() == "first_seen"
+        )
+        if mode == HistoryMode.STANDARD and not uses_first_seen:
+            return False
+        if is_new and mode in {HistoryMode.STANDARD, HistoryMode.FIRST_SEEN}:
+            return False
+
+        history = self._repository.get_job_history(
+            job_id,
+            job.company_name,
+            context.started_at,
+        )
+        if mode == HistoryMode.PREVIOUSLY_PUBLISHED:
+            return history.exact_seen_before and bool(history.previous_notion_page_id)
+        return history.exact_seen_before
+
+    def _record(
+        self,
+        job: JobRecord,
+        decision: Decision,
+        context: CandidateProcessingContext,
+        *,
+        legacy_job_id: str = "",
+    ) -> None:
+        if self._decision_recorder is None:
+            return
+        self._decision_recorder.record_candidate(
+            job,
+            decision,
+            profile_id=context.profile_id,
+            run_id=context.run_id,
+            evaluated_at=context.started_at,
+            legacy_job_id=legacy_job_id,
+        )

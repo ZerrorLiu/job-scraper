@@ -1,0 +1,85 @@
+# Private configuration reference
+
+The repository does not ship runtime configuration. An Agent generates it with
+`job-scraper init` under the ignored `config/` directory, or in another
+directory selected by `JOB_SCRAPER_CONFIG_DIR`. The accepted bootstrap input
+is machine-readable in `schemas/agent-bootstrap.schema.json`.
+
+## Workspace layout
+
+```text
+config/
+  defaults.toml
+  profiles/
+    <profile-id>.toml
+  <runtime-config>.toml
+  email.toml                 # only when IMAP is enabled
+  watchlists.toml            # optional
+```
+
+Every value in this tree is local. Do not force-add it to Git.
+
+## Profile definition
+
+Each `profiles/<profile-id>.toml` contains a `[profile]` table. Supported keys:
+
+- `id`, `label`, `enabled`
+- `runtime_config`: relative path to the full runtime TOML
+- `sources`, `channels`, `pipeline`, `sinks`: registered component IDs
+- `base_queries`, `locations`, `early_career_modifiers`: the profile's single
+  search matrix definition
+- `watchlists`: optional local watchlist IDs
+
+`defaults.toml` may provide the same keys in `[defaults]`. Optional
+per-profile overrides can live in `[profiles.<profile-id>]` inside
+`local.toml`.
+
+Built-in IDs:
+
+- Sources: `linkedin_direct`, `indeed_brightdata`
+- Channel: `email_imap`
+- Pipeline: `country`, `freshness`, `company`, `employment_scope`,
+  `excluded_terms`, `role`, `requirement_exclusion`, `language`
+- Sinks: `csv`, `notion_daily`
+
+## Runtime TOML
+
+The full runtime file has these tables:
+
+- `[project]`: timezone, database/export paths, labels, freshness windows, and
+  optional workspace database path.
+- `[filters]`: target countries, inclusion/exclusion terms, target rules,
+  company allowlists, employment policy, and language policy.
+- `[http]`: user agent, timeouts, retry delays, and retry count.
+- `[sources.<registered-source-id>]`: enabled flag, bounded
+  page/detail/query workers, explicit `search_queries`, and explicit
+  `locations`. Adapter-specific keys are preserved in `SourceConfig.options`,
+  so a new source can add settings without changing the core configuration
+  model.
+- `indeed_brightdata` may use
+  `inherit_search_matrix_from` to reuse another source's matrix.
+- `[notion]`: enabled flag and display labels. IDs and tokens should come from
+  environment variables.
+
+During composition, the profile's queries and locations are injected into
+every selected source. They are not duplicated in each source table. There
+are no built-in search terms or target locations.
+
+## Secrets
+
+Copy `.env.example` to `.env` and fill only enabled integrations. Supported
+variables include:
+
+- `BRIGHTDATA_API_KEY`, `BRIGHTDATA_DATASET_ID`
+- `JOB_EMAIL_USERNAME`, `JOB_EMAIL_APP_PASSWORD`
+- `NOTION_INTEGRATION_TOKEN`, `NOTION_DATABASE_ID`,
+  `NOTION_PARENT_PAGE_ID`
+
+Validate the private workspace with:
+
+```powershell
+uv run job-scraper list
+uv run job-scraper config validate --all
+uv run job-scraper doctor --all
+uv run job-scraper run --all --init-db
+```
