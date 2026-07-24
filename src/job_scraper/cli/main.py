@@ -14,7 +14,7 @@ from job_scraper.cli.bootstrap import (
     BootstrapRequest,
     initialize_profile,
 )
-from job_scraper.cli.database import migrate_profiles, show_status
+from job_scraper.cli.database import initialize_profiles, migrate_profiles, show_status
 from job_scraper.cli.doctor import has_errors, run_doctor
 from job_scraper.config import load_config
 from job_scraper.configuration import (
@@ -90,20 +90,47 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--profile")
     validate.add_argument("--all", action="store_true")
 
-    run = subparsers.add_parser("run", help="Run one profile or the workspace.")
-    run.add_argument("--profile")
-    run.add_argument("--all", action="store_true")
-    run.add_argument("--init-db", action="store_true")
-    run.add_argument("--enable-indeed", action="store_true")
-    run.add_argument("--skip-email", action="store_true")
-    run.add_argument("--skip-notion", action="store_true")
-    run.add_argument("--skip-export", action="store_true")
-    run.add_argument("--post-age-days", type=int)
-    run.add_argument("--profile-workers", type=int, default=3)
+    run = subparsers.add_parser(
+        "run",
+        help="Run all enabled profiles, or one profile selected with --profile.",
+    )
+    run.add_argument(
+        "--profile",
+        help="Run only this profile. By default all enabled profiles run.",
+    )
+    run.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument("--init-db", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument("--enable-indeed", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument(
+        "--skip-email",
+        action="store_true",
+        help="Skip configured recommendation-email ingestion.",
+    )
+    run.add_argument(
+        "--skip-notion",
+        action="store_true",
+        help="Skip configured Notion publishing.",
+    )
+    run.add_argument(
+        "--skip-export",
+        action="store_true",
+        help="Skip cumulative CSV exports.",
+    )
+    run.add_argument(
+        "--post-age-days",
+        type=int,
+        help="Temporarily override the configured freshness window.",
+    )
+    run.add_argument(
+        "--profile-workers",
+        type=int,
+        default=3,
+        help="Maximum profiles to run concurrently (default: 3).",
+    )
     run.add_argument(
         "--query",
         action="append",
-        help="Temporarily replace the selected profile's search matrix.",
+        help="Temporarily replace every selected profile's search matrix; repeatable.",
     )
 
     email = subparsers.add_parser(
@@ -116,6 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
     database_subparsers = database.add_subparsers(
         dest="database_command",
         required=True,
+    )
+    initialize = database_subparsers.add_parser(
+        "init",
+        help="Initialize operational databases without running acquisition.",
+    )
+    initialize.add_argument(
+        "--profile",
+        help="Initialize only this profile. By default all enabled profiles are initialized.",
     )
     migrate = database_subparsers.add_parser("migrate")
     migrate.add_argument("--profile", action="append", dest="profiles")
@@ -155,6 +190,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "ingest-email":
         return ingest_email_recommendations.main(list(args.arguments))
     if args.command == "db":
+        if args.database_command == "init":
+            return initialize_profiles(args.profile)
         if args.database_command == "migrate":
             return migrate_profiles(
                 args.profiles,
@@ -301,9 +338,13 @@ def _run(args: argparse.Namespace) -> int:
         print("ERROR choose either --all or --profile", file=sys.stderr)
         return 2
     common = _legacy_run_flags(args)
-    if args.all:
-        profiles = [load_profile_definition(profile_id) for profile_id in available_profiles()]
-        config_paths = [str(profile.runtime_config) for profile in profiles if profile.enabled]
+    if args.profile is None:
+        profiles = [
+            profile
+            for profile_id in available_profiles()
+            if (profile := load_profile_definition(profile_id)).enabled
+        ]
+        config_paths = [str(profile.runtime_config) for profile in profiles]
         if not config_paths:
             print(
                 "ERROR no enabled local profiles found; create private configuration first",

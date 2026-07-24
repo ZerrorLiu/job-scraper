@@ -71,7 +71,7 @@ The Agent can use
 uv run job-scraper list
 uv run job-scraper config validate --all
 uv run job-scraper doctor --all
-uv run job-scraper run --all --init-db
+uv run job-scraper db init
 ```
 
 Secrets are saved once in `.env`; they do not need to be entered for every
@@ -84,18 +84,21 @@ run. A configuration directory outside the repository can be selected with
 # Preview the deduplicated plan
 uv run job-scraper plan --show-queries
 
-# Run one local profile
+# Run all enabled profiles, configured sources, channels, and sinks
+uv run job-scraper run
+
+# Run only one local profile
 uv run job-scraper run --profile <profile-id>
 
-# Run all enabled local profiles
-uv run job-scraper run --all
-
-# Enable the optional Indeed adapter for this run
-uv run job-scraper run --all --enable-indeed
+# Apply a temporary freshness override
+uv run job-scraper run --post-age-days 7
 ```
 
-Profiles, sources, and queries are discovered from the private workspace;
-there is no built-in default profile.
+Profiles, sources, and queries are discovered from the private workspace.
+Every source selected during `init` is enabled there; daily runs do not need
+source-specific activation flags. The default mailbox lookback follows the
+widest configured online freshness window so one command covers the complete
+workflow consistently.
 
 ## Architecture
 

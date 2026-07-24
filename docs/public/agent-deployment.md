@@ -29,14 +29,19 @@ Never print, copy into TOML, or commit them.
    `JOB_SCRAPER_CONFIG_DIR`.
 5. Create `.env` locally or inject equivalent environment secrets.
 6. Run `job-scraper config validate --all` and `job-scraper doctor --all`.
-7. Run `job-scraper run --all --init-db` as an offline composition check.
-8. Run one bounded live profile, inspect the summary, then enable the full
-   composition.
+7. Run `job-scraper db init` as an offline database check.
+8. Run one bounded live profile, inspect the summary, then run
+   `job-scraper run` for the complete enabled composition.
 
 The Agent generates queries and filtering keywords from the user's own
 experience and preferences; the repository supplies no defaults for them.
 `init` refuses to overwrite an existing profile, so subsequent changes are
 explicit edits followed by validation.
+
+The normal command has no activation flags: `job-scraper run` executes all
+enabled profiles and their configured sources, channels, and sinks. Use
+`--profile`, `--skip-email`, `--skip-notion`, `--skip-export`, or a freshness
+override only for exceptional runs.
 
 ## Cloud agents
 

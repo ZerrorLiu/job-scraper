@@ -74,7 +74,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--email-lookback-days",
         type=int,
-        help="Email ingest lookback window in days. Defaults to --post-age-days, or 2.",
+        help=(
+            "Email ingest lookback window in days. Defaults to --post-age-days, "
+            "or the widest configured online freshness window."
+        ),
     )
     parser.add_argument(
         "--email-max-messages",
@@ -175,7 +178,7 @@ def _execute(
         email_lookback_days = (
             args.email_lookback_days
             if args.email_lookback_days is not None
-            else args.post_age_days or 2
+            else args.post_age_days or configured_email_lookback_days(config_paths)
         )
         email_argv = [
             "--config",
@@ -212,6 +215,22 @@ def _execute(
             overall_status = overall_status or 1
 
     return overall_status
+
+
+def configured_email_lookback_days(config_paths: list[Path]) -> int:
+    """Use one conservative mailbox window for all selected profiles."""
+    configured_hours: list[int] = []
+    for path in config_paths:
+        config = load_config(path)
+        configured_hours.append(
+            max(
+                config.project.recent_post_age_hours,
+                config.project.bootstrap_post_age_hours,
+            )
+        )
+    if not configured_hours:
+        return 1
+    return max(1, (max(configured_hours) + 23) // 24)
 
 
 def _invoke_run_daily(argv: list[str], runtime: run_daily.RuntimeServices) -> int:

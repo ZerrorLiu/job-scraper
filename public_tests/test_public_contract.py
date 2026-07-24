@@ -21,7 +21,11 @@ from job_scraper.configuration import (
     load_profile_definition,
 )
 from job_scraper.configuration.models import ProfileDefinition
-from job_scraper.jobs.run_all_tracks import parse_args, resolve_config_paths
+from job_scraper.jobs.run_all_tracks import (
+    configured_email_lookback_days,
+    parse_args,
+    resolve_config_paths,
+)
 from job_scraper.registry.builtins import create_builtin_registry
 
 
@@ -183,9 +187,47 @@ def test_agent_can_generate_validate_and_initialize_a_new_workspace(
     monkeypatch.setenv("JOB_SCRAPER_CONFIG_DIR", str(config_root))
     assert cli.main(["config", "validate", "--all"]) == 0
     assert cli.main(["doctor", "--all"]) == 0
-    assert cli.main(["run", "--all", "--init-db"]) == 0
+    assert cli.main(["db", "init"]) == 0
+    assert cli.main(["db", "init", "--profile", "profile_one"]) == 0
     assert (config_root / "data" / "profile_one.db").is_file()
     assert (config_root / "data" / "profile_two.db").is_file()
+
+    run_arguments: list[str] = []
+    monkeypatch.setattr(
+        cli.run_all_tracks,
+        "main",
+        lambda arguments: run_arguments.extend(arguments) or 0,
+    )
+    assert cli.main(["run"]) == 0
+    assert "--configs" in run_arguments
+    assert str(result.runtime_path) in run_arguments
+    assert "--enable-indeed" not in run_arguments
+
+    run_arguments.clear()
+    assert cli.main(["run", "--profile", "profile_one", "--skip-email"]) == 0
+    assert "--config" in run_arguments
+    assert "--configs" not in run_arguments
+    assert "--skip-email" in run_arguments
+
+
+def test_email_lookback_uses_widest_configured_freshness(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class Project:
+        recent_post_age_hours = 25
+        bootstrap_post_age_hours = 48
+
+    class Config:
+        project = Project()
+
+    monkeypatch.setattr(
+        "job_scraper.jobs.run_all_tracks.load_config",
+        lambda _path: Config(),
+    )
+
+    assert configured_email_lookback_days([tmp_path / "runtime.toml"]) == 2
+    assert configured_email_lookback_days([]) == 1
 
 
 def test_agent_bootstrap_refuses_to_overwrite_private_configuration(tmp_path: Path) -> None:

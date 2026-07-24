@@ -6,6 +6,28 @@ from pathlib import Path
 from job_scraper.adapters.storage.sqlite_v2 import WorkspaceDatabase
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import available_profiles, load_profile_definition
+from job_scraper.storage.db import Database
+
+
+def initialize_profiles(profile_id: str | None = None) -> int:
+    """Initialize operational databases without running acquisition."""
+    if profile_id:
+        definitions = [load_profile_definition(profile_id)]
+    else:
+        definitions = [
+            definition
+            for candidate in available_profiles()
+            if (definition := load_profile_definition(candidate)).enabled
+        ]
+    if not definitions:
+        print("No enabled profiles found.")
+        return 2
+
+    for definition in definitions:
+        config = load_config(definition.runtime_config)
+        Database(config.project.database_path).initialize()
+        print(f"INITIALIZED {definition.profile_id}: {config.project.database_path}")
+    return 0
 
 
 def migrate_profiles(
