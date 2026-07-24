@@ -149,7 +149,7 @@ class LiveRunTable:
         self._rows: OrderedDict[tuple[str, str], _ProgressRow] = OrderedDict()
         self._started_at = time.monotonic()
         self._finished_at = 0.0
-        self._rendered_lines = 0
+        self._screen_active = False
         self._last_render_at = 0.0
         self._last_event = ""
         self._errors: list[str] = []
@@ -160,6 +160,9 @@ class LiveRunTable:
         global _active_dashboard
         with _dashboard_lock:
             _active_dashboard = self
+        self.stream.write("\x1b[?1049h\x1b[H\x1b[?25l")
+        self.stream.flush()
+        self._screen_active = True
         self._render(force=True)
 
     def update(
@@ -216,6 +219,11 @@ class LiveRunTable:
         with _dashboard_lock:
             if _active_dashboard is self:
                 _active_dashboard = None
+        if self._screen_active:
+            self.stream.write("\x1b[?25h\x1b[?1049l")
+            self.stream.flush()
+            self._screen_active = False
+        emit_line(self.render_text(), self.stream)
         totals = self.totals()
         status = "completed with errors" if self._errors else "completed"
         emit_line(
@@ -241,11 +249,10 @@ class LiveRunTable:
 
     def render_text(self) -> str:
         with self._lock:
-            elapsed = _duration(self.elapsed_seconds)
             state = "FINAL" if self._finished_at else "LIVE"
-            lines = [f"Job Scraper [{state}]  Elapsed {elapsed}"]
+            lines = [f"Job Scraper [{state}]"]
             lines.append(
-                f"{'Track':<14} {'Source':<10} {'Stage':<12} {'Keywords':>9} "
+                f"{'Track':<14} {'Source':<10} {'Stage':<12} {'Progress':>9} "
                 f"{'Seen':>6} {'Keep':>6} {'Drop':>6}  Detail"
             )
             lines.append("-" * 92)
@@ -280,11 +287,8 @@ class LiveRunTable:
             if not force and now - self._last_render_at < 0.1:
                 return
             rendered = self.render_text()
-            if self._rendered_lines:
-                self.stream.write(f"\x1b[{self._rendered_lines}A\r\x1b[J")
-            self.stream.write(rendered + "\n")
+            self.stream.write("\x1b[H" + rendered + "\x1b[J")
             self.stream.flush()
-            self._rendered_lines = rendered.count("\n") + 1
             self._last_render_at = now
 
 
@@ -308,6 +312,9 @@ def _group_rows_by_track(
     grouped: OrderedDict[str, list[_ProgressRow]] = OrderedDict()
     for row in rows:
         grouped.setdefault(row.track, []).append(row)
+    source_order = {"LinkedIn": 0, "Indeed": 1, "Email": 2}
+    for track_rows in grouped.values():
+        track_rows.sort(key=lambda row: source_order.get(row.source, 99))
     return list(grouped.items())
 
 

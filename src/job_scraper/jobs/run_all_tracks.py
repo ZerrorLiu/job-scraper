@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
-from job_scraper.cli.console import LiveRunTable
+from job_scraper.cli.console import LiveRunTable, display_track_label
 from job_scraper.config import load_config
 from job_scraper.configuration import available_profiles, load_profile_definition
 from job_scraper.jobs import ingest_email_recommendations, run_daily
@@ -129,6 +129,15 @@ def _execute(
     overall_status = 0
 
     config_paths = resolve_config_paths(args)
+    if dashboard.interactive and not args.init_db and not args.skip_email:
+        for config_path in config_paths:
+            config = load_config(config_path)
+            dashboard.update(
+                display_track_label(config.project.track_label),
+                "Email",
+                stage="Waiting",
+                detail="Waiting for online cache",
+            )
     calls: list[tuple[Path, list[str]]] = []
     for config_path in config_paths:
         sub_argv = ["--config", str(config_path)]
@@ -168,13 +177,6 @@ def _execute(
             return status
 
     if not args.init_db and not args.skip_email:
-        if dashboard.interactive:
-            dashboard.update(
-                "All tracks",
-                "Email",
-                stage="Fetching",
-                detail="Reading mailbox",
-            )
         email_lookback_days = (
             args.email_lookback_days
             if args.email_lookback_days is not None
@@ -201,20 +203,26 @@ def _execute(
             email_argv.extend(["--folder", args.email_folder])
         if args.skip_notion:
             email_argv.append("--skip-notion")
-        status = ingest_email_recommendations.main(email_argv)
-        if dashboard.interactive:
-            dashboard.update(
-                "All tracks",
-                "Email",
-                stage="Done" if status == 0 else "Failed",
-                detail="Mailbox ingest complete" if status == 0 else f"Exit {status}",
-            )
+        status = _invoke_email_ingest(
+            email_argv,
+            dashboard if dashboard.interactive else None,
+        )
         if status != 0:
             overall_status = status
         if not args.skip_export and not refresh_exports(config_paths):
             overall_status = overall_status or 1
 
     return overall_status
+
+
+def _invoke_email_ingest(
+    argv: list[str],
+    dashboard: LiveRunTable | None,
+) -> int:
+    parameters = inspect.signature(ingest_email_recommendations.main).parameters
+    if "dashboard" in parameters:
+        return ingest_email_recommendations.main(argv, dashboard=dashboard)
+    return ingest_email_recommendations.main(argv)
 
 
 def configured_email_lookback_days(config_paths: list[Path]) -> int:

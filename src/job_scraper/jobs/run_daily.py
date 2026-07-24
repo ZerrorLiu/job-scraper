@@ -131,6 +131,7 @@ class RuntimeServices:
 class _SourceExecution:
     collector: JobSource
     max_post_age_hours: int
+    keyword_total: int = 0
     records: list[RawJobRecord] | None = None
     acquisition_error: str = ""
 
@@ -290,6 +291,7 @@ def main(
             _SourceExecution(
                 collector=collector,
                 max_post_age_hours=max_post_age_hours,
+                keyword_total=_collector_keyword_total(collector),
             )
         )
         post_age_label = "disabled" if max_post_age_hours <= 0 else f"{max_post_age_hours}h"
@@ -301,23 +303,25 @@ def main(
                 track_label,
                 source_label(collector.source_name),
                 stage="Fetching",
+                keywords_done=0,
+                keywords_total=_collector_keyword_total(collector),
                 detail=f"Window {post_age_label}",
             )
 
-    _acquire_sources(
+    for execution in _acquire_sources(
         executions,
         window=window,
         track_label=track_label,
         dashboard=runtime.dashboard,
-    )
-
-    for execution in executions:
+    ):
         collector = execution.collector
         if runtime.dashboard is not None:
             runtime.dashboard.update(
                 track_label,
                 source_label(collector.source_name),
                 stage="Filtering",
+                keywords_done=execution.keyword_total,
+                keywords_total=execution.keyword_total,
                 seen=len(execution.records or []),
                 detail="Applying policy",
             )
@@ -350,6 +354,8 @@ def main(
                 track_label,
                 source_label(collector.source_name),
                 stage="Done",
+                keywords_done=execution.keyword_total,
+                keywords_total=execution.keyword_total,
                 seen=stats.jobs_seen,
                 accepted=stats.jobs_new + stats.jobs_updated,
                 filtered=stats.jobs_filtered,
@@ -454,7 +460,13 @@ def build_collectors(
                         "request_coalescer": runtime.request_coalescer,
                         "request_gate": runtime.linkedin_request_gate,
                         "snapshot_database": Database(config.project.database_path),
-                        "event_logger": log_line,
+                        "event_logger": (
+                            lambda message: _update_indeed_progress(
+                                runtime.dashboard,
+                                track_label,
+                                message,
+                            )
+                        ),
                         "progress_callback": (
                             lambda event: _update_linkedin_progress(
                                 runtime.dashboard,
@@ -809,10 +821,11 @@ def _acquire_sources(
     window: SearchWindow,
     track_label: str,
     dashboard: LiveRunTable | None,
-) -> None:
+) -> Iterable[_SourceExecution]:
     if len(executions) <= 1:
         for execution in executions:
             _acquire_source(execution, window)
+            yield execution
         return
 
     with ThreadPoolExecutor(
@@ -831,9 +844,12 @@ def _acquire_sources(
                     track_label,
                     source_label(execution.collector.source_name),
                     stage="Filtering" if not execution.acquisition_error else "Failed",
+                    keywords_done=execution.keyword_total,
+                    keywords_total=execution.keyword_total,
                     seen=len(execution.records or []),
                     detail=execution.acquisition_error or "Acquisition complete",
                 )
+            yield execution
 
 
 def _acquire_source(execution: _SourceExecution, window: SearchWindow) -> None:
@@ -847,6 +863,14 @@ def _acquire_source(execution: _SourceExecution, window: SearchWindow) -> None:
     except Exception as exc:
         execution.acquisition_error = str(exc)
         execution.records = []
+
+
+def _collector_keyword_total(collector: JobSource) -> int:
+    source_config = getattr(collector, "source_config", None)
+    queries = getattr(source_config, "search_queries", None)
+    if queries is None:
+        queries = getattr(collector, "search_queries", ())
+    return len(queries or ())
 
 
 def _update_linkedin_progress(
@@ -863,6 +887,24 @@ def _update_linkedin_progress(
         keywords_done=event.completed_queries,
         keywords_total=event.total_queries,
         detail=f"{event.query}: {event.listings}",
+    )
+
+
+def _update_indeed_progress(
+    dashboard: LiveRunTable | None,
+    track_label: str,
+    message: str,
+) -> None:
+    if dashboard is None:
+        log_line(message)
+        return
+    dashboard.record_message(f"{track_label} | {message}")
+    detail = message.rsplit("|", maxsplit=1)[-1].strip() or "Cloud snapshot running"
+    dashboard.update(
+        track_label,
+        "Indeed",
+        stage="Fetching",
+        detail=detail,
     )
 
 
