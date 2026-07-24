@@ -136,6 +136,20 @@ class MigrationReport:
     publications_migrated: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class StoredJobDetail:
+    source_id: str
+    source_job_id: str
+    source_url: str
+    canonical_url: str
+    application_url: str
+    title: str
+    company_name: str
+    location_text: str
+    description: str
+    employment_type: str
+
+
 class WorkspaceDatabase:
     """V2 workspace store shared by all profiles and source channels."""
 
@@ -358,6 +372,55 @@ class WorkspaceDatabase:
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in tables
             }
+
+    def find_source_job_detail(
+        self,
+        source_id: str,
+        source_job_id: str,
+    ) -> StoredJobDetail | None:
+        if not source_id or not source_job_id:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    sp.source_id, sp.source_job_id, sp.source_url,
+                    sp.canonical_url, sp.application_url, sp.raw_payload_json,
+                    cj.normalized_title, cj.company_name, cj.location_text,
+                    cj.description_full, cj.employment_type
+                FROM source_postings AS sp
+                JOIN canonical_jobs AS cj ON cj.id = sp.canonical_job_id
+                WHERE sp.source_id = ? AND sp.source_job_id = ?
+                ORDER BY sp.last_seen_at DESC
+                LIMIT 1
+                """,
+                (source_id, source_job_id),
+            ).fetchone()
+        if row is None or not str(row["description_full"] or "").strip():
+            return None
+        try:
+            payload = json.loads(str(row["raw_payload_json"] or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        source_description = _first_payload_text(
+            payload,
+            "description_text",
+            "description",
+            "job_description",
+            "job_description_formatted",
+        )
+        return StoredJobDetail(
+            source_id=str(row["source_id"]),
+            source_job_id=str(row["source_job_id"]),
+            source_url=str(row["source_url"]),
+            canonical_url=str(row["canonical_url"]),
+            application_url=str(row["application_url"]),
+            title=str(row["normalized_title"]),
+            company_name=str(row["company_name"]),
+            location_text=str(row["location_text"]),
+            description=source_description or str(row["description_full"]),
+            employment_type=str(row["employment_type"]),
+        )
 
     def _upsert_canonical_job(
         self,
@@ -583,6 +646,16 @@ def _optional_float(value: object) -> float | None:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _first_payload_text(payload: object, *keys: str) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _json_list(value: object) -> list[str]:

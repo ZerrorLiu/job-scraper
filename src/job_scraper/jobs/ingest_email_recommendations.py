@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import os
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,7 +14,7 @@ from job_scraper.adapters.sinks.notion_workflow import (
     import_processed_statuses,
     publish_daily,
 )
-from job_scraper.adapters.storage.sqlite_v2 import WorkspaceDatabase
+from job_scraper.adapters.storage.sqlite_v2 import StoredJobDetail, WorkspaceDatabase
 from job_scraper.application.aggregation import AcceptedJob, merge_accepted_job
 from job_scraper.application.process_candidate import (
     CandidateProcessingContext,
@@ -20,12 +22,17 @@ from job_scraper.application.process_candidate import (
     ProcessJobCandidate,
 )
 from job_scraper.cli.console import (
+    LiveRunTable,
     display_track_label,
     format_reasons,
     log_error,
     log_job_status,
     log_line,
     reason_label,
+)
+from job_scraper.collectors.data_integration_adapter import (
+    BrightDataBatchResult,
+    execute_brightdata_url_batch_sync,
 )
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
@@ -36,10 +43,14 @@ from job_scraper.integrations.email_recommendations import (
     EmailJobCandidate,
     ImapEmailClient,
     MailMessage,
+    can_use_email_fallback,
     canonical_link_key,
+    email_candidate_to_raw_job,
     enrich_email_candidate_to_raw_job,
     extract_job_candidates,
+    indeed_detail_url,
     load_email_ingest_config,
+    platform_job_reference,
 )
 from job_scraper.integrations.notion import NotionClient
 from job_scraper.models import JobRecord, RawJobRecord, RunStats
@@ -67,6 +78,7 @@ class TrackRuntime:
     processor: ProcessJobCandidate
     profile_id: str
     enabled_sinks: tuple[str, ...]
+    workspace_database: WorkspaceDatabase | None = None
     accepted_jobs: dict[str, AcceptedJob] = field(default_factory=dict)
     reject_counts: Counter[str] = field(default_factory=Counter)
 
@@ -119,7 +131,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    dashboard: LiveRunTable | None = None,
+) -> int:
     args = parse_args(argv or sys.argv[1:])
     email_config = load_email_ingest_config(args.config)
     email_config = apply_overrides(email_config, args.max_messages, args.lookback_days, args.folder)
@@ -145,6 +161,14 @@ def main(argv: list[str] | None = None) -> int:
         skip_notion=args.skip_notion,
         skip_status_import=args.skip_status_import,
     )
+    for runtime in runtimes:
+        if dashboard is not None:
+            dashboard.update(
+                runtime.track_label,
+                "Email",
+                stage="Fetching",
+                detail="Reading mailbox",
+            )
     messages_to_mark: list[MailMessage] = []
     accepted_by_message: dict[str, int] = {}
     status = "completed"
@@ -163,17 +187,38 @@ def main(argv: list[str] | None = None) -> int:
             accepted_by_message[message.message_id] = 0
 
         candidate_tasks = collect_candidate_tasks(messages_to_mark, runtimes)
+        for runtime in runtimes:
+            if dashboard is not None:
+                dashboard.update(
+                    runtime.track_label,
+                    "Email",
+                    stage="Resolving",
+                    keywords_done=0,
+                    keywords_total=len(candidate_tasks),
+                    detail=f"{len(candidate_tasks)} cards",
+                )
         process_candidate_tasks(
             candidate_tasks,
             runtimes,
             started_at,
             accepted_by_message,
             detail_workers=args.detail_workers,
+            dashboard=dashboard,
         )
 
         for runtime in runtimes:
             runtime.run.finished_at = datetime.now(UTC)
             runtime.database.finish_run(runtime.run, "completed")
+            if dashboard is not None:
+                dashboard.update(
+                    runtime.track_label,
+                    "Email",
+                    stage="Done",
+                    seen=runtime.run.jobs_seen,
+                    accepted=runtime.run.jobs_new + runtime.run.jobs_updated,
+                    filtered=runtime.run.jobs_filtered,
+                    detail=format_reasons(runtime.reject_counts),
+                )
             log_line(
                 f"Email | Track {runtime.track_label} | Done | "
                 f"Seen {runtime.run.jobs_seen} | Accepted {runtime.run.jobs_new + runtime.run.jobs_updated} | "
@@ -208,6 +253,16 @@ def main(argv: list[str] | None = None) -> int:
             runtime.run.jobs_failed += 1
             runtime.run.errors.append(str(exc))
             runtime.database.finish_run(runtime.run, "failed")
+            if dashboard is not None:
+                dashboard.update(
+                    runtime.track_label,
+                    "Email",
+                    stage="Failed",
+                    seen=runtime.run.jobs_seen,
+                    accepted=runtime.run.jobs_new + runtime.run.jobs_updated,
+                    filtered=runtime.run.jobs_filtered,
+                    detail=str(exc),
+                )
         return 1
 
     return 0 if status == "completed" else 1
@@ -288,6 +343,7 @@ def initialize_tracks(
                     else display_track_label(config.project.track_label)
                 ),
                 enabled_sinks=(profile.sinks if profile is not None else ("csv", "notion_daily")),
+                workspace_database=workspace_database,
             )
         )
     return runtimes
@@ -371,15 +427,21 @@ def process_candidate_tasks(
     started_at: datetime,
     accepted_by_message: dict[str, int],
     detail_workers: int,
+    dashboard: LiveRunTable | None = None,
 ) -> None:
     if not tasks:
         return
+    prepared = prepare_email_details(tasks, runtimes, started_at)
     worker_count = max(1, detail_workers)
     completed = 0
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
             executor.submit(
-                enrich_email_candidate_to_raw_job, candidate, runtimes[0].config.http, started_at
+                resolve_prepared_or_fetch,
+                candidate,
+                runtimes,
+                started_at,
+                prepared,
             ): message
             for message, candidate in tasks
         }
@@ -403,8 +465,99 @@ def process_candidate_tasks(
                     accepted_by_message[message.message_id] = (
                         accepted_by_message.get(message.message_id, 0) + accepted_count
                     )
+            if dashboard is not None:
+                for runtime in runtimes:
+                    dashboard.update(
+                        runtime.track_label,
+                        "Email",
+                        stage="Filtering",
+                        keywords_done=completed,
+                        keywords_total=len(tasks),
+                        seen=runtime.run.jobs_seen,
+                        accepted=runtime.run.jobs_new + runtime.run.jobs_updated,
+                        filtered=runtime.run.jobs_filtered,
+                        detail=f"Card {completed}/{len(tasks)}",
+                    )
             if completed % 25 == 0 or completed == len(tasks):
                 log_line(f"Email | Detail progress {completed}/{len(tasks)}")
+
+
+def prepare_email_details(
+    tasks: list[tuple[MailMessage, EmailJobCandidate]],
+    runtimes: list[TrackRuntime],
+    scraped_at: datetime,
+) -> dict[str, RawJobRecord]:
+    prepared: dict[str, RawJobRecord] = {}
+    unresolved_indeed: list[EmailJobCandidate] = []
+    for _message, candidate in tasks:
+        stored = find_stored_job_detail(candidate, runtimes)
+        if stored is not None:
+            prepared[canonical_link_key(candidate.url)] = raw_from_stored_detail(
+                candidate,
+                stored,
+                scraped_at,
+            )
+            continue
+        source_id, source_job_id = platform_job_reference(candidate.url)
+        if source_id == "indeed" and source_job_id:
+            unresolved_indeed.append(candidate)
+    if not unresolved_indeed or not brightdata_url_resolution_enabled():
+        return prepared
+    urls = [indeed_detail_url(candidate.url) or candidate.url for candidate in unresolved_indeed]
+    try:
+        batch = asyncio.run(
+            execute_brightdata_url_batch_sync(
+                urls,
+                snapshot_database=runtimes[0].database,
+                request_timeout_seconds=runtimes[0].config.http.timeout_seconds,
+                event_logger=log_line,
+            )
+        )
+    except Exception as exc:
+        log_error(f"Email | Bright Data URL resolution failed | {exc}")
+        batch = BrightDataBatchResult(snapshot_id="", request_hash="", records=[])
+    records_by_id = {str(record.get("record_id") or ""): record for record in batch.records}
+    for candidate in unresolved_indeed:
+        link_key = canonical_link_key(candidate.url)
+        _source_id, source_job_id = platform_job_reference(candidate.url)
+        record = records_by_id.get(source_job_id)
+        if record is not None:
+            prepared[link_key] = raw_from_brightdata_detail(
+                candidate,
+                record,
+                batch,
+                scraped_at,
+            )
+            continue
+        raw = email_candidate_to_raw_job(candidate, scraped_at=scraped_at)
+        raw.raw_payload["detail_status"] = (
+            "email_fallback" if can_use_email_fallback(candidate, raw) else "too_sparse"
+        )
+        raw.raw_payload["detail_error"] = "Bright Data returned no detail record"
+        prepared[link_key] = raw
+    return prepared
+
+
+def brightdata_url_resolution_enabled() -> bool:
+    return bool(
+        os.getenv("BRIGHTDATA_API_KEY", "").strip()
+        and (
+            os.getenv("BRIGHTDATA_INDEED_JOBS_DATASET_ID", "").strip()
+            or os.getenv("BRIGHTDATA_DATASET_ID", "").strip()
+        )
+    )
+
+
+def resolve_prepared_or_fetch(
+    candidate: EmailJobCandidate,
+    runtimes: list[TrackRuntime],
+    scraped_at: datetime,
+    prepared: dict[str, RawJobRecord],
+) -> RawJobRecord:
+    resolved = prepared.get(canonical_link_key(candidate.url))
+    if resolved is not None:
+        return resolved
+    return enrich_email_candidate(candidate, runtimes, scraped_at)
 
 
 def process_message(
@@ -422,9 +575,7 @@ def process_message(
         if link_key in seen_detail_links:
             continue
         seen_detail_links.add(link_key)
-        raw = enrich_email_candidate_to_raw_job(
-            candidate, runtimes[0].config.http, scraped_at=started_at
-        )
+        raw = enrich_email_candidate(candidate, runtimes, started_at)
         if not is_processable_detail_status(raw.raw_payload.get("detail_status")):
             reject_detail_unavailable(raw, runtimes)
             continue
@@ -433,6 +584,96 @@ def process_message(
             if accepted:
                 accepted_for_message += 1
     return accepted_for_message
+
+
+def enrich_email_candidate(
+    candidate: EmailJobCandidate,
+    runtimes: list[TrackRuntime],
+    scraped_at: datetime,
+) -> RawJobRecord:
+    stored = find_stored_job_detail(candidate, runtimes)
+    if stored is None:
+        return enrich_email_candidate_to_raw_job(
+            candidate,
+            runtimes[0].config.http,
+            scraped_at=scraped_at,
+        )
+    return raw_from_stored_detail(candidate, stored, scraped_at)
+
+
+def raw_from_stored_detail(
+    candidate: EmailJobCandidate,
+    stored: StoredJobDetail,
+    scraped_at: datetime,
+) -> RawJobRecord:
+    raw = email_candidate_to_raw_job(candidate, scraped_at=scraped_at)
+    raw.title = stored.title or raw.title
+    raw.company_name = stored.company_name or raw.company_name
+    raw.location_raw = stored.location_text or raw.location_raw
+    raw.job_description = stored.description
+    raw.employment_type = stored.employment_type or raw.employment_type
+    raw.canonical_url = stored.canonical_url or stored.source_url or raw.canonical_url
+    raw.application_url = stored.application_url or raw.application_url
+    raw.raw_payload.update(
+        {
+            "detail_status": "ok",
+            "detail_source": "workspace_source",
+            "description_source": "workspace_source",
+            "title_source": "workspace_source",
+            "matched_source_id": stored.source_id,
+            "matched_source_job_id": stored.source_job_id,
+        }
+    )
+    return raw
+
+
+def raw_from_brightdata_detail(
+    candidate: EmailJobCandidate,
+    record: dict[str, object],
+    batch: BrightDataBatchResult,
+    scraped_at: datetime,
+) -> RawJobRecord:
+    raw = email_candidate_to_raw_job(candidate, scraped_at=scraped_at)
+    raw.title = str(record.get("position_title") or raw.title)
+    raw.company_name = str(record.get("organization") or raw.company_name)
+    raw.location_raw = str(record.get("region") or raw.location_raw)
+    raw.job_description = str(record.get("description") or "")
+    raw.employment_type = str(record.get("employment_type") or "unknown")
+    raw.posted_at_text = str(record.get("timestamp") or raw.posted_at_text)
+    raw.canonical_url = str(record.get("reference_url") or raw.canonical_url)
+    payload = record.get("raw_payload")
+    raw.raw_payload.update(
+        {
+            "detail_status": "ok",
+            "detail_source": "brightdata_url",
+            "description_source": "brightdata_url",
+            "title_source": "brightdata_url",
+            "brightdata_snapshot_id": batch.snapshot_id,
+            "matched_source_id": "indeed",
+            "matched_source_job_id": str(record.get("record_id") or ""),
+            "brightdata_detail_payload": payload if isinstance(payload, dict) else {},
+        }
+    )
+    return raw
+
+
+def find_stored_job_detail(
+    candidate: EmailJobCandidate,
+    runtimes: list[TrackRuntime],
+) -> StoredJobDetail | None:
+    source_id, source_job_id = platform_job_reference(candidate.url)
+    if not source_id or not source_job_id:
+        return None
+    checked_paths: set[Path] = set()
+    for runtime in runtimes:
+        workspace = runtime.workspace_database
+        if workspace is None or workspace.path in checked_paths:
+            continue
+        checked_paths.add(workspace.path)
+        detail = workspace.find_source_job_detail(source_id, source_job_id)
+        if detail is not None:
+            return detail
+    return None
 
 
 def process_raw_job(
@@ -500,7 +741,7 @@ def process_raw_job(
 
 
 def email_fallback_policy(policy: FilterPolicy) -> FilterPolicy:
-    """Require title-local role evidence when email context replaces job details."""
+    """Require title-local role evidence when a full job description is unavailable."""
 
     return replace(
         policy,

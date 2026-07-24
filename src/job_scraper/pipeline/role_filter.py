@@ -45,10 +45,11 @@ def is_full_time_role(
     allow_part_time: bool = False,
     allow_temporary: bool = False,
 ) -> bool:
+    del description
     lowered_employment = (employment_type or "").strip().lower()
     if lowered_employment in {"internship", "student"}:
         return False
-    combined = " ".join(part for part in [title, description, employment_type] if part).lower()
+    combined = " ".join(part for part in [title, employment_type] if part).lower()
     if any(re.search(pattern, combined) for pattern in STUDENT_OR_INTERNSHIP_PATTERNS):
         return False
     if not allow_part_time and (
@@ -62,9 +63,10 @@ def is_full_time_role(
 def has_excluded_keyword(
     title: str, description: str, employment_type: str, exclude_keywords: list[str] | None = None
 ) -> bool:
+    del description, employment_type
     if not exclude_keywords:
         return False
-    return text_matches_keywords(title, description, exclude_keywords, "combined")
+    return text_matches_keywords(title, "", exclude_keywords, "title")
 
 
 def text_matches_keywords(

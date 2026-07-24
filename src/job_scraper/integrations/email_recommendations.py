@@ -582,9 +582,6 @@ def email_candidate_to_raw_job(
 ) -> RawJobRecord:
     observed_at = scraped_at or datetime.now(UTC)
     source_job_id = stable_source_job_id(candidate)
-    description = candidate.context or " ".join(
-        part for part in [candidate.title, candidate.company_name, candidate.location_raw] if part
-    )
     return RawJobRecord(
         source="email",
         source_job_id=source_job_id,
@@ -595,19 +592,21 @@ def email_candidate_to_raw_job(
         location_raw=candidate.location_raw,
         posted_at_text=candidate.email_date.isoformat(),
         scraped_at=observed_at,
-        job_description=description,
+        job_description="",
         application_url=candidate.url,
         raw_payload={
             "freshness_basis": "email_received",
             "acquisition_mode": "email",
             "source_platforms": [job_platform_from_url(candidate.url)],
             "detail_status": "not_fetched",
+            "description_source": "none",
+            "title_source": "email_card",
             "email_message_id": candidate.message_id,
             "email_subject": candidate.email_subject,
             "email_from": candidate.email_from,
             "email_date": candidate.email_date.isoformat(),
             "anchor_text": candidate.anchor_text,
-            "context": candidate.context,
+            "card_context": candidate.context,
             "email_candidate_title": candidate.title,
             "email_candidate_company": candidate.company_name,
             "email_candidate_location": candidate.location_raw,
@@ -637,7 +636,6 @@ def enrich_email_candidate_to_raw_job(
     scraped_at: datetime | None = None,
 ) -> RawJobRecord:
     raw = email_candidate_to_raw_job(candidate, scraped_at=scraped_at)
-    email_description = raw.job_description
     try:
         detail = fetch_job_detail(candidate.url, http_config)
     except Exception as exc:
@@ -649,12 +647,14 @@ def enrich_email_candidate_to_raw_job(
 
     if detail.title:
         raw.title = detail.title
+        raw.raw_payload["title_source"] = "job_detail"
     if detail.company_name:
         raw.company_name = detail.company_name
     if detail.location_raw:
         raw.location_raw = detail.location_raw
     if has_usable_detail_text(detail.description):
         raw.job_description = detail.description
+        raw.raw_payload["description_source"] = "job_detail"
     if detail.application_url:
         raw.application_url = detail.application_url
     if detail.company_url:
@@ -664,8 +664,6 @@ def enrich_email_candidate_to_raw_job(
     if detail.final_url:
         raw.canonical_url = detail.final_url
         raw.raw_payload["detail_final_url"] = detail.final_url
-    if not has_usable_detail_text(raw.job_description):
-        raw.job_description = email_description
     raw.raw_payload["detail_status"] = (
         "ok"
         if has_usable_detail_text(detail.description)
@@ -686,7 +684,12 @@ def can_use_email_fallback(candidate: EmailJobCandidate, raw: RawJobRecord) -> b
         return False
     if not is_jobish_candidate(candidate.url, candidate.title, candidate.context):
         return False
-    return has_usable_detail_text(raw.job_description)
+    anchor_title = cleanup_title(candidate.anchor_text)
+    url_title = cleanup_title(title_from_url(candidate.url))
+    return bool(
+        (anchor_title and not is_generic_label(anchor_title))
+        or (url_title and not is_generic_label(url_title))
+    )
 
 
 def fetch_job_detail(url: str, http_config: HttpConfig) -> JobDetail:
@@ -734,6 +737,17 @@ def extract_linkedin_job_id(url: str) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+def platform_job_reference(url: str) -> tuple[str, str]:
+    cleaned = clean_url(url)
+    if is_indeed_url(cleaned):
+        query = dict(parse_qsl(urlsplit(cleaned).query, keep_blank_values=False))
+        return "indeed", str(query.get("jk") or "").strip()
+    linkedin_id = extract_linkedin_job_id(cleaned)
+    if linkedin_id:
+        return "linkedin", linkedin_id
+    return "", ""
 
 
 def fetch_text(url: str, http_config: HttpConfig) -> tuple[str, str]:

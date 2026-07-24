@@ -290,66 +290,20 @@ async def execute_brightdata_dataset_batch_sync(
         ).encode("utf-8")
     ).hexdigest()
 
-    resumable = (
-        snapshot_database.find_resumable_snapshot("brightdata", dataset_id, request_hash)
-        if snapshot_database is not None
-        else None
+    markets = sorted({f"{item.country}/{item.domain}" for item in search_inputs})
+    snapshot_id, downloaded = await _execute_brightdata_snapshot(
+        trigger_url=trigger_url,
+        trigger_payload=trigger_payload,
+        api_key=api_key,
+        dataset_id=dataset_id,
+        request_hash=request_hash,
+        snapshot_database=snapshot_database,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=timeout_seconds,
+        request_timeout_seconds=request_timeout_seconds,
+        event_logger=event_logger,
+        trigger_detail=(f"Markets {', '.join(markets)} | Global limit {limit_multiple_results}"),
     )
-    status = str(resumable["status"]) if resumable is not None else ""
-    snapshot_id = str(resumable["snapshot_id"]) if resumable is not None else ""
-    if snapshot_id:
-        _log_cloud_event(
-            f"Resuming cloud snapshot | Snapshot {snapshot_id} | "
-            f"Inputs {len(trigger_payload)} | Status {status}",
-            event_logger,
-        )
-    else:
-        markets = sorted({f"{item.country}/{item.domain}" for item in search_inputs})
-        _log_cloud_event(
-            f"Triggering batched cloud snapshot | Inputs {len(trigger_payload)} | "
-            f"Markets {', '.join(markets)} | Global limit {limit_multiple_results}",
-            event_logger,
-        )
-        trigger_response = await _brightdata_json_request(
-            trigger_url,
-            api_key,
-            method="POST",
-            body=trigger_payload,
-            timeout_seconds=request_timeout_seconds,
-        )
-        if not isinstance(trigger_response, Mapping):
-            raise DataSyncError("Bright Data trigger response was not a JSON object")
-        snapshot_id = str(trigger_response.get("snapshot_id") or "").strip()
-        if not snapshot_id:
-            raise DataSyncError("Bright Data trigger response did not include snapshot_id")
-        status = "starting"
-        if snapshot_database is not None:
-            snapshot_database.register_snapshot(
-                snapshot_id,
-                "brightdata",
-                dataset_id,
-                request_hash,
-                trigger_payload,
-            )
-
-    if status != "ready":
-        await _wait_for_brightdata_snapshot(
-            snapshot_id,
-            api_key,
-            poll_interval_seconds=poll_interval_seconds,
-            timeout_seconds=timeout_seconds,
-            request_timeout_seconds=request_timeout_seconds,
-            snapshot_database=snapshot_database,
-            event_logger=event_logger,
-        )
-    downloaded = await _brightdata_json_request(
-        f"{BRIGHTDATA_API_BASE_URL}/snapshot/{snapshot_id}?format=json",
-        api_key,
-        method="GET",
-        timeout_seconds=request_timeout_seconds,
-    )
-    if not isinstance(downloaded, list):
-        raise DataSyncError("Bright Data snapshot download was not a JSON array")
 
     ingested_records: list[dict[str, Any]] = []
     seen_record_ids: set[str] = set()
@@ -386,6 +340,153 @@ async def execute_brightdata_dataset_batch_sync(
         request_hash=request_hash,
         records=ingested_records,
     )
+
+
+async def execute_brightdata_url_batch_sync(
+    urls: Sequence[str],
+    *,
+    snapshot_database: Database | None = None,
+    poll_interval_seconds: float | None = None,
+    timeout_seconds: float = 900.0,
+    request_timeout_seconds: float = 30.0,
+    event_logger: Callable[[str], None] | None = None,
+) -> BrightDataBatchResult:
+    """Resolve a batch of concrete Indeed job URLs through the Web Scraper API."""
+    unique_urls = list(dict.fromkeys(url.strip() for url in urls if url.strip()))
+    if not unique_urls:
+        raise ValueError("urls must not be empty")
+    api_key = _required_environment_value("BRIGHTDATA_API_KEY")
+    dataset_id = os.getenv(
+        "BRIGHTDATA_INDEED_JOBS_DATASET_ID", ""
+    ).strip() or _required_environment_value("BRIGHTDATA_DATASET_ID")
+    trigger_payload = [{"url": url} for url in unique_urls]
+    trigger_parameters = {
+        "dataset_id": dataset_id,
+        "include_errors": "true",
+        "format": "json",
+    }
+    trigger_url = f"{BRIGHTDATA_API_BASE_URL}/trigger?{urlencode(trigger_parameters)}"
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "dataset_id": dataset_id,
+                "mode": "url",
+                "inputs": trigger_payload,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    snapshot_id, downloaded = await _execute_brightdata_snapshot(
+        trigger_url=trigger_url,
+        trigger_payload=trigger_payload,
+        api_key=api_key,
+        dataset_id=dataset_id,
+        request_hash=request_hash,
+        snapshot_database=snapshot_database,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=timeout_seconds,
+        request_timeout_seconds=request_timeout_seconds,
+        event_logger=event_logger,
+        trigger_detail="Concrete Indeed job URLs",
+    )
+    records: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for entry in downloaded:
+        if not isinstance(entry, Mapping):
+            continue
+        normalized = normalize_upstream_entry(entry)
+        if normalized is None or normalized["record_id"] in seen_ids:
+            continue
+        seen_ids.add(normalized["record_id"])
+        normalized["raw_payload"]["brightdata_snapshot_id"] = snapshot_id
+        normalized["raw_payload"]["brightdata_input_mode"] = "url"
+        records.append(normalized)
+    _log_cloud_event(
+        f"Concrete URL snapshot mapped | Snapshot {snapshot_id} | "
+        f"Inputs {len(unique_urls)} | Records {len(records)}",
+        event_logger,
+    )
+    return BrightDataBatchResult(
+        snapshot_id=snapshot_id,
+        request_hash=request_hash,
+        records=records,
+    )
+
+
+async def _execute_brightdata_snapshot(
+    *,
+    trigger_url: str,
+    trigger_payload: list[dict[str, str]],
+    api_key: str,
+    dataset_id: str,
+    request_hash: str,
+    snapshot_database: Database | None,
+    poll_interval_seconds: float | None,
+    timeout_seconds: float,
+    request_timeout_seconds: float,
+    event_logger: Callable[[str], None] | None,
+    trigger_detail: str,
+) -> tuple[str, list[object]]:
+    resumable = (
+        snapshot_database.find_resumable_snapshot("brightdata", dataset_id, request_hash)
+        if snapshot_database is not None
+        else None
+    )
+    status = str(resumable["status"]) if resumable is not None else ""
+    snapshot_id = str(resumable["snapshot_id"]) if resumable is not None else ""
+    if snapshot_id:
+        _log_cloud_event(
+            f"Resuming cloud snapshot | Snapshot {snapshot_id} | "
+            f"Inputs {len(trigger_payload)} | Status {status}",
+            event_logger,
+        )
+    else:
+        _log_cloud_event(
+            f"Triggering batched cloud snapshot | Inputs {len(trigger_payload)} | {trigger_detail}",
+            event_logger,
+        )
+        trigger_response = await _brightdata_json_request(
+            trigger_url,
+            api_key,
+            method="POST",
+            body=trigger_payload,
+            timeout_seconds=request_timeout_seconds,
+        )
+        if not isinstance(trigger_response, Mapping):
+            raise DataSyncError("Bright Data trigger response was not a JSON object")
+        snapshot_id = str(trigger_response.get("snapshot_id") or "").strip()
+        if not snapshot_id:
+            raise DataSyncError("Bright Data trigger response did not include snapshot_id")
+        status = "starting"
+        if snapshot_database is not None:
+            snapshot_database.register_snapshot(
+                snapshot_id,
+                "brightdata",
+                dataset_id,
+                request_hash,
+                trigger_payload,
+            )
+    if status != "ready":
+        await _wait_for_brightdata_snapshot(
+            snapshot_id,
+            api_key,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout_seconds=timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
+            snapshot_database=snapshot_database,
+            event_logger=event_logger,
+        )
+    downloaded = await _brightdata_json_request(
+        f"{BRIGHTDATA_API_BASE_URL}/snapshot/{snapshot_id}?format=json",
+        api_key,
+        method="GET",
+        timeout_seconds=request_timeout_seconds,
+    )
+    if not isinstance(downloaded, list):
+        raise DataSyncError("Bright Data snapshot download was not a JSON array")
+    return snapshot_id, downloaded
 
 
 async def _wait_for_brightdata_snapshot(

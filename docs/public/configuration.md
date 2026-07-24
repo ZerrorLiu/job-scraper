@@ -71,6 +71,8 @@ Copy `.env.example` to `.env` and fill only enabled integrations. Supported
 variables include:
 
 - `BRIGHTDATA_API_KEY`, `BRIGHTDATA_DATASET_ID`
+- `BRIGHTDATA_INDEED_JOBS_DATASET_ID` is optional. Set it only when concrete
+  Indeed job URLs use a different Bright Data dataset from keyword discovery.
 - `JOB_EMAIL_USERNAME`, `JOB_EMAIL_APP_PASSWORD`
 - `NOTION_INTEGRATION_TOKEN`, `NOTION_DATABASE_ID`,
   `NOTION_PARENT_PAGE_ID`

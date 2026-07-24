@@ -80,12 +80,11 @@ def export_row_matches_policy(row: ExportRow, policy: FilterPolicy) -> bool:
         target_rules=acceptance_rules,
     ):
         return False
-    language_text = " ".join(part for part in (title, description) if part)
     if (
         policy.excluded_requirement_patterns
-        and language_text
+        and description
         and matches_requirement_patterns(
-            language_text,
+            description,
             policy.excluded_requirement_patterns,
         )
     ):

@@ -136,7 +136,7 @@ class RequirementExclusionStep:
         patterns = context.policy.excluded_requirement_patterns
         if not patterns:
             return Decision.accept()
-        text = " ".join(part for part in (job.title, job.job_description) if part)
+        text = job.job_description
         if not text or not matches_requirement_patterns(text, patterns):
             return Decision.accept()
         return Decision.reject(RejectionReason.EXCLUDED_REQUIREMENT, step=self.name)
