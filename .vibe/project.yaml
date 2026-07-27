@@ -1,0 +1,16 @@
+version: 1
+# Read AGENTS.md and docs/public/agent-development-workflow.md first.
+# This file records executable local checks; repository guidance remains authoritative.
+
+commands:
+  setup:
+  format: .\.venv\Scripts\ruff.exe format --check .
+  test: .\.venv\Scripts\pytest.exe
+  lint: .\.venv\Scripts\ruff.exe check .
+  typecheck: .\.venv\Scripts\pyright.exe
+  build:
+  dev:
+
+verification:
+  browser: off
+  security: conditional

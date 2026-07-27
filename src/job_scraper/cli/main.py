@@ -162,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/workspace.db"),
     )
+
     return parser
 
 

@@ -85,6 +85,48 @@ coverage for changed core behavior at or above 90%. Use `pytest -m live` only
 when the user explicitly requests live verification and credentials are
 available.
 
+## Development operating mode
+
+Use the repository workflow in
+[`docs/public/agent-development-workflow.md`](docs/public/agent-development-workflow.md)
+for every change. It is the project's agent harness. For implementation work,
+read the project-local skill at
+[`skills/job-scraper-development/SKILL.md`](skills/job-scraper-development/SKILL.md)
+before acting.
+
+### Workflow priority
+
+- For code-changing work, use the installed `vibe-flow` skill first to select the
+  smallest suitable process, then follow this repository's workflow and constraints.
+- Prefer the installed Vibe Skills for routing, bootstrap, and fresh verification.
+  The mandatory `job-scraper-development` skill remains required for implementation.
+  Any other older, prompt-only local skill is supplementary; when guidance conflicts,
+  use this `AGENTS.md` and the mandatory project-local skill.
+- This repository's privacy, architecture, and quality-gate rules remain authoritative
+  over generic Vibe defaults.
+
+1. Discuss the requested outcome first. Restate scope, acceptance criteria,
+   constraints, and meaningful trade-offs. Ask for a decision only when it
+   cannot be safely inferred.
+2. Before implementation, create or update a neutral specification under
+   `docs/public/specs/` using
+   [`docs/public/spec-template.md`](docs/public/spec-template.md). Update the
+   relevant public architecture, configuration, or extension documentation in
+   the same documentation phase when its contract changes.
+3. Implement in small, reviewable steps, then add or update focused offline
+   tests. Run the quality gates before handoff.
+4. For a non-trivial change to a CLI flow, configuration, public extension
+   point, public API, or architecture, use an independent subagent to walk the
+   intended user path from the request and visible artifacts. Do not expose the
+   intended solution or private runtime data. Summarize actionable friction and
+   follow-up suggestions. Skip this only for a mechanical, behavior-preserving
+   change and state why.
+
+Treat a specification as the source of truth for why and what changes; keep
+procedural instructions in the workflow document. Do not let either contain
+private search strategy, identities, credentials, workspace IDs, or runtime
+payloads.
+
 ## Data safety
 
 - Migrations must be idempotent, support dry-run behavior, and never

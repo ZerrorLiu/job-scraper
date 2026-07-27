@@ -138,7 +138,28 @@ repositories / CSV / Notion
 ```
 
 See [architecture](docs/public/architecture.md) and the
-[extension guide](docs/public/extension-guide.md).
+[extension guide](docs/public/extension-guide.md). Contributors and agents use
+the [development workflow](docs/public/agent-development-workflow.md), which
+keeps specifications, implementation, verification, and user-path review in
+one repeatable lifecycle.
+
+## Application delivery
+
+Application delivery runs directly in this repository after discovery accepts a
+job. It uses a private, dedicated Chrome/Chromium profile and private runtime
+facts and documents; those values never belong in Git. The first live workflow
+will support one known form-flow signature before broader batch execution.
+
+The planned commands are:
+
+```powershell
+uv run job-scraper apply doctor
+uv run job-scraper apply run --job-id <id>
+uv run job-scraper apply status
+```
+
+See the [in-process browser application specification](docs/public/specs/2026-07-27-in-process-browser-application.md)
+for state handling, evidence, and live-validation boundaries.
 
 ## Quality checks
 

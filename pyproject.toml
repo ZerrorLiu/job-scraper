@@ -34,6 +34,7 @@ where = ["src"]
 target-version = "py311"
 line-length = 100
 src = ["src", "public_tests"]
+exclude = ["my-vibe-skills"]
 
 [tool.ruff.lint]
 select = [
