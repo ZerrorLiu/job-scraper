@@ -38,6 +38,8 @@ def test_doctor_checks_private_runtime_and_reports_browser_channel(
         "documents directory",
         "browser profile directory",
         "evidence directory",
+        "session state parent",
+        "browser debug port",
         "browser channel",
     }
     assert next(check for check in checks if check.name == "browser channel").ok

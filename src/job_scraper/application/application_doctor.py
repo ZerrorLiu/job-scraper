@@ -40,6 +40,16 @@ def inspect_application_runtime(runtime: ApplicationRuntime) -> list[DoctorCheck
         DoctorCheck(
             "evidence directory", _ensure_directory(runtime.evidence_dir), str(runtime.evidence_dir)
         ),
+        DoctorCheck(
+            "session state parent",
+            _ensure_directory(runtime.session_state_file.parent),
+            str(runtime.session_state_file.parent),
+        ),
+        DoctorCheck(
+            "browser debug port",
+            1024 <= runtime.browser_debug_port <= 65535,
+            str(runtime.browser_debug_port),
+        ),
         DoctorCheck("browser channel", True, runtime.browser_channel),
     ]
     return checks

@@ -75,6 +75,21 @@ Private runtime configuration is stored outside the Git worktree. It contains
 the browser profile path, confirmed candidate facts, policies, approved
 documents, and evidence directory. Public fixtures use fictional values only.
 
+### Long-running browser session
+
+The application runner must own one long-lived dedicated browser session for a
+run rather than launching and closing a browser for every inspection. The
+session records its current job, URL, platform flow, and human-action state in
+private runtime state so a login or CAPTCHA pause can resume in the same
+profile. A human may complete authentication, consent, or CAPTCHA in the
+visible browser; the runner must then continue from the recorded step without
+restarting the session or asking for the same action again.
+
+The session state is private runtime data and must never contain passwords,
+cookies, tokens, or screenshots in the repository. A crashed runner may reopen
+the dedicated profile and recover the last safe checkpoint, but it must stop
+for review when the page, job identity, or submission outcome is uncertain.
+
 The first live rollout targets one known platform or form-flow signature and a
 small explicitly selected set of real jobs. Fixture tests verify contracts and
 state transitions, but do not count as live browser validation.

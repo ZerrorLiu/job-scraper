@@ -18,6 +18,8 @@ class ApplicationRuntime:
     documents_dir: Path
     browser_profile_dir: Path
     evidence_dir: Path
+    session_state_file: Path
+    browser_debug_port: int
     browser_channel: str
 
     @classmethod
@@ -37,6 +39,16 @@ class ApplicationRuntime:
             raise RuntimeConfigurationError(
                 "POSITIONS_APPLY_BROWSER_CHANNEL must be chrome, msedge, or chromium"
             )
+        try:
+            browser_debug_port = int(os.environ.get("POSITIONS_APPLY_BROWSER_DEBUG_PORT", "9222"))
+        except ValueError as exc:
+            raise RuntimeConfigurationError(
+                "POSITIONS_APPLY_BROWSER_DEBUG_PORT must be an integer"
+            ) from exc
+        if not 1024 <= browser_debug_port <= 65535:
+            raise RuntimeConfigurationError(
+                "POSITIONS_APPLY_BROWSER_DEBUG_PORT must be between 1024 and 65535"
+            )
         return cls(
             root=resolved_root,
             workspace_database=workspace_database.expanduser().resolve(),
@@ -45,6 +57,8 @@ class ApplicationRuntime:
             documents_dir=resolved_root / "documents",
             browser_profile_dir=resolved_root / "browser-profile",
             evidence_dir=resolved_root / "evidence",
+            session_state_file=resolved_root / "session-state.json",
+            browser_debug_port=browser_debug_port,
             browser_channel=browser_channel,
         )
 

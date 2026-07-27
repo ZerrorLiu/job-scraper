@@ -15,6 +15,7 @@ from job_scraper.application.browser_inspection import (
     inspect_accepted_job,
 )
 from job_scraper.browser.chrome_cdp import BrowserConnectionError
+from job_scraper.browser.session import BrowserSessionError, run_application_session
 
 
 def add_apply_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -42,10 +43,16 @@ def add_apply_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
         action="store_true",
         help="Click the detected application CTA and inspect the next page; never submit.",
     )
+    session = commands.add_parser(
+        "session-start",
+        help="Run one long-lived dedicated browser session for an accepted job.",
+    )
+    session.add_argument("--job-id", required=True, help="Canonical accepted job ID.")
+    session.add_argument("--workspace", type=Path, help="Private application runtime directory.")
 
 
 def run_apply(args: argparse.Namespace) -> int:
-    if args.apply_command not in {"doctor", "inspect"}:
+    if args.apply_command not in {"doctor", "inspect", "session-start"}:
         raise AssertionError(f"Unhandled apply command: {args.apply_command}")
     try:
         runtime = ApplicationRuntime.from_environment(root=args.workspace)
@@ -63,6 +70,22 @@ def run_apply(args: argparse.Namespace) -> int:
         for check in checks:
             print(f"{'PASS' if check.ok else 'FAIL'} {check.name}: {check.detail}")
         return 2
+    if args.apply_command == "session-start":
+        try:
+            job = WorkspaceDatabase(runtime.workspace_database).get_accepted_application_job(
+                args.job_id
+            )
+            if job is None:
+                raise ApplicationInspectionError("Accepted job was not found")
+            print("SESSION_RUNNING Press Ctrl+C to stop; the visible browser remains available.")
+            run_application_session(
+                runtime, canonical_job_id=job.canonical_job_id, requested_url=job.application_url
+            )
+        except (ApplicationInspectionError, BrowserSessionError, OSError, ValueError) as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
+        print("SESSION_STOPPED")
+        return 0
     try:
         report = inspect_accepted_job(
             WorkspaceDatabase(runtime.workspace_database),

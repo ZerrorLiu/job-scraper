@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from job_scraper.application.application_runtime import ApplicationRuntime
+from job_scraper.browser.session import cdp_is_ready
 
 
 class BrowserConnectionError(RuntimeError):
@@ -47,13 +48,23 @@ def inspect_application_page(
     screenshot_path = runtime.evidence_dir / f"application-inspection-{uuid4().hex}.png"
     try:
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(runtime.browser_profile_dir),
-                channel=runtime.browser_channel,
-                headless=False,
-            )
-            page = context.new_page()
-            page.goto(application_url, wait_until="domcontentloaded", timeout=30_000)
+            attached = cdp_is_ready(runtime)
+            browser = None
+            if attached:
+                browser = playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{runtime.browser_debug_port}"
+                )
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.pages[-1] if context.pages else context.new_page()
+            else:
+                context = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(runtime.browser_profile_dir),
+                    channel=runtime.browser_channel,
+                    headless=False,
+                )
+                page = context.new_page()
+            if not attached or page.url in {"", "about:blank"}:
+                page.goto(application_url, wait_until="domcontentloaded", timeout=30_000)
             with suppress(PlaywrightError):
                 page.wait_for_load_state("networkidle", timeout=10_000)
             page.screenshot(path=str(screenshot_path), full_page=True)
@@ -70,8 +81,9 @@ def inspect_application_page(
             )
             if follow_apply:
                 result = _follow_apply_cta(context, page, result, runtime)
-            page.close()
-            context.close()
+            if not attached:
+                page.close()
+                context.close()
             return result
     except BrowserConnectionError:
         raise
