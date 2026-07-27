@@ -118,6 +118,14 @@ destination; when no such destination is confirmed it remains empty. A source
 listing URL must never be relabeled as an application URL merely because it is
 the only URL available.
 
+### Verification scope
+
+URL resolution and Notion refresh work must operate on an explicitly selected
+latest acquisition batch, not the complete historical workspace. A batch is
+identified by its source and acquisition timestamp. Historical rows remain
+available for audit but must not be backfilled or sent to Notion during this
+phase unless the user explicitly requests a separate historical migration.
+
 ## Verification
 
 - Run the repository's offline quality gates before handoff.

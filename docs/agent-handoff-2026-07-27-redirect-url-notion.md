@@ -172,6 +172,13 @@ source control. The previous live batch opened 20 tabs and left them paused for
 manual review. Do not restart or interact with those tabs unless the user asks;
 the next implementation should not automate Indeed or eFinancial.
 
+For the current development phase, use only the latest explicitly selected
+source batches. The latest local batches observed on this handoff were Email
+(244 records), LinkedIn (3 records), and Indeed (40 records). Do not use the
+historical 1,000+ rows for Notion refresh or live testing; keep them for audit
+only. A future refresh command should require a source plus batch timestamp or
+an equivalent explicit selector.
+
 The repository working tree before creating this handoff had only the ignored
 `outputs/` directory untracked. Never commit `.env`, runtime facts, documents,
 browser profiles, cookies, tokens, databases, screenshots, or application
