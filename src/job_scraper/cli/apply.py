@@ -92,7 +92,9 @@ def run_apply(args: argparse.Namespace) -> int:
                 raise ApplicationInspectionError("Accepted job was not found")
             print("SESSION_RUNNING Press Ctrl+C to stop; the visible browser remains available.")
             run_application_session(
-                runtime, canonical_job_id=job.canonical_job_id, requested_url=job.application_url
+                runtime,
+                canonical_job_id=job.canonical_job_id,
+                requested_url=job.application_url or job.source_url,
             )
         except (ApplicationInspectionError, BrowserSessionError, OSError, ValueError) as exc:
             print(f"ERROR {exc}", file=sys.stderr)
@@ -116,9 +118,10 @@ def run_apply(args: argparse.Namespace) -> int:
             return 2
         print("BATCH_STOPPED")
         return 0
+    workspace_database = WorkspaceDatabase(runtime.workspace_database)
     try:
         report = inspect_accepted_job(
-            WorkspaceDatabase(runtime.workspace_database),
+            workspace_database,
             runtime,
             args.job_id,
             follow_apply=args.follow_apply,
@@ -137,7 +140,11 @@ def run_apply(args: argparse.Namespace) -> int:
     print(f"APPLY_CTAS {report.inspection.apply_ctas}")
     print(f"SCREENSHOT {report.inspection.screenshot_path}")
     if report.inspection.followed_url is not None:
+        persisted = workspace_database.record_resolved_application_url(
+            report.canonical_job_id, report.inspection.followed_url
+        )
         print(f"FOLLOWED_URL {report.inspection.followed_url}")
+        print(f"RESOLVED_APPLICATION_URL_PERSISTED {'yes' if persisted else 'no'}")
         print(f"FOLLOWED_PAGE_TITLE {report.inspection.followed_title}")
         print(f"FOLLOWED_FORMS {report.inspection.followed_form_count}")
         print(f"FOLLOWED_SCREENSHOT {report.inspection.followed_screenshot_path}")

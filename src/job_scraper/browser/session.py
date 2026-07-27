@@ -206,7 +206,7 @@ def run_application_batch(runtime: ApplicationRuntime, jobs: list[ApplicationJob
     if not 1 <= len(jobs) <= 20:
         raise ValueError("application batch must contain between 1 and 20 jobs")
     for job in jobs:
-        _assert_public_https_url(job.application_url)
+        _assert_public_https_url(_job_requested_url(job))
 
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
@@ -221,14 +221,18 @@ def run_application_batch(runtime: ApplicationRuntime, jobs: list[ApplicationJob
                 page = context.new_page()
                 pages.append((job, page))
                 try:
-                    page.goto(job.application_url, wait_until="domcontentloaded", timeout=30_000)
+                    page.goto(
+                        _job_requested_url(job),
+                        wait_until="domcontentloaded",
+                        timeout=30_000,
+                    )
                 except PlaywrightError:
                     continue
                 save_session_state(
                     runtime,
                     _session_state(
                         job.canonical_job_id,
-                        job.application_url,
+                        _job_requested_url(job),
                         page.url,
                         "batch_opened",
                         f"opened tab {len(pages)}/{len(jobs)}; no submission performed",
@@ -245,7 +249,7 @@ def run_application_batch(runtime: ApplicationRuntime, jobs: list[ApplicationJob
                     runtime,
                     _session_state(
                         job.canonical_job_id,
-                        job.application_url,
+                        _job_requested_url(job),
                         page.url,
                         step,
                         f"batch {prepared}/{len(jobs)}; {action}; no submission performed",
@@ -256,7 +260,7 @@ def run_application_batch(runtime: ApplicationRuntime, jobs: list[ApplicationJob
                 runtime,
                 _session_state(
                     jobs[-1].canonical_job_id,
-                    jobs[-1].application_url,
+                    _job_requested_url(jobs[-1]),
                     pages[-1][1].url,
                     "batch_ready",
                     f"{prepared}/{len(jobs)} tabs prepared; review and submit manually",
@@ -269,8 +273,8 @@ def run_application_batch(runtime: ApplicationRuntime, jobs: list[ApplicationJob
                 runtime,
                 _session_state(
                     jobs[-1].canonical_job_id,
-                    jobs[-1].application_url,
-                    pages[-1][1].url if pages else jobs[-1].application_url,
+                    _job_requested_url(jobs[-1]),
+                    pages[-1][1].url if pages else _job_requested_url(jobs[-1]),
                     "stopped",
                     f"batch stopped after preparing {prepared}/{len(jobs)} tabs",
                 ),
@@ -307,6 +311,10 @@ def _prepare_batch_page(
         except PlaywrightError:
             return page, "waiting_for_human", "clear the visible overlay or challenge"
     return page, "waiting_for_human", "application flow needs review"
+
+
+def _job_requested_url(job: ApplicationJob) -> str:
+    return job.application_url or job.source_url
 
 
 def _find_apply_ctas_for_page(page: Any) -> tuple[str, ...]:

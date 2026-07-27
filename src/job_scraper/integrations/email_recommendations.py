@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from job_scraper.config import HttpConfig
+from job_scraper.domain.url_resolution import resolve_external_application_url
 from job_scraper.models import RawJobRecord
 from job_scraper.pipeline.normalize import normalize_whitespace
 
@@ -593,7 +594,7 @@ def email_candidate_to_raw_job(
         posted_at_text=candidate.email_date.isoformat(),
         scraped_at=observed_at,
         job_description="",
-        application_url=candidate.url,
+        application_url="",
         raw_payload={
             "freshness_basis": "email_received",
             "acquisition_mode": "email",
@@ -656,7 +657,9 @@ def enrich_email_candidate_to_raw_job(
         raw.job_description = detail.description
         raw.raw_payload["description_source"] = "job_detail"
     if detail.application_url:
-        raw.application_url = detail.application_url
+        raw.application_url = resolve_external_application_url(
+            candidate.url, detail.application_url
+        )
     if detail.company_url:
         raw.company_url = detail.company_url
     if detail.posted_at_text:

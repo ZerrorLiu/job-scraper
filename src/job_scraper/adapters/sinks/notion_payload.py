@@ -42,7 +42,7 @@ def build_daily_properties(
 
 
 def build_job_title(job: JobRecord) -> dict:
-    url = job.application_url or job.source_url
+    url = job.application_url
     text: dict[str, object] = {"content": na_value(job.title)[:200]}
     if url:
         text["link"] = {"url": url}

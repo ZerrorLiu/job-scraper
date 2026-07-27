@@ -16,6 +16,7 @@ from job_scraper.domain.identity import (
     stable_id,
 )
 from job_scraper.domain.models import ApplicationJob, JobRecord
+from job_scraper.domain.url_resolution import resolve_external_application_url
 
 SCHEMA_VERSION = 2
 
@@ -435,8 +436,11 @@ class WorkspaceDatabase:
                     cj.company_name,
                     cj.location_text,
                     cj.description_full,
-                    COALESCE(NULLIF(trim(sp.application_url), ''), sp.source_url)
-                        AS application_url,
+                    sp.source_url,
+                    CASE
+                        WHEN trim(sp.application_url) = trim(sp.source_url) THEN NULL
+                        ELSE NULLIF(trim(sp.application_url), '')
+                    END AS application_url,
                     COALESCE(applications.status, 'new') AS application_status
                 FROM canonical_jobs AS cj
                 JOIN profile_matches AS pm
@@ -459,7 +463,8 @@ class WorkspaceDatabase:
             return None
         return ApplicationJob(
             canonical_job_id=str(row["canonical_job_id"]),
-            application_url=str(row["application_url"]),
+            source_url=str(row["source_url"]),
+            application_url=str(row["application_url"] or ""),
             title=str(row["normalized_title"]),
             company_name=str(row["company_name"]),
             location_text=str(row["location_text"]),
@@ -483,8 +488,11 @@ class WorkspaceDatabase:
                     cj.company_name,
                     cj.location_text,
                     cj.description_full,
-                    COALESCE(NULLIF(trim(sp.application_url), ''), sp.source_url)
-                        AS application_url,
+                    sp.source_url,
+                    CASE
+                        WHEN trim(sp.application_url) = trim(sp.source_url) THEN NULL
+                        ELSE NULLIF(trim(sp.application_url), '')
+                    END AS application_url,
                     COALESCE(applications.status, 'new') AS application_status
                 FROM canonical_jobs AS cj
                 JOIN source_postings AS sp
@@ -513,7 +521,8 @@ class WorkspaceDatabase:
         return [
             ApplicationJob(
                 canonical_job_id=str(row["canonical_job_id"]),
-                application_url=str(row["application_url"]),
+                source_url=str(row["source_url"]),
+                application_url=str(row["application_url"] or ""),
                 title=str(row["normalized_title"]),
                 company_name=str(row["company_name"]),
                 location_text=str(row["location_text"]),
@@ -522,6 +531,29 @@ class WorkspaceDatabase:
             )
             for row in rows
         ]
+
+    def record_resolved_application_url(self, canonical_job_id: str, resolved_url: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT sp.id, sp.source_url
+                FROM source_postings AS sp
+                WHERE sp.canonical_job_id = ?
+                ORDER BY sp.last_seen_at DESC, sp.id ASC
+                LIMIT 1
+                """,
+                (canonical_job_id.strip(),),
+            ).fetchone()
+            if row is None:
+                return False
+            validated_url = resolve_external_application_url(str(row["source_url"]), resolved_url)
+            if not validated_url:
+                return False
+            connection.execute(
+                "UPDATE source_postings SET application_url = ? WHERE id = ?",
+                (validated_url, str(row["id"])),
+            )
+            return True
 
     def _upsert_canonical_job(
         self,

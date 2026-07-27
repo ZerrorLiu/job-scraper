@@ -64,6 +64,8 @@ CAPTCHA, anti-bot controls, or submitting an application.
   execution is opt-in and separately reported.
 - [ ] Batch preparation never clicks a submit control and caps each browser
   batch at 20 tabs.
+- [ ] Notion keeps the original listing URL separate from a confirmed external
+  application URL.
 
 ## Design and constraints
 
@@ -106,6 +108,15 @@ control untouched. The context remains open so the user can review and submit
 each tab manually. A later batch may be selected with an explicit offset; the
 runner does not claim that a tab was submitted merely because preparation
 reached a form.
+
+### Resolved application destinations
+
+Source discovery URLs and application destinations are separate values. The
+original listing remains the `Job URL` for audit and deduplication. `Apply URL`
+is populated only from an explicit, validated external company or ATS
+destination; when no such destination is confirmed it remains empty. A source
+listing URL must never be relabeled as an application URL merely because it is
+the only URL available.
 
 ## Verification
 

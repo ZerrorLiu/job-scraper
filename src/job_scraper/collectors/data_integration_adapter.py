@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from job_scraper.collectors.base import BaseCollector, SearchWindow
 from job_scraper.config import HttpConfig, SourceConfig
+from job_scraper.domain.url_resolution import resolve_external_application_url
 from job_scraper.models import RawJobRecord
 from job_scraper.storage.db import Database
 
@@ -132,8 +133,14 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         "url",
         "job_url",
         "jobUrl",
-        "apply_link",
         "link",
+        default="",
+    )
+    external_application_url = _first_text(
+        entry,
+        "external_application_url",
+        "application_url",
+        "apply_link",
         default="",
     )
     record_id = _first_text(
@@ -189,6 +196,9 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             "job_posted_date",
         ),
         "reference_url": reference_url,
+        "external_application_url": resolve_external_application_url(
+            reference_url, external_application_url
+        ),
         "description": _first_text(
             entry,
             "description",
@@ -928,6 +938,7 @@ def _to_raw_job(
     transport: str = "brightdata_dataset_api",
 ) -> RawJobRecord:
     reference_url = str(record.get("reference_url") or "").strip()
+    external_application_url = str(record.get("external_application_url") or "").strip()
     raw_payload = record.get("raw_payload")
     payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
     payload.update({"query": query, "search_location": location, "transport": transport})
@@ -936,7 +947,7 @@ def _to_raw_job(
         source_job_id=str(record.get("record_id") or "").strip(),
         source_url=reference_url,
         canonical_url=reference_url,
-        application_url=reference_url,
+        application_url=resolve_external_application_url(reference_url, external_application_url),
         title=str(record.get("position_title") or "").strip(),
         company_name=str(record.get("organization") or "").strip(),
         location_raw=str(record.get("region") or "").strip(),

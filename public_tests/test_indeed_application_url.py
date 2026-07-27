@@ -1,7 +1,7 @@
-from job_scraper.collectors.data_integration_adapter import _to_raw_job
+from job_scraper.collectors.data_integration_adapter import _to_raw_job, normalize_upstream_entry
 
 
-def test_indeed_records_preserve_reference_url_for_application_inspection() -> None:
+def test_indeed_records_keep_source_url_separate_from_unresolved_application_url() -> None:
     raw = _to_raw_job(
         {
             "record_id": "indeed-fictional-1",
@@ -16,4 +16,36 @@ def test_indeed_records_preserve_reference_url_for_application_inspection() -> N
     )
 
     assert raw.source == "indeed"
-    assert raw.application_url == raw.source_url
+    assert raw.application_url == ""
+    assert raw.source_url == "https://de.indeed.com/viewjob?jk=fictional-1"
+
+
+def test_indeed_records_accept_explicit_external_application_url() -> None:
+    raw = _to_raw_job(
+        {
+            "record_id": "indeed-fictional-2",
+            "reference_url": "https://de.indeed.com/viewjob?jk=fictional-2",
+            "external_application_url": "https://careers.example.test/jobs/fictional-2",
+        },
+        "software engineer",
+        "Berlin",
+        transport="fixture",
+    )
+
+    assert raw.application_url == "https://careers.example.test/jobs/fictional-2"
+
+
+def test_brightdata_keeps_listing_url_separate_from_apply_link() -> None:
+    normalized = normalize_upstream_entry(
+        {
+            "jobid": "fictional-3",
+            "url": "https://de.indeed.com/viewjob?jk=fictional-3",
+            "apply_link": "https://careers.example.test/jobs/fictional-3",
+        }
+    )
+
+    assert normalized is not None
+    assert normalized["reference_url"] == "https://de.indeed.com/viewjob?jk=fictional-3"
+    assert normalized["external_application_url"] == (
+        "https://careers.example.test/jobs/fictional-3"
+    )

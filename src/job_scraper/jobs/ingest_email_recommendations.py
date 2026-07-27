@@ -37,6 +37,7 @@ from job_scraper.collectors.data_integration_adapter import (
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
 from job_scraper.domain.policies import FilterPolicy
+from job_scraper.domain.url_resolution import resolve_external_application_url
 from job_scraper.integrations.email_recommendations import (
     EmailIngestConfig,
     EmailIngestState,
@@ -791,7 +792,7 @@ def raw_from_stored_detail(
     raw.job_description = stored.description
     raw.employment_type = stored.employment_type or raw.employment_type
     raw.canonical_url = stored.canonical_url or stored.source_url or raw.canonical_url
-    raw.application_url = stored.application_url or raw.application_url
+    raw.application_url = resolve_external_application_url(candidate.url, stored.application_url)
     raw.raw_payload.update(
         {
             "detail_status": "ok",
@@ -819,6 +820,9 @@ def raw_from_brightdata_detail(
     raw.employment_type = str(record.get("employment_type") or "unknown")
     raw.posted_at_text = str(record.get("timestamp") or raw.posted_at_text)
     raw.canonical_url = str(record.get("reference_url") or raw.canonical_url)
+    raw.application_url = resolve_external_application_url(
+        raw.source_url, record.get("external_application_url")
+    )
     payload = record.get("raw_payload")
     raw.raw_payload.update(
         {

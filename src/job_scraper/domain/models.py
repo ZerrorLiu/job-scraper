@@ -150,6 +150,7 @@ class ApplicationJob:
     """An accepted job that may be inspected by the application runner."""
 
     canonical_job_id: str
+    source_url: str
     application_url: str
     title: str
     company_name: str
