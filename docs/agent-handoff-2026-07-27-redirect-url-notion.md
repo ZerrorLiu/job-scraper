@@ -7,8 +7,8 @@ Latest pushed commit: `29dbe51 feat: prepare accepted jobs in browser batches`
 
 ## User decision
 
-The next implementation phase should improve all three observed job-entry
-sources so Notion receives the real application destination whenever it can be
+The next implementation phase should improve the three active source families
+(LinkedIn, Indeed/Bright Data, and Email) so Notion receives the real application destination whenever it can be
 confirmed, rather than treating the original listing URL as the application
 URL.
 
@@ -19,9 +19,12 @@ Source policy:
 - Indeed: do not automate Indeed forms or submissions. Use Indeed for
   discovery only. If a reliable external company/ATS URL is available from
   Bright Data, pass only that URL to the external-site application flow.
-- eFinancial Careers: do not automate the site. Preserve it as a discovery
-  source unless a separately supplied, confirmed external application URL is
-  available.
+- Email: preserve Email as the source. An email recommendation may contain a
+  link hosted by eFinancial Careers, Indeed, LinkedIn, or another job platform;
+  the host is a platform detail, not a fourth active source. Do not automate
+  Email-hosted eFinancial Careers or Indeed pages. Resolve a confirmed
+  external company/ATS destination only when the email link or a permitted
+  enrichment step provides one.
 
 The original listing URL must remain available as `Job URL` for audit and
 deduplication. It must not be mislabeled as `Apply URL` when no external
@@ -134,9 +137,9 @@ original listing URL.
    listing and external URL fields.
 5. Add the custom Indeed Bright Data output contract/fixture. Do not run it
    against private credentials in the default test suite.
-6. Keep Indeed and eFinancial application pages out of the automatic form
-   runner. Only enqueue a confirmed external destination for the supported
-   company/ATS flow.
+6. Keep Indeed and Email-hosted eFinancial application pages out of the
+   automatic form runner. Only enqueue a confirmed external destination for
+   the supported company/ATS flow.
 7. Update Notion payload generation and existing-page matching. Add tests for:
    resolved URL, unresolved URL, source-only URL, duplicate matching, and
    unsupported source policy.
@@ -158,7 +161,8 @@ Live validation must separately prove:
 - LinkedIn CTA reaches the external destination.
 - Indeed Bright Data returns an external URL when the custom field is
   available, without submitting or filling Indeed.
-- eFinancial remains discovery-only.
+- Email remains the source for email recommendations, including links hosted by
+  eFinancial Careers; those platform pages remain discovery-only.
 - Notion `Apply URL` is the resolved URL and `Job URL` remains the original.
 
 ## Current runtime and browser state
