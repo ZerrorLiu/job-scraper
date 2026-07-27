@@ -4,6 +4,7 @@ import ipaddress
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -23,11 +24,17 @@ class PageInspection:
     apply_ctas: tuple[str, ...]
     screenshot_path: Path
     redirected: bool
+    followed_url: str | None = None
+    followed_title: str | None = None
+    followed_form_count: int | None = None
+    followed_screenshot_path: Path | None = None
 
 
 def inspect_application_page(
     runtime: ApplicationRuntime,
     application_url: str,
+    *,
+    follow_apply: bool = False,
 ) -> PageInspection:
     _assert_public_https_url(application_url)
     try:
@@ -61,6 +68,8 @@ def inspect_application_page(
                 screenshot_path=screenshot_path,
                 redirected=_different_destination(application_url, final_url),
             )
+            if follow_apply:
+                result = _follow_apply_cta(context, page, result, runtime)
             page.close()
             context.close()
             return result
@@ -70,6 +79,47 @@ def inspect_application_page(
         raise BrowserConnectionError(
             f"Browser inspection failed: {exc.__class__.__name__}"
         ) from exc
+
+
+def _follow_apply_cta(
+    context: Any,
+    page: Any,
+    result: PageInspection,
+    runtime: ApplicationRuntime,
+) -> PageInspection:
+    from playwright.sync_api import Error as PlaywrightError
+
+    if not result.apply_ctas:
+        raise BrowserConnectionError("No application CTA was found on the page")
+    locator = page.locator("a,button").filter(has_text=result.apply_ctas[0]).first
+    try:
+        locator.click(timeout=10_000)
+    except PlaywrightError as exc:
+        raise BrowserConnectionError(
+            "Application CTA could not be clicked; a consent or authentication "
+            "overlay may be blocking it"
+        ) from exc
+    pages = context.pages
+    followed_page = pages[-1]
+    with suppress(PlaywrightError):
+        followed_page.wait_for_load_state("domcontentloaded", timeout=10_000)
+    followed_url = followed_page.url
+    _assert_public_https_url(followed_url)
+    followed_screenshot_path = runtime.evidence_dir / f"application-followed-{uuid4().hex}.png"
+    followed_page.screenshot(path=str(followed_screenshot_path), full_page=True)
+    return PageInspection(
+        requested_url=result.requested_url,
+        final_url=result.final_url,
+        title=result.title,
+        form_count=result.form_count,
+        apply_ctas=result.apply_ctas,
+        screenshot_path=result.screenshot_path,
+        redirected=result.redirected,
+        followed_url=followed_url,
+        followed_title=followed_page.title(),
+        followed_form_count=followed_page.locator("form").count(),
+        followed_screenshot_path=followed_screenshot_path,
+    )
 
 
 def _assert_public_https_url(value: str) -> None:

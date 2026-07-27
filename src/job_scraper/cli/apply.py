@@ -14,6 +14,7 @@ from job_scraper.application.browser_inspection import (
     ApplicationInspectionError,
     inspect_accepted_job,
 )
+from job_scraper.browser.chrome_cdp import BrowserConnectionError
 
 
 def add_apply_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -30,11 +31,17 @@ def add_apply_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
         help="Open one accepted job in a dedicated real browser; inspect only, never submit.",
         description=(
             "Launch the runtime's dedicated browser, visit the real application URL, "
-            "count forms, and save a private screenshot. This command never fills or submits."
+            "count forms, and save a private screenshot. This command never fills or submits. "
+            "With --follow-apply it may click the page's application CTA to inspect the next page."
         ),
     )
     inspect.add_argument("--job-id", required=True, help="Canonical accepted job ID.")
     inspect.add_argument("--workspace", type=Path, help="Private application runtime directory.")
+    inspect.add_argument(
+        "--follow-apply",
+        action="store_true",
+        help="Click the detected application CTA and inspect the next page; never submit.",
+    )
 
 
 def run_apply(args: argparse.Namespace) -> int:
@@ -61,8 +68,9 @@ def run_apply(args: argparse.Namespace) -> int:
             WorkspaceDatabase(runtime.workspace_database),
             runtime,
             args.job_id,
+            follow_apply=args.follow_apply,
         )
-    except (ApplicationInspectionError, OSError, ValueError) as exc:
+    except (ApplicationInspectionError, BrowserConnectionError, OSError, ValueError) as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     print(f"INSPECTED job={report.canonical_job_id}")
@@ -75,4 +83,9 @@ def run_apply(args: argparse.Namespace) -> int:
     print(f"FORMS {report.inspection.form_count}")
     print(f"APPLY_CTAS {report.inspection.apply_ctas}")
     print(f"SCREENSHOT {report.inspection.screenshot_path}")
+    if report.inspection.followed_url is not None:
+        print(f"FOLLOWED_URL {report.inspection.followed_url}")
+        print(f"FOLLOWED_PAGE_TITLE {report.inspection.followed_title}")
+        print(f"FOLLOWED_FORMS {report.inspection.followed_form_count}")
+        print(f"FOLLOWED_SCREENSHOT {report.inspection.followed_screenshot_path}")
     return 0

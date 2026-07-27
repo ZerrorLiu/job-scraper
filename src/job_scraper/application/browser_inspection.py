@@ -23,6 +23,8 @@ def inspect_accepted_job(
     reader: ApplicationJobReader,
     runtime: ApplicationRuntime,
     canonical_job_id: str,
+    *,
+    follow_apply: bool = False,
 ) -> ApplicationInspectionReport:
     job = reader.get_accepted_application_job(canonical_job_id)
     if job is None:
@@ -31,7 +33,7 @@ def inspect_accepted_job(
         raise ApplicationInspectionError(
             f"Job cannot be inspected for application: status={job.status}"
         )
-    inspection = inspect_application_page(runtime, job.application_url)
+    inspection = inspect_application_page(runtime, job.application_url, follow_apply=follow_apply)
     return ApplicationInspectionReport(
         canonical_job_id=job.canonical_job_id,
         title=job.title,
