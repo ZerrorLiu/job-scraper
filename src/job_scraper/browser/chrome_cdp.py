@@ -93,14 +93,18 @@ def _follow_apply_cta(
         raise BrowserConnectionError("No application CTA was found on the page")
     locator = page.locator("a,button").filter(has_text=result.apply_ctas[0]).first
     try:
-        locator.click(timeout=10_000)
+        if locator.get_attribute("target") == "_blank":
+            with context.expect_page(timeout=10_000) as popup_info:
+                locator.click(timeout=10_000)
+            followed_page = popup_info.value
+        else:
+            locator.click(timeout=10_000)
+            followed_page = page
     except PlaywrightError as exc:
         raise BrowserConnectionError(
             "Application CTA could not be clicked; a consent or authentication "
             "overlay may be blocking it"
         ) from exc
-    pages = context.pages
-    followed_page = pages[-1]
     with suppress(PlaywrightError):
         followed_page.wait_for_load_state("domcontentloaded", timeout=10_000)
     followed_url = followed_page.url
@@ -158,7 +162,7 @@ def _find_apply_ctas(labels: list[str]) -> tuple[str, ...]:
         lowered = label.casefold()
         if (
             label
-            and any(term in lowered for term in ("apply", "bewerben", "submit"))
+            and any(term in lowered for term in ("apply", "bewerben", "submit", "i'm interested"))
             and label not in matches
         ):
             matches.append(label[:120])

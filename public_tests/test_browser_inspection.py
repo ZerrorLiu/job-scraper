@@ -40,7 +40,10 @@ def test_browser_detects_destination_redirect() -> None:
 
 
 def test_browser_extracts_apply_ctas_without_clicking_them() -> None:
-    assert _find_apply_ctas(["Jetzt bewerben", "Save", "Apply now", "Apply now"]) == (
+    assert _find_apply_ctas(
+        ["Jetzt bewerben", "Save", "Apply now", "I'm interested", "Apply now"]
+    ) == (
         "Jetzt bewerben",
         "Apply now",
+        "I'm interested",
     )
