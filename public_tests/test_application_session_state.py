@@ -6,6 +6,7 @@ from job_scraper.application.session_state import (
     load_session_state,
     save_session_state,
 )
+from job_scraper.browser.session import _approved_resume, _private_identity
 
 
 def runtime(tmp_path: Path) -> ApplicationRuntime:
@@ -40,3 +41,29 @@ def test_session_state_round_trips_without_secret_fields(tmp_path: Path) -> None
     assert restored == current
     assert "password" not in runtime(tmp_path).session_state_file.read_text(encoding="utf-8")
     assert "cookie" not in runtime(tmp_path).session_state_file.read_text(encoding="utf-8")
+
+
+def test_private_facts_array_maps_identity_and_approved_resume(tmp_path: Path) -> None:
+    resume = tmp_path / "documents" / "resume.pdf"
+    resume.parent.mkdir()
+    resume.write_bytes(b"fictional resume")
+    payload = {
+        "facts": [
+            {"id": "identity.full_name", "value": "Ada Example"},
+            {"id": "identity.email", "value": "ada@example.test"},
+        ],
+        "approved_documents": [
+            {
+                "id": "resume.example",
+                "path": "documents/resume.pdf",
+                "purpose": "resume",
+                "status": "approved",
+            }
+        ],
+    }
+
+    assert _private_identity(payload) == {
+        "full_name": "Ada Example",
+        "email": "ada@example.test",
+    }
+    assert _approved_resume(runtime(tmp_path), payload) == resume

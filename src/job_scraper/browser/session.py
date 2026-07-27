@@ -108,12 +108,14 @@ def run_application_session(
         try:
             page.goto(requested_url, wait_until="domcontentloaded", timeout=30_000)
             prefilled = False
+            filled_fields: tuple[str, ...] = ()
+            cv_attached = False
             while True:
                 current_url = page.url
                 _assert_public_https_url(current_url)
                 if page.locator("form").count():
                     if not prefilled:
-                        _prefill_zoho_form(page, runtime)
+                        filled_fields, cv_attached = _prefill_zoho_form(page, runtime)
                         prefilled = True
                     save_session_state(
                         runtime,
@@ -122,7 +124,8 @@ def run_application_session(
                             requested_url,
                             current_url,
                             "form",
-                            "review and complete any required human challenge",
+                            "review and complete CAPTCHA; filled "
+                            f"{len(filled_fields)} fields; CV attached={'yes' if cv_attached else 'no'}",
                         ),
                     )
                 else:
@@ -191,16 +194,14 @@ def run_application_session(
             context.close()
 
 
-def _prefill_zoho_form(page: Any, runtime: ApplicationRuntime) -> None:
+def _prefill_zoho_form(page: Any, runtime: ApplicationRuntime) -> tuple[tuple[str, ...], bool]:
     """Fill the first supported ATS form from confirmed private runtime facts."""
 
-    facts = json.loads(runtime.facts_file.read_text(encoding="utf-8"))
-    identity = facts.get("identity", {})
-    if not isinstance(identity, dict):
-        return
-    full_name = str(identity.get("full_name", "")).strip().split(maxsplit=1)
+    payload = json.loads(runtime.facts_file.read_text(encoding="utf-8"))
+    identity = _private_identity(payload)
+    full_name = identity.get("full_name", "").split(maxsplit=1)
     if len(full_name) < 2:
-        return
+        return (), False
     values = {
         1: full_name[0],
         2: full_name[1],
@@ -209,14 +210,36 @@ def _prefill_zoho_form(page: Any, runtime: ApplicationRuntime) -> None:
         6: str(identity.get("location", "")).strip(),
         7: "Germany",
     }
+    labels = {1: "first_name", 2: "last_name", 3: "email", 5: "mobile", 6: "city", 7: "country"}
     inputs = page.locator("input")
+    filled: list[str] = []
     for index, value in values.items():
         if value and index < inputs.count() and not inputs.nth(index).input_value():
             inputs.nth(index).fill(value)
-    resume = _approved_resume(runtime, facts)
+            filled.append(labels[index])
+    resume = _approved_resume(runtime, payload)
     files = page.locator("input[type=file]")
+    cv_attached = False
     if resume is not None and resume.is_file() and files.count():
         files.nth(min(1, files.count() - 1)).set_input_files(str(resume))
+        cv_attached = True
+    return tuple(filled), cv_attached
+
+
+def _private_identity(payload: object) -> dict[str, str]:
+    """Extract confirmed identity facts from the private facts-array schema."""
+
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, str] = {}
+    for item in payload.get("facts", []):
+        if not isinstance(item, dict):
+            continue
+        fact_id = item.get("id")
+        value = item.get("value")
+        if isinstance(fact_id, str) and fact_id.startswith("identity."):
+            result[fact_id.removeprefix("identity.")] = str(value or "").strip()
+    return result
 
 
 def _approved_resume(runtime: ApplicationRuntime, facts: object) -> Path | None:
@@ -227,7 +250,9 @@ def _approved_resume(runtime: ApplicationRuntime, facts: object) -> Path | None:
             continue
         path = value.get("path")
         status = str(value.get("status", "")).casefold()
-        role = " ".join(str(value.get(key, "")) for key in ("role", "kind", "name")).casefold()
+        role = " ".join(
+            str(value.get(key, "")) for key in ("role", "kind", "name", "purpose", "id")
+        ).casefold()
         if isinstance(path, str) and "resume" in role and status == "approved":
             candidate = Path(path)
             return candidate if candidate.is_absolute() else runtime.root / candidate
