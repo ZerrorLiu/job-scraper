@@ -169,6 +169,9 @@ class NotionDailySink:
                     str(existing_page.get("id", "")),
                     properties,
                 )
+                self._sync_url_children(
+                    str(page.get("id", existing_page.get("id", ""))), accepted.job
+                )
                 for job_id in job_ids:
                     self._repository.upsert_notion_state(
                         job_id,
@@ -221,6 +224,29 @@ class NotionDailySink:
             published=inserted + updated,
             skipped=skipped,
         )
+
+    def _sync_url_children(self, page_id: str, job: JobRecord) -> None:
+        if not page_id:
+            return
+        desired_blocks = {
+            "Apply URL": build_children(job)[-2],
+            "Job URL": build_children(job)[-1],
+        }
+        existing_blocks = self._client.list_child_blocks(page_id)
+        found: set[str] = set()
+        for block in existing_blocks:
+            label = _url_block_label(block)
+            if label not in desired_blocks:
+                continue
+            block_id = str(block.get("id", "")).strip()
+            if not block_id:
+                continue
+            payload = desired_blocks[label]
+            self._client.update_block(block_id, {"paragraph": payload["paragraph"]})
+            found.add(label)
+        missing = [desired_blocks[label] for label in desired_blocks if label not in found]
+        if missing:
+            self._client.append_child_blocks(page_id, missing)
 
     def _table_title(self, prefix: str | None = None) -> str:
         normalized_prefix = " ".join(
@@ -321,3 +347,12 @@ def _page_date(page: dict) -> date | None:
         return date.fromisoformat(str(start)[:10])
     except ValueError:
         return None
+
+
+def _url_block_label(block: dict) -> str:
+    rich_text = (block.get("paragraph") or {}).get("rich_text") or []
+    text = "".join(
+        str(item.get("plain_text") or (item.get("text") or {}).get("content") or "")
+        for item in rich_text
+    )
+    return text.split(":", 1)[0].strip() if ":" in text else ""

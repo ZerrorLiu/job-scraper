@@ -508,6 +508,9 @@ class NotionClient:
             f"https://api.notion.com/v1/blocks/{block_id}", "PATCH", {"in_trash": True}
         )
 
+    def update_block(self, block_id: str, block_payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request(f"https://api.notion.com/v1/blocks/{block_id}", "PATCH", block_payload)
+
     def get_data_source_property_types(self, data_source_id: str) -> dict[str, str]:
         response = self.request(f"https://api.notion.com/v1/data_sources/{data_source_id}", "GET")
         return {name: prop.get("type", "") for name, prop in response.get("properties", {}).items()}
