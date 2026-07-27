@@ -73,5 +73,6 @@ def run_apply(args: argparse.Namespace) -> int:
     print(f"URL {report.inspection.final_url}")
     print(f"PAGE_TITLE {report.inspection.title}")
     print(f"FORMS {report.inspection.form_count}")
+    print(f"APPLY_CTAS {report.inspection.apply_ctas}")
     print(f"SCREENSHOT {report.inspection.screenshot_path}")
     return 0

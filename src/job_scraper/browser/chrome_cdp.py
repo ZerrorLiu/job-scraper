@@ -20,6 +20,7 @@ class PageInspection:
     final_url: str
     title: str
     form_count: int
+    apply_ctas: tuple[str, ...]
     screenshot_path: Path
     redirected: bool
 
@@ -56,6 +57,7 @@ def inspect_application_page(
                 final_url=final_url,
                 title=page.title(),
                 form_count=page.locator("form").count(),
+                apply_ctas=_find_apply_ctas(page.locator("a,button").all_inner_texts()),
                 screenshot_path=screenshot_path,
                 redirected=_different_destination(application_url, final_url),
             )
@@ -97,3 +99,17 @@ def _different_destination(requested: str, final: str) -> bool:
         final_url.netloc,
         final_url.path,
     )
+
+
+def _find_apply_ctas(labels: list[str]) -> tuple[str, ...]:
+    matches: list[str] = []
+    for raw_label in labels:
+        label = " ".join(raw_label.split())
+        lowered = label.casefold()
+        if (
+            label
+            and any(term in lowered for term in ("apply", "bewerben", "submit"))
+            and label not in matches
+        ):
+            matches.append(label[:120])
+    return tuple(matches[:5])
