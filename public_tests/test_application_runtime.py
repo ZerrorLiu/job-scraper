@@ -18,7 +18,7 @@ def test_runtime_rejects_a_git_worktree(tmp_path: Path) -> None:
         ApplicationRuntime.from_environment(root=tmp_path)
 
 
-def test_doctor_checks_private_runtime_and_reports_local_cdp(
+def test_doctor_checks_private_runtime_and_reports_browser_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "facts.json").write_text(json.dumps({"fictional": True}), encoding="utf-8")
@@ -38,6 +38,6 @@ def test_doctor_checks_private_runtime_and_reports_local_cdp(
         "documents directory",
         "browser profile directory",
         "evidence directory",
-        "Chrome CDP",
+        "browser channel",
     }
-    assert not next(check for check in checks if check.name == "Chrome CDP").ok
+    assert next(check for check in checks if check.name == "browser channel").ok

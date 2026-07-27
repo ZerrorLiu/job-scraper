@@ -15,7 +15,7 @@ from job_scraper.domain.identity import (
     source_posting_id,
     stable_id,
 )
-from job_scraper.domain.models import JobRecord
+from job_scraper.domain.models import ApplicationJob, JobRecord
 
 SCHEMA_VERSION = 2
 
@@ -420,6 +420,50 @@ class WorkspaceDatabase:
             location_text=str(row["location_text"]),
             description=source_description or str(row["description_full"]),
             employment_type=str(row["employment_type"]),
+        )
+
+    def get_accepted_application_job(self, canonical_job_id: str) -> ApplicationJob | None:
+        normalized_id = canonical_job_id.strip()
+        if not normalized_id:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    cj.id AS canonical_job_id,
+                    cj.normalized_title,
+                    cj.company_name,
+                    cj.location_text,
+                    cj.description_full,
+                    sp.application_url,
+                    COALESCE(applications.status, 'new') AS application_status
+                FROM canonical_jobs AS cj
+                JOIN profile_matches AS pm
+                  ON pm.canonical_job_id = cj.id AND pm.accepted = 1
+                JOIN source_postings AS sp
+                  ON sp.id = (
+                      SELECT latest.id
+                      FROM source_postings AS latest
+                      WHERE latest.canonical_job_id = cj.id
+                      ORDER BY latest.last_seen_at DESC, latest.id ASC
+                      LIMIT 1
+                  )
+                LEFT JOIN applications ON applications.canonical_job_id = cj.id
+                WHERE cj.id = ? AND trim(cj.description_full) <> ''
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ApplicationJob(
+            canonical_job_id=str(row["canonical_job_id"]),
+            application_url=str(row["application_url"]),
+            title=str(row["normalized_title"]),
+            company_name=str(row["company_name"]),
+            location_text=str(row["location_text"]),
+            description=str(row["description_full"]),
+            status=str(row["application_status"]),
         )
 
     def _upsert_canonical_job(

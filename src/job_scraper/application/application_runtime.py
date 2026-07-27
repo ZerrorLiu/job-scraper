@@ -18,7 +18,7 @@ class ApplicationRuntime:
     documents_dir: Path
     browser_profile_dir: Path
     evidence_dir: Path
-    cdp_url: str
+    browser_channel: str
 
     @classmethod
     def from_environment(cls, *, root: Path | None = None) -> ApplicationRuntime:
@@ -32,8 +32,11 @@ class ApplicationRuntime:
         workspace_database = _environment_path("JOB_WORKSPACE_DATABASE") or Path(
             "data/workspace.db"
         )
-        cdp_url = os.environ.get("POSITIONS_APPLY_CDP_URL", "http://127.0.0.1:9222").strip()
-        _validate_cdp_url(cdp_url)
+        browser_channel = os.environ.get("POSITIONS_APPLY_BROWSER_CHANNEL", "chrome").strip()
+        if browser_channel not in {"chrome", "msedge", "chromium"}:
+            raise RuntimeConfigurationError(
+                "POSITIONS_APPLY_BROWSER_CHANNEL must be chrome, msedge, or chromium"
+            )
         return cls(
             root=resolved_root,
             workspace_database=workspace_database.expanduser().resolve(),
@@ -42,7 +45,7 @@ class ApplicationRuntime:
             documents_dir=resolved_root / "documents",
             browser_profile_dir=resolved_root / "browser-profile",
             evidence_dir=resolved_root / "evidence",
-            cdp_url=cdp_url.rstrip("/"),
+            browser_channel=browser_channel,
         )
 
 
@@ -57,13 +60,3 @@ def _assert_outside_git_worktree(path: Path) -> None:
             raise RuntimeConfigurationError(
                 "Application runtime must be outside every Git worktree: " + str(path)
             )
-
-
-def _validate_cdp_url(value: str) -> None:
-    from urllib.parse import urlparse
-
-    parsed = urlparse(value)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeConfigurationError(
-            "POSITIONS_APPLY_CDP_URL must use local HTTP, for example http://127.0.0.1:9222"
-        )

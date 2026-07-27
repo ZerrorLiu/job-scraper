@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 from job_scraper.application.application_runtime import ApplicationRuntime
 
@@ -42,7 +40,7 @@ def inspect_application_runtime(runtime: ApplicationRuntime) -> list[DoctorCheck
         DoctorCheck(
             "evidence directory", _ensure_directory(runtime.evidence_dir), str(runtime.evidence_dir)
         ),
-        _check_cdp(runtime.cdp_url),
+        DoctorCheck("browser channel", True, runtime.browser_channel),
     ]
     return checks
 
@@ -71,17 +69,3 @@ def _ensure_directory(path: Path) -> bool:
 
 def _presence(path: Path) -> str:
     return "present" if path.exists() else "missing: " + str(path)
-
-
-def _check_cdp(base_url: str) -> DoctorCheck:
-    endpoint = f"{base_url}/json/version"
-    try:
-        request = Request(endpoint, headers={"Accept": "application/json"})
-        with urlopen(request, timeout=2) as response:
-            payload = json.loads(response.read(8192).decode("utf-8"))
-        browser = str(payload.get("Browser", "unknown")) if isinstance(payload, dict) else "unknown"
-        return DoctorCheck("Chrome CDP", True, f"connected: {browser}")
-    except (OSError, UnicodeError, json.JSONDecodeError, URLError) as exc:
-        return DoctorCheck(
-            "Chrome CDP", False, f"unavailable at {endpoint}: {exc.__class__.__name__}"
-        )
