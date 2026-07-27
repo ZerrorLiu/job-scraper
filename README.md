@@ -154,8 +154,6 @@ The planned commands are:
 
 ```powershell
 uv run job-scraper apply doctor
-uv run job-scraper apply run --job-id <id>
-uv run job-scraper apply status
 ```
 
 See the [in-process browser application specification](docs/public/specs/2026-07-27-in-process-browser-application.md)

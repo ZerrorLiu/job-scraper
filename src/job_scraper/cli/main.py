@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from job_scraper.application.search_planner import build_search_plan, load_watchlists
+from job_scraper.cli.apply import add_apply_parser, run_apply
 from job_scraper.cli.bootstrap import (
     DEFAULT_PIPELINE,
     BootstrapRequest,
@@ -163,6 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("data/workspace.db"),
     )
 
+    add_apply_parser(subparsers)
+
     return parser
 
 
@@ -201,6 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.database_command == "status":
             return show_status(args.workspace.resolve())
+    if args.command == "apply":
+        return run_apply(args)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
