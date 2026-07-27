@@ -49,3 +49,16 @@ def test_brightdata_keeps_listing_url_separate_from_apply_link() -> None:
     assert normalized["external_application_url"] == (
         "https://careers.example.test/jobs/fictional-3"
     )
+
+
+def test_brightdata_accepts_explicit_nested_application_url() -> None:
+    normalized = normalize_upstream_entry(
+        {
+            "jobid": "fictional-4",
+            "url": "https://de.indeed.com/viewjob?jk=fictional-4",
+            "application": {"url": "https://jobs.example.test/apply/fictional-4"},
+        }
+    )
+
+    assert normalized is not None
+    assert normalized["external_application_url"] == ("https://jobs.example.test/apply/fictional-4")

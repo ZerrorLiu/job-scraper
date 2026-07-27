@@ -136,13 +136,7 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         "link",
         default="",
     )
-    external_application_url = _first_text(
-        entry,
-        "external_application_url",
-        "application_url",
-        "apply_link",
-        default="",
-    )
+    external_application_url = _external_application_text(entry)
     record_id = _first_text(
         entry,
         "record_id",
@@ -968,6 +962,25 @@ def _first_text(entry: Mapping[str, Any], *keys: str, default: str = "N/A") -> s
         if value is not None and str(value).strip():
             return str(value).strip()
     return default
+
+
+def _external_application_text(entry: Mapping[str, Any]) -> str:
+    value = _first_text(
+        entry,
+        "external_application_url",
+        "application_url",
+        "apply_link",
+        default="",
+    )
+    if value:
+        return value
+    for container_key in ("application", "apply", "application_details"):
+        nested = entry.get(container_key)
+        if isinstance(nested, Mapping):
+            value = _first_text(nested, "external_url", "url", "href", "link", default="")
+            if value:
+                return value
+    return ""
 
 
 def _organization_text(entry: Mapping[str, Any]) -> str:
