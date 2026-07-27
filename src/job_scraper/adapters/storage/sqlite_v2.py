@@ -435,7 +435,8 @@ class WorkspaceDatabase:
                     cj.company_name,
                     cj.location_text,
                     cj.description_full,
-                    sp.application_url,
+                    COALESCE(NULLIF(trim(sp.application_url), ''), sp.source_url)
+                        AS application_url,
                     COALESCE(applications.status, 'new') AS application_status
                 FROM canonical_jobs AS cj
                 JOIN profile_matches AS pm
