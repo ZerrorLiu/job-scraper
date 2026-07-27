@@ -61,7 +61,9 @@ CAPTCHA, anti-bot controls, or submitting an application.
 - [ ] Every attempt preserves an immutable private snapshot of input,
       answers, browser flow, and terminal evidence.
 - [ ] The default test suite remains offline and credential-free; live browser
-      execution is opt-in and separately reported.
+  execution is opt-in and separately reported.
+- [ ] Batch preparation never clicks a submit control and caps each browser
+  batch at 20 tabs.
 
 ## Design and constraints
 
@@ -93,6 +95,17 @@ for review when the page, job identity, or submission outcome is uncertain.
 The first live rollout targets one known platform or form-flow signature and a
 small explicitly selected set of real jobs. Fixture tests verify contracts and
 state transitions, but do not count as live browser validation.
+
+### Batch preparation mode
+
+The runner also supports a preparation-only batch. It opens at most 20 accepted
+jobs in one dedicated browser context, one tab per job, follows supported
+application links, fills only confirmed facts, and attaches only an approved
+document. It leaves uncertain fields, CAPTCHA, consent, and every final submit
+control untouched. The context remains open so the user can review and submit
+each tab manually. A later batch may be selected with an explicit offset; the
+runner does not claim that a tab was submitted merely because preparation
+reached a form.
 
 ## Verification
 

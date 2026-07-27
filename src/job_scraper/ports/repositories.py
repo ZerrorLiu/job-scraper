@@ -39,3 +39,7 @@ class CandidateDecisionRecorder(Protocol):
 
 class ApplicationJobReader(Protocol):
     def get_accepted_application_job(self, canonical_job_id: str) -> ApplicationJob | None: ...
+
+    def get_accepted_application_jobs(
+        self, *, limit: int = 20, offset: int = 0
+    ) -> list[ApplicationJob]: ...

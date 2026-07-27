@@ -15,7 +15,11 @@ from job_scraper.application.browser_inspection import (
     inspect_accepted_job,
 )
 from job_scraper.browser.chrome_cdp import BrowserConnectionError
-from job_scraper.browser.session import BrowserSessionError, run_application_session
+from job_scraper.browser.session import (
+    BrowserSessionError,
+    run_application_batch,
+    run_application_session,
+)
 
 
 def add_apply_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -49,10 +53,19 @@ def add_apply_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     )
     session.add_argument("--job-id", required=True, help="Canonical accepted job ID.")
     session.add_argument("--workspace", type=Path, help="Private application runtime directory.")
+    batch = commands.add_parser(
+        "batch-start",
+        help="Open up to 20 accepted jobs in tabs and prepare forms without submitting.",
+    )
+    batch.add_argument("--limit", type=int, default=20, help="Number of tabs, from 1 to 20.")
+    batch.add_argument(
+        "--offset", type=int, default=0, help="Accepted-job offset for the next batch."
+    )
+    batch.add_argument("--workspace", type=Path, help="Private application runtime directory.")
 
 
 def run_apply(args: argparse.Namespace) -> int:
-    if args.apply_command not in {"doctor", "inspect", "session-start"}:
+    if args.apply_command not in {"doctor", "inspect", "session-start", "batch-start"}:
         raise AssertionError(f"Unhandled apply command: {args.apply_command}")
     try:
         runtime = ApplicationRuntime.from_environment(root=args.workspace)
@@ -85,6 +98,23 @@ def run_apply(args: argparse.Namespace) -> int:
             print(f"ERROR {exc}", file=sys.stderr)
             return 2
         print("SESSION_STOPPED")
+        return 0
+    if args.apply_command == "batch-start":
+        try:
+            jobs = WorkspaceDatabase(runtime.workspace_database).get_accepted_application_jobs(
+                limit=args.limit, offset=args.offset
+            )
+            if not jobs:
+                raise ApplicationInspectionError("No accepted jobs were found for this batch")
+            print(
+                f"BATCH_RUNNING tabs={len(jobs)} offset={args.offset}; "
+                "forms will be prepared but never submitted"
+            )
+            run_application_batch(runtime, jobs)
+        except (ApplicationInspectionError, BrowserSessionError, OSError, ValueError) as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
+        print("BATCH_STOPPED")
         return 0
     try:
         report = inspect_accepted_job(

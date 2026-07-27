@@ -467,6 +467,62 @@ class WorkspaceDatabase:
             status=str(row["application_status"]),
         )
 
+    def get_accepted_application_jobs(
+        self, *, limit: int = 20, offset: int = 0
+    ) -> list[ApplicationJob]:
+        if not 1 <= limit <= 20:
+            raise ValueError("limit must be between 1 and 20")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    cj.id AS canonical_job_id,
+                    cj.normalized_title,
+                    cj.company_name,
+                    cj.location_text,
+                    cj.description_full,
+                    COALESCE(NULLIF(trim(sp.application_url), ''), sp.source_url)
+                        AS application_url,
+                    COALESCE(applications.status, 'new') AS application_status
+                FROM canonical_jobs AS cj
+                JOIN source_postings AS sp
+                  ON sp.id = (
+                      SELECT latest.id
+                      FROM source_postings AS latest
+                      WHERE latest.canonical_job_id = cj.id
+                      ORDER BY latest.last_seen_at DESC, latest.id ASC
+                      LIMIT 1
+                  )
+                LEFT JOIN applications ON applications.canonical_job_id = cj.id
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM profile_matches AS pm
+                    WHERE pm.canonical_job_id = cj.id AND pm.accepted = 1
+                )
+                  AND trim(cj.description_full) <> ''
+                  AND COALESCE(applications.status, 'new') NOT IN (
+                      'applied', 'submitted', 'submitted_confirmed', 'submission_unknown'
+                  )
+                ORDER BY cj.last_seen_at DESC, cj.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        return [
+            ApplicationJob(
+                canonical_job_id=str(row["canonical_job_id"]),
+                application_url=str(row["application_url"]),
+                title=str(row["normalized_title"]),
+                company_name=str(row["company_name"]),
+                location_text=str(row["location_text"]),
+                description=str(row["description_full"]),
+                status=str(row["application_status"]),
+            )
+            for row in rows
+        ]
+
     def _upsert_canonical_job(
         self,
         connection: sqlite3.Connection,

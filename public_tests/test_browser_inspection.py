@@ -8,6 +8,7 @@ from job_scraper.browser.chrome_cdp import (
     _different_destination,
     _find_apply_ctas,
 )
+from job_scraper.browser.session import _find_preparation_ctas
 
 
 @pytest.mark.parametrize(
@@ -47,3 +48,9 @@ def test_browser_extracts_apply_ctas_without_clicking_them() -> None:
         "Apply now",
         "I'm interested",
     )
+
+
+def test_batch_preparation_never_treats_submit_as_an_apply_cta() -> None:
+    assert _find_preparation_ctas(
+        ["Apply now", "Submit application", "Continue", "I'm interested"]
+    ) == ("Apply now", "I'm interested")

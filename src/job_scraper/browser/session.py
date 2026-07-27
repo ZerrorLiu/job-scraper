@@ -15,6 +15,7 @@ from job_scraper.application.session_state import (
     ApplicationSessionState,
     save_session_state,
 )
+from job_scraper.domain.models import ApplicationJob
 
 
 class BrowserSessionError(RuntimeError):
@@ -194,9 +195,145 @@ def run_application_session(
             context.close()
 
 
+def run_application_batch(runtime: ApplicationRuntime, jobs: list[ApplicationJob]) -> None:
+    """Open up to twenty accepted jobs and prepare their forms without submitting."""
+
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    from job_scraper.browser.chrome_cdp import _assert_public_https_url
+
+    if not 1 <= len(jobs) <= 20:
+        raise ValueError("application batch must contain between 1 and 20 jobs")
+    for job in jobs:
+        _assert_public_https_url(job.application_url)
+
+    with sync_playwright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(runtime.browser_profile_dir),
+            channel=runtime.browser_channel,
+            headless=False,
+        )
+        pages: list[tuple[ApplicationJob, Any]] = []
+        prepared = 0
+        try:
+            for job in jobs:
+                page = context.new_page()
+                pages.append((job, page))
+                try:
+                    page.goto(job.application_url, wait_until="domcontentloaded", timeout=30_000)
+                except PlaywrightError:
+                    continue
+                save_session_state(
+                    runtime,
+                    _session_state(
+                        job.canonical_job_id,
+                        job.application_url,
+                        page.url,
+                        "batch_opened",
+                        f"opened tab {len(pages)}/{len(jobs)}; no submission performed",
+                    ),
+                )
+
+            for index, (job, page) in enumerate(pages, start=1):
+                if page.is_closed():
+                    continue
+                page, step, action = _prepare_batch_page(page, context, runtime)
+                pages[index - 1] = (job, page)
+                prepared += 1
+                save_session_state(
+                    runtime,
+                    _session_state(
+                        job.canonical_job_id,
+                        job.application_url,
+                        page.url,
+                        step,
+                        f"batch {prepared}/{len(jobs)}; {action}; no submission performed",
+                    ),
+                )
+
+            save_session_state(
+                runtime,
+                _session_state(
+                    jobs[-1].canonical_job_id,
+                    jobs[-1].application_url,
+                    pages[-1][1].url,
+                    "batch_ready",
+                    f"{prepared}/{len(jobs)} tabs prepared; review and submit manually",
+                ),
+            )
+            while True:
+                time.sleep(2)
+        except KeyboardInterrupt:
+            save_session_state(
+                runtime,
+                _session_state(
+                    jobs[-1].canonical_job_id,
+                    jobs[-1].application_url,
+                    pages[-1][1].url if pages else jobs[-1].application_url,
+                    "stopped",
+                    f"batch stopped after preparing {prepared}/{len(jobs)} tabs",
+                ),
+            )
+        finally:
+            context.close()
+
+
+def _prepare_batch_page(
+    page: Any, context: Any, runtime: ApplicationRuntime
+) -> tuple[Any, str, str]:
+    from playwright.sync_api import Error as PlaywrightError
+
+    for _ in range(4):
+        if page.locator("form").count():
+            filled_fields, cv_attached = _prefill_zoho_form(page, runtime)
+            return (
+                page,
+                "form",
+                f"filled {len(filled_fields)} fields; CV attached={'yes' if cv_attached else 'no'}; CAPTCHA left blank",
+            )
+        ctas = _find_apply_ctas_for_page(page)
+        if not ctas:
+            return page, "waiting_for_human", "login, consent, or challenge requires review"
+        locator = page.locator("a,button").filter(has_text=ctas[0]).first
+        try:
+            if locator.get_attribute("target") == "_blank":
+                with context.expect_page(timeout=10_000) as popup_info:
+                    locator.click(timeout=10_000)
+                page = popup_info.value
+            else:
+                locator.click(timeout=10_000)
+            page.wait_for_load_state("domcontentloaded", timeout=10_000)
+        except PlaywrightError:
+            return page, "waiting_for_human", "clear the visible overlay or challenge"
+    return page, "waiting_for_human", "application flow needs review"
+
+
+def _find_apply_ctas_for_page(page: Any) -> tuple[str, ...]:
+    return _find_preparation_ctas(page.locator("a,button").all_inner_texts())
+
+
+def _find_preparation_ctas(texts: list[str]) -> tuple[str, ...]:
+    allowed_markers = ("apply", "bewerben", "i'm interested", "interested")
+    blocked_markers = ("submit", "send application", "consent", "agree", "continue")
+    candidates: list[str] = []
+    for text in texts:
+        normalized = " ".join(text.casefold().split())
+        if (
+            normalized
+            and any(marker in normalized for marker in allowed_markers)
+            and not any(marker in normalized for marker in blocked_markers)
+            and text not in candidates
+        ):
+            candidates.append(text)
+    return tuple(candidates)
+
+
 def _prefill_zoho_form(page: Any, runtime: ApplicationRuntime) -> tuple[tuple[str, ...], bool]:
     """Fill the first supported ATS form from confirmed private runtime facts."""
 
+    if "zohorecruit" not in page.url.casefold():
+        return (), False
     payload = json.loads(runtime.facts_file.read_text(encoding="utf-8"))
     identity = _private_identity(payload)
     full_name = identity.get("full_name", "").split(maxsplit=1)
@@ -208,9 +345,8 @@ def _prefill_zoho_form(page: Any, runtime: ApplicationRuntime) -> tuple[tuple[st
         3: str(identity.get("email", "")).strip(),
         5: _phone_digits(str(identity.get("phone", ""))),
         6: str(identity.get("location", "")).strip(),
-        7: "Germany",
     }
-    labels = {1: "first_name", 2: "last_name", 3: "email", 5: "mobile", 6: "city", 7: "country"}
+    labels = {1: "first_name", 2: "last_name", 3: "email", 5: "mobile", 6: "city"}
     inputs = page.locator("input")
     filled: list[str] = []
     for index, value in values.items():
@@ -255,7 +391,13 @@ def _approved_resume(runtime: ApplicationRuntime, facts: object) -> Path | None:
         ).casefold()
         if isinstance(path, str) and "resume" in role and status == "approved":
             candidate = Path(path)
-            return candidate if candidate.is_absolute() else runtime.root / candidate
+            resolved = (
+                candidate if candidate.is_absolute() else runtime.root / candidate
+            ).resolve()
+            if resolved.is_relative_to(
+                runtime.documents_dir.resolve()
+            ) and resolved.suffix.casefold() in {".pdf", ".doc", ".docx"}:
+                return resolved
     return None
 
 
