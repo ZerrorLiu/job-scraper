@@ -16,10 +16,12 @@ class BrowserConnectionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class PageInspection:
+    requested_url: str
     final_url: str
     title: str
     form_count: int
     screenshot_path: Path
+    redirected: bool
 
 
 def inspect_application_page(
@@ -50,10 +52,12 @@ def inspect_application_page(
             final_url = page.url
             _assert_public_https_url(final_url)
             result = PageInspection(
+                requested_url=application_url,
                 final_url=final_url,
                 title=page.title(),
                 form_count=page.locator("form").count(),
                 screenshot_path=screenshot_path,
+                redirected=_different_destination(application_url, final_url),
             )
             page.close()
             context.close()
@@ -83,3 +87,13 @@ def _assert_public_https_url(value: str) -> None:
         raise BrowserConnectionError(
             "Application URL must not target a private or reserved address"
         )
+
+
+def _different_destination(requested: str, final: str) -> bool:
+    requested_url = urlparse(requested)
+    final_url = urlparse(final)
+    return (requested_url.scheme, requested_url.netloc, requested_url.path) != (
+        final_url.scheme,
+        final_url.netloc,
+        final_url.path,
+    )

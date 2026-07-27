@@ -68,6 +68,8 @@ def run_apply(args: argparse.Namespace) -> int:
     print(f"INSPECTED job={report.canonical_job_id}")
     print(f"TITLE {report.title}")
     print(f"COMPANY {report.company_name}")
+    print(f"REDIRECTED {'yes' if report.inspection.redirected else 'no'}")
+    print(f"REQUESTED_URL {report.inspection.requested_url}")
     print(f"URL {report.inspection.final_url}")
     print(f"PAGE_TITLE {report.inspection.title}")
     print(f"FORMS {report.inspection.form_count}")
