@@ -29,6 +29,21 @@ to complete supported application forms.
   - Committing private facts, documents, browser profiles, credentials,
     screenshots, mail, databases, or application evidence.
 
+## Phase-one source priority
+
+The first implementation phase prioritizes the two supported job sources that
+are already present in the discovery registry:
+
+1. `linkedin_direct`: inspect the real LinkedIn destination and stop at
+   authentication or other access-control boundaries.
+2. `indeed_brightdata`: preserve the Bright Data acquisition path, verify the
+   stored Indeed job/application URL, and inspect its real application CTA or
+   downstream form flow.
+
+Other sources remain discovery-compatible but are not application-adapted in
+this phase. Source priority does not authorize bypassing login, consent,
+CAPTCHA, anti-bot controls, or submitting an application.
+
 ## Acceptance criteria
 
 - [ ] Only jobs already accepted by the discovery pipeline can enter the
