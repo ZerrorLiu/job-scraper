@@ -4,10 +4,10 @@ version: 1
 
 commands:
   setup:
-  format: .\.venv\Scripts\ruff.exe format --check .
-  test: .\.venv\Scripts\pytest.exe
-  lint: .\.venv\Scripts\ruff.exe check .
-  typecheck: .\.venv\Scripts\pyright.exe
+  format: uv run ruff format --check .
+  test: uv run pytest
+  lint: uv run ruff check .
+  typecheck: uv run pyright
   build:
   dev:
 

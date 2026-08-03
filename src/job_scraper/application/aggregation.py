@@ -58,8 +58,6 @@ def merge_accepted_job(
         existing.job_description = job.job_description
     if existing.description_language in {"Unknown", "N/A", ""} and job.description_language:
         existing.description_language = job.description_language
-    if not existing.application_url and job.application_url:
-        existing.application_url = job.application_url
     return True
 
 

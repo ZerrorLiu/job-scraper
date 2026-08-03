@@ -24,8 +24,6 @@ class RawJobRecord:
     posted_at_text: str
     scraped_at: datetime
     job_description: str = ""
-    application_url: str = ""
-    company_url: str = ""
     salary_text: str = ""
     employment_type: str = "unknown"
     remote_type: str = "unknown"
@@ -60,8 +58,6 @@ class JobRecord:
     salary_min: float | None
     salary_max: float | None
     salary_currency: str | None
-    application_url: str
-    company_url: str
     dedupe_key: str
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
@@ -134,26 +130,3 @@ class ProfileMatch:
     accepted: bool
     reason: str
     evaluated_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class ApplicationRecord:
-    application_id: str
-    canonical_job_id: str
-    status: str
-    updated_at: datetime
-    external_reference: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class ApplicationJob:
-    """An accepted job that may be inspected by the application runner."""
-
-    canonical_job_id: str
-    source_url: str
-    application_url: str
-    title: str
-    company_name: str
-    location_text: str
-    description: str
-    status: str

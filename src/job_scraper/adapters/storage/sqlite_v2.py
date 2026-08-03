@@ -15,10 +15,10 @@ from job_scraper.domain.identity import (
     source_posting_id,
     stable_id,
 )
-from job_scraper.domain.models import ApplicationJob, JobRecord
-from job_scraper.domain.url_resolution import resolve_external_application_url
+from job_scraper.domain.models import JobRecord
+from job_scraper.domain.payload_sanitization import sanitize_job_payload
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS applications (
     FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
 );
 
+
 CREATE TABLE IF NOT EXISTS external_publications (
     canonical_job_id TEXT NOT NULL,
     sink_id TEXT NOT NULL,
@@ -107,6 +108,7 @@ CREATE TABLE IF NOT EXISTS external_publications (
     FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
 );
 
+
 CREATE TABLE IF NOT EXISTS legacy_job_links (
     profile_id TEXT NOT NULL,
     legacy_job_id TEXT NOT NULL,
@@ -118,6 +120,7 @@ CREATE TABLE IF NOT EXISTS legacy_job_links (
 
 CREATE INDEX IF NOT EXISTS idx_postings_canonical_job
 ON source_postings(canonical_job_id);
+
 
 CREATE INDEX IF NOT EXISTS idx_observations_run
 ON source_observations(run_id, profile_id);
@@ -142,8 +145,6 @@ class StoredJobDetail:
     source_id: str
     source_job_id: str
     source_url: str
-    canonical_url: str
-    application_url: str
     title: str
     company_name: str
     location_text: str
@@ -233,10 +234,10 @@ class WorkspaceDatabase:
                     job.source_job_id,
                     job.source_url,
                     job.canonical_url,
-                    job.application_url,
+                    "",
                     job.first_seen_at.astimezone(UTC).isoformat(),
                     observed_at,
-                    _json(job.raw_payload),
+                    _json(sanitize_job_payload(job.raw_payload)),
                 ),
             )
             observation_id = stable_id(
@@ -258,7 +259,7 @@ class WorkspaceDatabase:
                     run_id,
                     profile_id,
                     observed_at,
-                    _json(job.raw_payload),
+                    _json(sanitize_job_payload(job.raw_payload)),
                 ),
             )
             connection.execute(
@@ -386,7 +387,7 @@ class WorkspaceDatabase:
                 """
                 SELECT
                     sp.source_id, sp.source_job_id, sp.source_url,
-                    sp.canonical_url, sp.application_url, sp.raw_payload_json,
+                    sp.raw_payload_json,
                     cj.normalized_title, cj.company_name, cj.location_text,
                     cj.description_full, cj.employment_type
                 FROM source_postings AS sp
@@ -414,146 +415,12 @@ class WorkspaceDatabase:
             source_id=str(row["source_id"]),
             source_job_id=str(row["source_job_id"]),
             source_url=str(row["source_url"]),
-            canonical_url=str(row["canonical_url"]),
-            application_url=str(row["application_url"]),
             title=str(row["normalized_title"]),
             company_name=str(row["company_name"]),
             location_text=str(row["location_text"]),
             description=source_description or str(row["description_full"]),
             employment_type=str(row["employment_type"]),
         )
-
-    def get_accepted_application_job(self, canonical_job_id: str) -> ApplicationJob | None:
-        normalized_id = canonical_job_id.strip()
-        if not normalized_id:
-            return None
-        with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT
-                    cj.id AS canonical_job_id,
-                    cj.normalized_title,
-                    cj.company_name,
-                    cj.location_text,
-                    cj.description_full,
-                    sp.source_url,
-                    CASE
-                        WHEN trim(sp.application_url) = trim(sp.source_url) THEN NULL
-                        ELSE NULLIF(trim(sp.application_url), '')
-                    END AS application_url,
-                    COALESCE(applications.status, 'new') AS application_status
-                FROM canonical_jobs AS cj
-                JOIN profile_matches AS pm
-                  ON pm.canonical_job_id = cj.id AND pm.accepted = 1
-                JOIN source_postings AS sp
-                  ON sp.id = (
-                      SELECT latest.id
-                      FROM source_postings AS latest
-                      WHERE latest.canonical_job_id = cj.id
-                      ORDER BY latest.last_seen_at DESC, latest.id ASC
-                      LIMIT 1
-                  )
-                LEFT JOIN applications ON applications.canonical_job_id = cj.id
-                WHERE cj.id = ? AND trim(cj.description_full) <> ''
-                LIMIT 1
-                """,
-                (normalized_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return ApplicationJob(
-            canonical_job_id=str(row["canonical_job_id"]),
-            source_url=str(row["source_url"]),
-            application_url=str(row["application_url"] or ""),
-            title=str(row["normalized_title"]),
-            company_name=str(row["company_name"]),
-            location_text=str(row["location_text"]),
-            description=str(row["description_full"]),
-            status=str(row["application_status"]),
-        )
-
-    def get_accepted_application_jobs(
-        self, *, limit: int = 20, offset: int = 0
-    ) -> list[ApplicationJob]:
-        if not 1 <= limit <= 20:
-            raise ValueError("limit must be between 1 and 20")
-        if offset < 0:
-            raise ValueError("offset must not be negative")
-        with self.connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT
-                    cj.id AS canonical_job_id,
-                    cj.normalized_title,
-                    cj.company_name,
-                    cj.location_text,
-                    cj.description_full,
-                    sp.source_url,
-                    CASE
-                        WHEN trim(sp.application_url) = trim(sp.source_url) THEN NULL
-                        ELSE NULLIF(trim(sp.application_url), '')
-                    END AS application_url,
-                    COALESCE(applications.status, 'new') AS application_status
-                FROM canonical_jobs AS cj
-                JOIN source_postings AS sp
-                  ON sp.id = (
-                      SELECT latest.id
-                      FROM source_postings AS latest
-                      WHERE latest.canonical_job_id = cj.id
-                      ORDER BY latest.last_seen_at DESC, latest.id ASC
-                      LIMIT 1
-                  )
-                LEFT JOIN applications ON applications.canonical_job_id = cj.id
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM profile_matches AS pm
-                    WHERE pm.canonical_job_id = cj.id AND pm.accepted = 1
-                )
-                  AND trim(cj.description_full) <> ''
-                  AND COALESCE(applications.status, 'new') NOT IN (
-                      'applied', 'submitted', 'submitted_confirmed', 'submission_unknown'
-                  )
-                ORDER BY cj.last_seen_at DESC, cj.id ASC
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            ).fetchall()
-        return [
-            ApplicationJob(
-                canonical_job_id=str(row["canonical_job_id"]),
-                source_url=str(row["source_url"]),
-                application_url=str(row["application_url"] or ""),
-                title=str(row["normalized_title"]),
-                company_name=str(row["company_name"]),
-                location_text=str(row["location_text"]),
-                description=str(row["description_full"]),
-                status=str(row["application_status"]),
-            )
-            for row in rows
-        ]
-
-    def record_resolved_application_url(self, canonical_job_id: str, resolved_url: str) -> bool:
-        with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT sp.id, sp.source_url
-                FROM source_postings AS sp
-                WHERE sp.canonical_job_id = ?
-                ORDER BY sp.last_seen_at DESC, sp.id ASC
-                LIMIT 1
-                """,
-                (canonical_job_id.strip(),),
-            ).fetchone()
-            if row is None:
-                return False
-            validated_url = resolve_external_application_url(str(row["source_url"]), resolved_url)
-            if not validated_url:
-                return False
-            connection.execute(
-                "UPDATE source_postings SET application_url = ? WHERE id = ?",
-                (validated_url, str(row["id"])),
-            )
-            return True
 
     def _upsert_canonical_job(
         self,
@@ -725,7 +592,7 @@ def _job_from_v1_row(row: sqlite3.Row) -> JobRecord:
         source=str(row["source"]),
         source_job_id=str(row["source_job_id"]),
         source_url=str(row["source_url"]),
-        canonical_url=str(row["canonical_url"]),
+        canonical_url=str(row["source_url"]),
         title=str(row["normalized_title"]),
         company_name=str(row["company_name"]),
         location_raw=str(row["location_text"]),
@@ -747,10 +614,8 @@ def _job_from_v1_row(row: sqlite3.Row) -> JobRecord:
         salary_min=_optional_float(row["salary_min"]),
         salary_max=_optional_float(row["salary_max"]),
         salary_currency=None if row["currency"] is None else str(row["currency"]),
-        application_url=str(row["apply_url"]),
-        company_url=str(row["company_url"]),
         dedupe_key=str(row["dedupe_key"]),
-        raw_payload=_json_object(row["raw_payload_json"]),
+        raw_payload=sanitize_job_payload(_json_object(row["raw_payload_json"])),
     )
 
 

@@ -13,12 +13,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from job_scraper.collectors.base import BaseCollector, SearchWindow
 from job_scraper.config import HttpConfig, SourceConfig
-from job_scraper.domain.url_resolution import resolve_external_application_url
+from job_scraper.domain.payload_sanitization import sanitize_job_payload
 from job_scraper.models import RawJobRecord
 from job_scraper.storage.db import Database
 
@@ -120,7 +120,7 @@ class BrightDataBatchResult:
 
 
 @dataclass(slots=True)
-class BrightDataUrlResolutionResult:
+class BrightDataDetailResolutionResult:
     batches: list[BrightDataBatchResult]
     errors_by_url: dict[str, str]
 
@@ -136,7 +136,6 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         "link",
         default="",
     )
-    external_application_url = _external_application_text(entry)
     record_id = _first_text(
         entry,
         "record_id",
@@ -154,7 +153,7 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         record_id = hashlib.sha256(reference_url.encode("utf-8")).hexdigest()[:32]
     if not record_id:
         return None
-    if not reference_url:
+    if not _is_indeed_platform_url(reference_url):
         reference_url = f"{INDEED_VIEW_JOB_URL}?{urlencode({'jk': record_id})}"
 
     attributes = entry.get("formattedAttributes") or entry.get("attributes") or []
@@ -190,9 +189,6 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             "job_posted_date",
         ),
         "reference_url": reference_url,
-        "external_application_url": resolve_external_application_url(
-            reference_url, external_application_url
-        ),
         "description": _first_text(
             entry,
             "description",
@@ -204,8 +200,13 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             "job_summary",
         ),
         "employment_type": employment_type or "unknown",
-        "raw_payload": dict(entry),
+        "raw_payload": sanitize_job_payload(entry),
     }
+
+
+def _is_indeed_platform_url(value: str) -> bool:
+    hostname = (urlsplit(value).hostname or "").casefold()
+    return hostname == "indeed.com" or hostname.endswith(".indeed.com")
 
 
 async def execute_brightdata_dataset_sync(
@@ -365,7 +366,7 @@ async def execute_brightdata_dataset_batch_sync(
     )
 
 
-async def execute_brightdata_url_batch_sync(
+async def execute_brightdata_detail_batch_sync(
     urls: Sequence[str],
     *,
     snapshot_database: Database | None = None,
@@ -374,14 +375,12 @@ async def execute_brightdata_url_batch_sync(
     request_timeout_seconds: float = 30.0,
     event_logger: Callable[[str], None] | None = None,
 ) -> BrightDataBatchResult:
-    """Resolve a batch of concrete Indeed job URLs through the Web Scraper API."""
+    """Retrieve details for concrete Indeed job URLs through the Web Scraper API."""
     unique_urls = list(dict.fromkeys(url.strip() for url in urls if url.strip()))
     if not unique_urls:
         raise ValueError("urls must not be empty")
     api_key = _required_environment_value("BRIGHTDATA_API_KEY")
-    dataset_id = os.getenv(
-        "BRIGHTDATA_INDEED_JOBS_DATASET_ID", ""
-    ).strip() or _required_environment_value("BRIGHTDATA_DATASET_ID")
+    dataset_id = _required_environment_value("BRIGHTDATA_DATASET_ID")
     trigger_payload = [{"url": url} for url in unique_urls]
     trigger_parameters = {
         "dataset_id": dataset_id,
@@ -427,7 +426,7 @@ async def execute_brightdata_url_batch_sync(
         normalized["raw_payload"]["brightdata_input_mode"] = "url"
         records.append(normalized)
     _log_cloud_event(
-        f"Concrete URL snapshot mapped | Snapshot {snapshot_id} | "
+        f"Detail snapshot mapped | Snapshot {snapshot_id} | "
         f"Inputs {len(unique_urls)} | Records {len(records)}",
         event_logger,
     )
@@ -438,7 +437,7 @@ async def execute_brightdata_url_batch_sync(
     )
 
 
-async def execute_resilient_brightdata_url_batches(
+async def execute_resilient_brightdata_detail_batches(
     urls: Sequence[str],
     *,
     batch_size: int = 10,
@@ -448,11 +447,11 @@ async def execute_resilient_brightdata_url_batches(
     timeout_seconds: float = 900.0,
     request_timeout_seconds: float = 30.0,
     event_logger: Callable[[str], None] | None = None,
-) -> BrightDataUrlResolutionResult:
-    """Resolve URL batches independently and isolate a persistently bad input."""
+) -> BrightDataDetailResolutionResult:
+    """Retrieve detail batches independently and isolate a persistently bad input."""
     unique_urls = list(dict.fromkeys(url.strip() for url in urls if url.strip()))
     if not unique_urls:
-        return BrightDataUrlResolutionResult(batches=[], errors_by_url={})
+        return BrightDataDetailResolutionResult(batches=[], errors_by_url={})
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     if max_concurrency < 1:
@@ -465,7 +464,7 @@ async def execute_resilient_brightdata_url_batches(
     async def resolve_chunk(chunk: list[str], label: str) -> None:
         try:
             async with semaphore:
-                result = await execute_brightdata_url_batch_sync(
+                result = await execute_brightdata_detail_batch_sync(
                     chunk,
                     snapshot_database=snapshot_database,
                     poll_interval_seconds=poll_interval_seconds,
@@ -477,13 +476,13 @@ async def execute_resilient_brightdata_url_batches(
             if len(chunk) == 1:
                 errors_by_url[chunk[0]] = str(exc)
                 _log_cloud_event(
-                    f"Concrete URL resolution failed | Batch {label} | Inputs 1 | {exc}",
+                    f"Indeed detail retrieval failed | Batch {label} | Inputs 1 | {exc}",
                     event_logger,
                 )
                 return
             midpoint = len(chunk) // 2
             _log_cloud_event(
-                f"Concrete URL batch failed; splitting | Batch {label} | "
+                f"Indeed detail batch failed; splitting | Batch {label} | "
                 f"Inputs {len(chunk)} | {exc}",
                 event_logger,
             )
@@ -501,7 +500,7 @@ async def execute_resilient_brightdata_url_batches(
     await asyncio.gather(
         *(resolve_chunk(chunk, str(index)) for index, chunk in enumerate(initial_chunks, start=1))
     )
-    return BrightDataUrlResolutionResult(
+    return BrightDataDetailResolutionResult(
         batches=batches,
         errors_by_url=errors_by_url,
     )
@@ -634,7 +633,8 @@ async def _wait_for_brightdata_snapshot(
             )
         if loop.time() >= deadline:
             raise DataSyncError(
-                f"Bright Data snapshot {snapshot_id} did not become ready within {timeout_seconds:g} seconds"
+                f"Bright Data snapshot {snapshot_id} did not become ready within "
+                f"{timeout_seconds:g} seconds"
             )
         interval = (
             poll_interval_seconds
@@ -860,18 +860,13 @@ class IndeedBrightDataCollector(BaseCollector):
             records = batch
             snapshot_id = ""
 
-        seen_ids: set[str] = set()
-        yielded = 0
+        selected_records = _select_brightdata_records(
+            records,
+            maximum_records=self.source_config.max_detail_fetches,
+        )
         completed = False
         try:
-            for record in records:
-                if yielded >= self.source_config.max_detail_fetches:
-                    break
-                source_job_id = str(record.get("record_id") or "").strip()
-                if not source_job_id or source_job_id in seen_ids:
-                    continue
-                seen_ids.add(source_job_id)
-                yielded += 1
+            for record in selected_records:
                 query = str(record.get("brightdata_query") or "").strip()
                 location = str(record.get("brightdata_location") or "").strip()
                 yield _to_raw_job(
@@ -891,13 +886,13 @@ class IndeedBrightDataCollector(BaseCollector):
         locations: Sequence[str],
     ) -> Iterable[RawJobRecord]:
         date_posted = brightdata_date_posted_filter(window.post_age_hours)
+        collected_records: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
-        yielded = 0
         assert self.sync_runner is not None
         for query in self.source_config.search_queries:
             for location in locations:
-                if yielded >= self.source_config.max_detail_fetches:
-                    return
+                if len(collected_records) >= self.source_config.max_detail_fetches:
+                    break
                 result = self.sync_runner(
                     query,
                     location,
@@ -909,19 +904,48 @@ class IndeedBrightDataCollector(BaseCollector):
                 )
                 records = asyncio.run(result) if inspect.isawaitable(result) else result
                 for record in records:
-                    if yielded >= self.source_config.max_detail_fetches:
-                        return
+                    if len(collected_records) >= self.source_config.max_detail_fetches:
+                        break
                     source_job_id = str(record.get("record_id") or "").strip()
                     if not source_job_id or source_job_id in seen_ids:
                         continue
                     seen_ids.add(source_job_id)
-                    yielded += 1
-                    yield _to_raw_job(
-                        record,
-                        query,
-                        location,
-                        transport="brightdata_dataset_api",
-                    )
+                    enriched = dict(record)
+                    enriched.setdefault("brightdata_query", query)
+                    enriched.setdefault("brightdata_location", location)
+                    collected_records.append(enriched)
+            if len(collected_records) >= self.source_config.max_detail_fetches:
+                break
+        selected_records = _select_brightdata_records(
+            collected_records,
+            maximum_records=self.source_config.max_detail_fetches,
+        )
+        for record in selected_records:
+            yield _to_raw_job(
+                record,
+                str(record.get("brightdata_query") or "").strip(),
+                str(record.get("brightdata_location") or "").strip(),
+                transport="brightdata_dataset_api",
+            )
+
+
+def _select_brightdata_records(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    maximum_records: int,
+) -> list[dict[str, Any]]:
+    """Keep the bounded, deduplicated records that may enter the shared pipeline."""
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for record in records:
+        if len(selected) >= maximum_records:
+            break
+        source_job_id = str(record.get("record_id") or "").strip()
+        if not source_job_id or source_job_id in seen_ids:
+            continue
+        seen_ids.add(source_job_id)
+        selected.append(dict(record))
+    return selected
 
 
 def _to_raw_job(
@@ -932,7 +956,6 @@ def _to_raw_job(
     transport: str = "brightdata_dataset_api",
 ) -> RawJobRecord:
     reference_url = str(record.get("reference_url") or "").strip()
-    external_application_url = str(record.get("external_application_url") or "").strip()
     raw_payload = record.get("raw_payload")
     payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
     payload.update({"query": query, "search_location": location, "transport": transport})
@@ -941,7 +964,6 @@ def _to_raw_job(
         source_job_id=str(record.get("record_id") or "").strip(),
         source_url=reference_url,
         canonical_url=reference_url,
-        application_url=resolve_external_application_url(reference_url, external_application_url),
         title=str(record.get("position_title") or "").strip(),
         company_name=str(record.get("organization") or "").strip(),
         location_raw=str(record.get("region") or "").strip(),
@@ -962,25 +984,6 @@ def _first_text(entry: Mapping[str, Any], *keys: str, default: str = "N/A") -> s
         if value is not None and str(value).strip():
             return str(value).strip()
     return default
-
-
-def _external_application_text(entry: Mapping[str, Any]) -> str:
-    value = _first_text(
-        entry,
-        "external_application_url",
-        "application_url",
-        "apply_link",
-        default="",
-    )
-    if value:
-        return value
-    for container_key in ("application", "apply", "application_details"):
-        nested = entry.get(container_key)
-        if isinstance(nested, Mapping):
-            value = _first_text(nested, "external_url", "url", "href", "link", default="")
-            if value:
-                return value
-    return ""
 
 
 def _organization_text(entry: Mapping[str, Any]) -> str:

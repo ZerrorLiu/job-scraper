@@ -45,7 +45,7 @@ class ProcessJobCandidate:
         normalizer: JobNormalizer,
         *,
         decision_recorder: CandidateDecisionRecorder | None = None,
-        processed_statuses: frozenset[str] = frozenset({"applied", "not fit"}),
+        processed_statuses: frozenset[str] = frozenset({"applied", "not_interested"}),
     ) -> None:
         self._repository = repository
         self._pipeline = pipeline

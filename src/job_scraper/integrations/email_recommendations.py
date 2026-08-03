@@ -22,7 +22,6 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from job_scraper.config import HttpConfig
-from job_scraper.domain.url_resolution import resolve_external_application_url
 from job_scraper.models import RawJobRecord
 from job_scraper.pipeline.normalize import normalize_whitespace
 
@@ -245,13 +244,10 @@ class EmailJobCandidate:
 
 @dataclass(slots=True)
 class JobDetail:
-    final_url: str
     title: str = ""
     company_name: str = ""
     location_raw: str = ""
     description: str = ""
-    application_url: str = ""
-    company_url: str = ""
     posted_at_text: str = ""
     raw_payload: dict[str, object] = field(default_factory=dict)
 
@@ -301,8 +297,11 @@ class EmailIngestState:
 
 
 class ImapEmailClient:
-    def __init__(self, config: EmailIngestConfig) -> None:
+    def __init__(self, config: EmailIngestConfig, *, timeout_seconds: float = 30.0) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than 0")
         self.config = config
+        self._timeout_seconds = timeout_seconds
 
     def fetch_recent_messages(self) -> list[MailMessage]:
         if not self.config.username or not self.config.password:
@@ -310,9 +309,17 @@ class ImapEmailClient:
                 "Email credentials are missing. Set the configured username/password environment variables."
             )
         if self.config.use_ssl:
-            connection: imaplib.IMAP4 = imaplib.IMAP4_SSL(self.config.host, self.config.port)
+            connection: imaplib.IMAP4 = imaplib.IMAP4_SSL(
+                self.config.host,
+                self.config.port,
+                timeout=self._timeout_seconds,
+            )
         else:
-            connection = imaplib.IMAP4(self.config.host, self.config.port)
+            connection = imaplib.IMAP4(
+                self.config.host,
+                self.config.port,
+                timeout=self._timeout_seconds,
+            )
         try:
             connection.login(self.config.username, self.config.password)
             status, _ = connection.select(format_imap_mailbox(self.config.folder), readonly=True)
@@ -594,7 +601,6 @@ def email_candidate_to_raw_job(
         posted_at_text=candidate.email_date.isoformat(),
         scraped_at=observed_at,
         job_description="",
-        application_url="",
         raw_payload={
             "freshness_basis": "email_received",
             "acquisition_mode": "email",
@@ -656,17 +662,8 @@ def enrich_email_candidate_to_raw_job(
     if has_usable_detail_text(detail.description):
         raw.job_description = detail.description
         raw.raw_payload["description_source"] = "job_detail"
-    if detail.application_url:
-        raw.application_url = resolve_external_application_url(
-            candidate.url, detail.application_url
-        )
-    if detail.company_url:
-        raw.company_url = detail.company_url
     if detail.posted_at_text:
         raw.posted_at_text = detail.posted_at_text
-    if detail.final_url:
-        raw.canonical_url = detail.final_url
-        raw.raw_payload["detail_final_url"] = detail.final_url
     raw.raw_payload["detail_status"] = (
         "ok"
         if has_usable_detail_text(detail.description)
@@ -697,10 +694,8 @@ def can_use_email_fallback(candidate: EmailJobCandidate, raw: RawJobRecord) -> b
 
 def fetch_job_detail(url: str, http_config: HttpConfig) -> JobDetail:
     fetch_url = detail_fetch_url(url)
-    html, final_url = fetch_text(fetch_url, http_config)
-    detail = parse_job_detail_html(html, final_url or url)
-    if not detail.application_url:
-        detail.application_url = final_url or url
+    html, _final_url = fetch_text(fetch_url, http_config)
+    detail = parse_job_detail_html(html)
     return detail
 
 
@@ -777,10 +772,10 @@ def fetch_text(url: str, http_config: HttpConfig) -> tuple[str, str]:
     raise RuntimeError("detail fetch failed without an explicit error")
 
 
-def parse_job_detail_html(html: str, final_url: str) -> JobDetail:
+def parse_job_detail_html(html: str) -> JobDetail:
     payload = extract_json_ld_jobposting(html)
     if payload:
-        return detail_from_json_ld(payload, final_url)
+        return detail_from_json_ld(payload)
 
     title = first_non_empty(
         extract_meta_content(html, "og:title"),
@@ -795,11 +790,9 @@ def parse_job_detail_html(html: str, final_url: str) -> JobDetail:
     )
     title, company = split_title_company(title)
     return JobDetail(
-        final_url=final_url,
         title=title,
         company_name=company,
         description=description,
-        application_url=final_url,
         raw_payload={"detail_parser": "html"},
     )
 
@@ -839,7 +832,7 @@ def find_jobposting_payload(value: object) -> dict | None:
     return None
 
 
-def detail_from_json_ld(payload: dict, final_url: str) -> JobDetail:
+def detail_from_json_ld(payload: dict) -> JobDetail:
     locations = extract_job_locations(payload)
     organization = (
         payload.get("hiringOrganization")
@@ -847,20 +840,13 @@ def detail_from_json_ld(payload: dict, final_url: str) -> JobDetail:
         else {}
     )
     company_name = str((organization or {}).get("name") or "").strip()
-    company_url = str(
-        (organization or {}).get("sameAs") or (organization or {}).get("url") or ""
-    ).strip()
-    application_url = str(payload.get("url") or payload.get("sameAs") or final_url).strip()
     posted_at = str(payload.get("datePosted") or "").strip()
     description = html_to_text(str(payload.get("description") or ""))
     return JobDetail(
-        final_url=final_url,
         title=normalize_whitespace(str(payload.get("title") or "")),
         company_name=normalize_whitespace(company_name),
         location_raw=" | ".join(locations),
         description=description,
-        application_url=application_url,
-        company_url=company_url,
         posted_at_text=posted_at,
         raw_payload={
             "detail_parser": "json_ld",

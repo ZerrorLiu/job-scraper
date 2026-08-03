@@ -71,11 +71,6 @@ Copy `.env.example` to `.env` and fill only enabled integrations. Supported
 variables include:
 
 - `BRIGHTDATA_API_KEY`, `BRIGHTDATA_DATASET_ID`
-- `BRIGHTDATA_INDEED_JOBS_DATASET_ID` is optional. Set it only when concrete
-  Indeed job URLs use a different Bright Data dataset from keyword discovery.
-  A custom Indeed dataset may emit `external_application_url` (or an explicit
-  nested application URL) for a confirmed company/ATS destination; the
-  original Indeed URL remains the source URL.
 - `JOB_EMAIL_USERNAME`, `JOB_EMAIL_APP_PASSWORD`
 - `NOTION_INTEGRATION_TOKEN`, `NOTION_DATABASE_ID`,
   `NOTION_PARENT_PAGE_ID`
@@ -96,9 +91,9 @@ source-specific CLI flag is required. When no explicit `--post-age-days`
 override is supplied, mailbox ingestion uses the widest configured online
 freshness window across the selected profiles.
 
-Concrete Indeed URLs extracted from email are resolved in batches of ten with
-up to three batches in flight. Retryable Bright Data responses (`408`, `429`,
-`500`, `502`, `503`, and `504`) receive three attempts with exponential
-backoff. Persistent failures are split down to individual URLs and recorded on
-only the affected candidates; these safety limits are implementation defaults
-and do not require private configuration.
+Email-derived Indeed URLs may use the standard dataset to fetch complete job
+details in batches of ten with up to three batches in flight. Retryable Bright
+Data responses (`408`, `429`, `500`, `502`, `503`, and `504`) receive three
+attempts with exponential backoff. Persistent failures are split down to
+individual URLs and recorded on only the affected candidates. Direct Indeed
+collection remains single-stage, and the original Indeed URL remains the job link.

@@ -35,9 +35,6 @@ class IdentifiableJob(Protocol):
     def company_name(self) -> str: ...
 
     @property
-    def application_url(self) -> str: ...
-
-    @property
     def source_url(self) -> str: ...
 
     @property
@@ -228,10 +225,7 @@ class NotionDailySink:
     def _sync_url_children(self, page_id: str, job: JobRecord) -> None:
         if not page_id:
             return
-        desired_blocks = {
-            "Apply URL": build_children(job)[-2],
-            "Job URL": build_children(job)[-1],
-        }
+        desired_blocks = {"Job URL": build_children(job)[-1]}
         existing_blocks = self._client.list_child_blocks(page_id)
         found: set[str] = set()
         for block in existing_blocks:
@@ -286,7 +280,7 @@ def _existing_page_index(pages: list[dict]) -> dict[str, dict]:
 def _find_existing_page(index: dict[str, dict], job: IdentifiableJob) -> dict | None:
     job_urls = [
         _normalized_match_url(url)
-        for url in (job.application_url, job.source_url, job.canonical_url)
+        for url in (job.source_url, job.canonical_url)
         if url and url.strip()
     ]
     for url in job_urls:

@@ -11,7 +11,6 @@ from urllib.parse import urlencode
 
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
 from job_scraper.collectors.base import BaseCollector, SearchWindow
-from job_scraper.domain.url_resolution import resolve_external_application_url
 from job_scraper.models import RawJobRecord
 from job_scraper.pipeline.role_filter import company_matches_allowlist
 
@@ -249,11 +248,6 @@ class LinkedInCollector(BaseCollector):
         payload = _extract_json_ld_jobposting(html)
         if payload:
             seed.job_description = _html_to_text(payload.get("description", ""))
-            seed.application_url = resolve_external_application_url(
-                seed.source_url,
-                payload.get("applyLink") or payload.get("apply_link") or payload.get("url"),
-            )
-            seed.company_url = (payload.get("hiringOrganization") or {}).get("sameAs", "")
             detail_locations = _extract_job_locations(payload)
             if detail_locations:
                 seed.location_raw = " | ".join(detail_locations)

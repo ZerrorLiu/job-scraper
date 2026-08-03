@@ -7,7 +7,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+from job_scraper.domain.payload_sanitization import sanitize_job_payload
 from job_scraper.models import JobHistorySnapshot, JobRecord, RunStats
 from job_scraper.pipeline.normalize import combine_locations, serialize_payload
 
@@ -277,8 +279,11 @@ class Database:
                     str(existing["city"] or ""),
                     job.city,
                 )
-                merged_payload = json.loads(str(existing["raw_payload_json"] or "{}"))
-                merged_payload.update(job.raw_payload)
+                existing_payload = json.loads(str(existing["raw_payload_json"] or "{}"))
+                merged_payload = sanitize_job_payload(
+                    existing_payload if isinstance(existing_payload, dict) else {}
+                )
+                merged_payload.update(sanitize_job_payload(job.raw_payload))
                 if merged_options:
                     merged_payload["location_options"] = merged_options
                 connection.execute(
@@ -300,8 +305,8 @@ class Database:
                         job.salary_min,
                         job.salary_max,
                         job.salary_currency,
-                        job.application_url,
-                        job.company_url,
+                        "",
+                        "",
                         json.dumps(job.keyword_hits),
                         json.dumps(job.tech_stack),
                         serialize_payload(merged_payload),
@@ -347,11 +352,11 @@ class Database:
                         job.salary_min,
                         job.salary_max,
                         job.salary_currency,
-                        job.application_url,
-                        job.company_url,
+                        "",
+                        "",
                         json.dumps(job.keyword_hits),
                         json.dumps(job.tech_stack),
-                        serialize_payload(job.raw_payload),
+                        serialize_payload(sanitize_job_payload(job.raw_payload)),
                     ),
                 )
                 connection.execute(
@@ -376,16 +381,25 @@ class Database:
                     job.title,
                     job.company_name,
                     job.location_raw,
-                    serialize_payload(job.raw_payload),
+                    serialize_payload(sanitize_job_payload(job.raw_payload)),
                     "ok",
                 ),
             )
         return job_id, is_new
 
-    def export_jobs(self, languages: list[str] | None = None) -> list[sqlite3.Row]:
+    def export_jobs(self, languages: list[str] | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             query = """
-                SELECT j.*, a.application_status, a.applied_at, a.priority, a.notes
+                SELECT
+                    j.id, j.dedupe_key, j.source, j.source_job_id,
+                    j.source_url, j.canonical_url, j.normalized_title,
+                    j.company_name, j.location_text, j.country_code,
+                    j.city, j.region, j.remote_mode, j.employment_type,
+                    j.seniority, j.posted_at, j.first_seen_at, j.last_seen_at,
+                    j.description_full, j.description_language, j.english_ratio,
+                    j.salary_text, j.salary_min, j.salary_max, j.currency,
+                    j.keyword_hits_json, j.tech_stack_json, j.raw_payload_json,
+                    a.application_status, a.applied_at, a.priority, a.notes
                 FROM jobs j
                 LEFT JOIN application_state a ON a.job_id = j.id
             """
@@ -395,7 +409,14 @@ class Database:
                 query += f" WHERE j.description_language IN ({placeholders})"
                 params.extend(languages)
             query += " ORDER BY j.first_seen_at DESC"
-            return list(connection.execute(query, params))
+            rows = connection.execute(query, params).fetchall()
+            exported: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                payload = _json_object(item.get("raw_payload_json"))
+                item["raw_payload_json"] = serialize_payload(sanitize_job_payload(payload))
+                exported.append(item)
+            return exported
 
     def has_jobs(self) -> bool:
         with self.connect() as connection:
@@ -409,19 +430,6 @@ class Database:
                 (source,),
             ).fetchone()
             return row is not None
-
-    def pending_notion_jobs(self) -> list[sqlite3.Row]:
-        with self.connect() as connection:
-            return list(
-                connection.execute(
-                    """
-                    SELECT j.*, n.notion_page_id, n.last_payload_hash
-                    FROM jobs j
-                    LEFT JOIN notion_sync_state n ON n.job_id = j.id
-                    ORDER BY j.first_seen_at DESC
-                    """
-                )
-            )
 
     def upsert_notion_state(
         self, job_id: str, page_id: str, data_source_id: str, payload_hash: str, status: str
@@ -464,10 +472,10 @@ class Database:
                         """
                         SELECT id, normalized_title, company_name, last_seen_at
                         FROM jobs
-                        WHERE source_url = ? OR canonical_url = ? OR apply_url = ?
+                        WHERE source_url = ? OR canonical_url = ?
                         ORDER BY last_seen_at DESC
                         """,
-                        (normalized_url, normalized_url, normalized_url),
+                        (normalized_url, normalized_url),
                     )
                 )
                 filtered = [
@@ -598,3 +606,11 @@ class Database:
                 "SELECT id, location_text, city, raw_payload_json FROM jobs WHERE dedupe_key = ?",
                 (dedupe_key,),
             ).fetchone()
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}

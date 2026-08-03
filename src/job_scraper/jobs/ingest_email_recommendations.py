@@ -8,7 +8,10 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
+from queue import Empty
+from typing import Any
 
 from job_scraper.adapters.sinks.notion_workflow import (
     import_processed_statuses,
@@ -32,12 +35,11 @@ from job_scraper.cli.console import (
 )
 from job_scraper.collectors.data_integration_adapter import (
     BrightDataBatchResult,
-    execute_resilient_brightdata_url_batches,
+    execute_resilient_brightdata_detail_batches,
 )
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
 from job_scraper.domain.policies import FilterPolicy
-from job_scraper.domain.url_resolution import resolve_external_application_url
 from job_scraper.integrations.email_recommendations import (
     EmailIngestConfig,
     EmailIngestState,
@@ -142,7 +144,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--skip-status-import",
         action="store_true",
-        help="Skip the initial Notion-to-local application status import, but still write accepted jobs to Notion.",
+        help="Skip the initial Notion-to-local manual job-decision import, but still write accepted jobs to Notion.",
     )
     return parser.parse_args(argv)
 
@@ -223,7 +225,10 @@ def _prepare_with_runtimes(
 ) -> EmailPreparation:
     messages_to_mark: list[MailMessage] = []
     accepted_by_message: dict[str, int] = {}
-    messages = ImapEmailClient(email_config).fetch_recent_messages()
+    messages = ImapEmailClient(
+        email_config,
+        timeout_seconds=min(runtime.config.http.timeout_seconds for runtime in runtimes),
+    ).fetch_recent_messages()
     log_line(
         f"Email | Fetched {len(messages)} candidate recommendation emails | "
         f"Lookback {email_config.lookback_days}d | Max {email_config.max_messages}"
@@ -646,11 +651,11 @@ def prepare_email_details(
         source_id, source_job_id = platform_job_reference(candidate.url)
         if source_id == "indeed" and source_job_id:
             unresolved_indeed.append(candidate)
-    if not unresolved_indeed or not brightdata_url_resolution_enabled():
+    if not unresolved_indeed or not brightdata_detail_enrichment_enabled():
         return prepared
     urls = [indeed_detail_url(candidate.url) or candidate.url for candidate in unresolved_indeed]
     resolution = asyncio.run(
-        execute_resilient_brightdata_url_batches(
+        execute_resilient_brightdata_detail_batches(
             urls,
             snapshot_database=runtimes[0].database,
             request_timeout_seconds=runtimes[0].config.http.timeout_seconds,
@@ -666,7 +671,7 @@ def prepare_email_details(
         for record in batch.records:
             records_by_id[str(record.get("record_id") or "")] = (record, batch)
     for failed_url, error in resolution.errors_by_url.items():
-        log_error(f"Email | Bright Data URL resolution failed | URL {failed_url} | {error}")
+        log_error(f"Email | Bright Data detail enrichment failed | URL {failed_url} | {error}")
     for candidate in unresolved_indeed:
         link_key = canonical_link_key(candidate.url)
         _source_id, source_job_id = platform_job_reference(candidate.url)
@@ -717,13 +722,10 @@ def _report_email_resolution(
         )
 
 
-def brightdata_url_resolution_enabled() -> bool:
+def brightdata_detail_enrichment_enabled() -> bool:
     return bool(
         os.getenv("BRIGHTDATA_API_KEY", "").strip()
-        and (
-            os.getenv("BRIGHTDATA_INDEED_JOBS_DATASET_ID", "").strip()
-            or os.getenv("BRIGHTDATA_DATASET_ID", "").strip()
-        )
+        and os.getenv("BRIGHTDATA_DATASET_ID", "").strip()
     )
 
 
@@ -736,7 +738,65 @@ def resolve_prepared_or_fetch(
     resolved = prepared.get(canonical_link_key(candidate.url))
     if resolved is not None:
         return resolved
-    return enrich_email_candidate(candidate, runtimes, scraped_at)
+    return enrich_email_candidate_with_hard_timeout(candidate, runtimes, scraped_at)
+
+
+def enrich_email_candidate_with_hard_timeout(
+    candidate: EmailJobCandidate,
+    runtimes: list[TrackRuntime],
+    scraped_at: datetime,
+    *,
+    process_context: Any | None = None,
+) -> RawJobRecord:
+    """Bound one external detail fetch even when a network call does not return."""
+    http_config = runtimes[0].config.http
+    context = process_context or get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_email_detail_worker,
+        args=(candidate, http_config, scraped_at, result_queue),
+    )
+    process.start()
+    timeout_seconds = max(1, int(http_config.timeout_seconds))
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        return _email_detail_failure_raw(candidate, scraped_at, "detail fetch timed out")
+    try:
+        outcome, payload = result_queue.get_nowait()
+    except Empty:
+        return _email_detail_failure_raw(candidate, scraped_at, "detail worker returned no result")
+    if outcome == "ok" and isinstance(payload, RawJobRecord):
+        return payload
+    return _email_detail_failure_raw(candidate, scraped_at, str(payload))
+
+
+def _email_detail_worker(
+    candidate: EmailJobCandidate,
+    http_config: Any,
+    scraped_at: datetime,
+    result_queue: Any,
+) -> None:
+    try:
+        result_queue.put(
+            ("ok", enrich_email_candidate_to_raw_job(candidate, http_config, scraped_at))
+        )
+    except Exception as exc:
+        result_queue.put(("error", exc.__class__.__name__))
+
+
+def _email_detail_failure_raw(
+    candidate: EmailJobCandidate,
+    scraped_at: datetime,
+    error: str,
+) -> RawJobRecord:
+    raw = email_candidate_to_raw_job(candidate, scraped_at=scraped_at)
+    raw.raw_payload["detail_status"] = (
+        "email_fallback" if can_use_email_fallback(candidate, raw) else "too_sparse"
+    )
+    raw.raw_payload["detail_error"] = error
+    return raw
 
 
 def process_message(
@@ -791,8 +851,6 @@ def raw_from_stored_detail(
     raw.location_raw = stored.location_text or raw.location_raw
     raw.job_description = stored.description
     raw.employment_type = stored.employment_type or raw.employment_type
-    raw.canonical_url = stored.canonical_url or stored.source_url or raw.canonical_url
-    raw.application_url = resolve_external_application_url(candidate.url, stored.application_url)
     raw.raw_payload.update(
         {
             "detail_status": "ok",
@@ -820,16 +878,13 @@ def raw_from_brightdata_detail(
     raw.employment_type = str(record.get("employment_type") or "unknown")
     raw.posted_at_text = str(record.get("timestamp") or raw.posted_at_text)
     raw.canonical_url = str(record.get("reference_url") or raw.canonical_url)
-    raw.application_url = resolve_external_application_url(
-        raw.source_url, record.get("external_application_url")
-    )
     payload = record.get("raw_payload")
     raw.raw_payload.update(
         {
             "detail_status": "ok",
-            "detail_source": "brightdata_url",
-            "description_source": "brightdata_url",
-            "title_source": "brightdata_url",
+            "detail_source": "brightdata_detail",
+            "description_source": "brightdata_detail",
+            "title_source": "brightdata_detail",
             "brightdata_snapshot_id": batch.snapshot_id,
             "matched_source_id": "indeed",
             "matched_source_job_id": str(record.get("record_id") or ""),

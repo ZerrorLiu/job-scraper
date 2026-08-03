@@ -5,10 +5,8 @@ from job_scraper.ports.processors import PipelineStep
 from job_scraper.ports.repositories import JobRepository
 from job_scraper.ports.sinks import JobSink
 from job_scraper.ports.sources import JobSource, SourceCapabilities
-from job_scraper.ports.status import ApplicationStatusGateway
 
 __all__ = [
-    "ApplicationStatusGateway",
     "JobChannel",
     "JobRepository",
     "JobSink",

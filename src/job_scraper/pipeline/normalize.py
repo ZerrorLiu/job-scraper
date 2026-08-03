@@ -546,8 +546,6 @@ def normalize_candidate(raw: RawJobRecord, policy: FilterPolicy) -> JobRecord:
         salary_min=None,
         salary_max=None,
         salary_currency="EUR" if "\u20ac" in salary_text else None,
-        application_url=raw.application_url,
-        company_url=raw.company_url,
         dedupe_key=dedupe_key,
         raw_payload=payload,
     )
