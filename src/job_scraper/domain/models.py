@@ -143,3 +143,16 @@ class ApplicationRecord:
     status: str
     updated_at: datetime
     external_reference: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationJob:
+    """An accepted job that may be inspected by the application runner."""
+
+    canonical_job_id: str
+    application_url: str
+    title: str
+    company_name: str
+    location_text: str
+    description: str
+    status: str

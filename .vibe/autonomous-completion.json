@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "title": "Long-running LinkedIn and Indeed application readiness",
+  "status": "DONE",
+  "created_at": "2026-07-27T11:56:35+00:00",
+  "updated_at": "2026-07-27T12:02:38+00:00",
+  "iterations": 3,
+  "budget": {
+    "max_iterations": 12,
+    "max_matching_failures": 3
+  },
+  "acceptance": [
+    {
+      "criterion": "Find a currently valid accepted LinkedIn or Indeed job before stopping on an expired listing",
+      "evidence": "\u771f\u5b9e\u6d4f\u89c8\u5668\u68c0\u67e5 LinkedIn Manning Global AG \u804c\u4f4d\u6210\u529f\uff0cURL \u672a\u8fdb\u5165 authwall\uff1bIndeed ALTEN \u9875\u9762\u9996\u6b21\u53ef\u8bbf\u95ee\u4f46\u91cd\u68c0\u51fa\u73b0 Just a moment\u3002"
+    },
+    {
+      "criterion": "Use the real dedicated browser to inspect the selected source page and record private evidence",
+      "evidence": "\u9879\u76ee\u89c4\u683c docs/public/specs/2026-07-27-in-process-browser-application.md \u5df2\u8bb0\u5f55 LinkedIn/Indeed \u4f18\u5148\u7ea7\u53ca\u5b89\u5168\u8fb9\u754c\u3002"
+    },
+    {
+      "criterion": "Stop safely at login, consent, CAPTCHA, anti-bot, unsupported fields, or any required user decision",
+      "evidence": "Indeed \u91cd\u68c0\u8fdb\u5165 Just a moment \u53cd\u722c\u9875\u540e\u505c\u6b62\uff1b\u672a\u7ed5\u8fc7\u767b\u5f55\u3001\u540c\u610f\u3001CAPTCHA \u6216 anti-bot\u3002"
+    },
+    {
+      "criterion": "Never fill or submit an application without separate explicit authorization",
+      "evidence": "\u771f\u5b9e\u6d4f\u89c8\u5668\u547d\u4ee4\u4ec5 inspect/follow-apply\uff1b\u672a\u8f93\u5165\u4e2a\u4eba\u4fe1\u606f\u3001\u672a\u4e0a\u4f20\u6587\u6863\u3001\u672a\u70b9\u51fb\u786e\u8ba4\u63d0\u4ea4\u3002"
+    }
+  ],
+  "steps": [
+    {
+      "id": "scope",
+      "action": "establish source priority and safety boundaries",
+      "status": "COMPLETE",
+      "order": 1,
+      "summary": "\u7b2c\u4e00\u9636\u6bb5\u9501\u5b9a linkedin_direct \u4e0e indeed_brightdata\uff1b\u771f\u5b9e\u6d4f\u89c8\u5668\u4ec5\u68c0\u67e5\uff0c\u4e0d\u7ed5\u8fc7\u767b\u5f55/\u9a8c\u8bc1\u7801/\u53cd\u722c\uff0c\u4e0d\u81ea\u52a8\u63d0\u4ea4\u3002"
+    },
+    {
+      "id": "discover",
+      "action": "locate valid accepted LinkedIn and Indeed jobs",
+      "status": "COMPLETE",
+      "order": 2,
+      "summary": "\u627e\u5230\u6709\u6548 LinkedIn accepted job Manning Global AG\uff1b\u53d1\u73b0 Indeed accepted job ALTEN \u53ef\u8bbf\u95ee\u4f46\u540e\u7eed\u53d8\u4e3a Just a moment \u53cd\u722c\u9875\uff0c\u6309\u7b56\u7565\u505c\u6b62\u3002"
+    },
+    {
+      "id": "inspect",
+      "action": "run real-browser inspection and record evidence",
+      "status": "COMPLETE",
+      "order": 3,
+      "summary": "\u771f\u5b9e\u6d4f\u89c8\u5668\u8bc1\u636e\uff1aLinkedIn \u767b\u5f55\u72b6\u6001\u6709\u6548\u5e76\u6253\u5f00\u6709\u6548\u804c\u4f4d\uff1bIndeed \u9996\u6b21\u9875\u9762\u663e\u793a 1 \u4e2a\u8868\u5355\u4e0e Mit Indeed bewerben\uff0c\u91cd\u68c0\u89e6\u53d1 Just a moment\uff0c\u672a\u7ed5\u8fc7\u3002"
+    },
+    {
+      "id": "verify",
+      "action": "run offline quality gates and review live evidence",
+      "status": "COMPLETE",
+      "order": 4,
+      "summary": "Indeed URL \u56de\u9000\u4fee\u590d\u901a\u8fc7 vibe-verify\uff1aformat\u300131 tests\u3001lint\u3001typecheck \u5168\u90e8 PASS\uff1b\u6d4f\u89c8\u5668 live evidence \u5355\u72ec\u8bb0\u5f55\u3002"
+    }
+  ],
+  "gates": {
+    "focused-indeed-url-test": {
+      "result": "PASS",
+      "command": "uv run pytest public_tests/test_indeed_application_url.py",
+      "exit_code": 0,
+      "at": "2026-07-27T12:02:29+00:00",
+      "required": true
+    },
+    "vibe-verify": {
+      "result": "PASS",
+      "command": "uv run python C:\\Users\\zach\\Desktop\\my-vibe-skills\\skills\\vibe-verify\\scripts\\verify.py",
+      "exit_code": 0,
+      "at": "2026-07-27T12:02:29+00:00",
+      "required": true
+    }
+  },
+  "failure_counts": {},
+  "termination_reason": "all steps complete and required gates passed"
+}

@@ -40,6 +40,20 @@ outputs. The public repository supplies implementations but no selection. This
 keeps a user's search strategy and external workspace private while allowing
 new sources and pipeline steps to be shared independently.
 
+## In-process browser application delivery
+
+Application delivery runs as a separate use-case area inside this repository.
+Discovery, normalization, filtering, and canonical job identity remain
+upstream responsibilities. The application runner reads accepted jobs from the
+existing workspace database and uses private runtime facts, approved
+documents, and a dedicated browser profile to operate supported application
+forms.
+
+Private runtime state must remain outside Git and must not leak into discovery
+domain or pipeline imports. Browser vendors, credential stores, and external
+status integrations are adapters behind ports. See the [in-process browser
+application specification](specs/2026-07-27-in-process-browser-application.md).
+
 ## Concurrency
 
 Enabled profiles can run concurrently. Sources within a profile can run

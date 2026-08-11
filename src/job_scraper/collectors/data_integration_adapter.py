@@ -936,6 +936,7 @@ def _to_raw_job(
         source_job_id=str(record.get("record_id") or "").strip(),
         source_url=reference_url,
         canonical_url=reference_url,
+        application_url=reference_url,
         title=str(record.get("position_title") or "").strip(),
         company_name=str(record.get("organization") or "").strip(),
         location_raw=str(record.get("region") or "").strip(),

@@ -9,6 +9,7 @@ description = "Composable, agent-friendly job discovery pipeline."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "playwright>=1.52,<2",
     "python-dotenv>=1.0,<2",
     "tzdata>=2024.1",
 ]
@@ -34,6 +35,7 @@ where = ["src"]
 target-version = "py311"
 line-length = 100
 src = ["src", "public_tests"]
+exclude = ["my-vibe-skills"]
 
 [tool.ruff.lint]
 select = [
