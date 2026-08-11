@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-scraper"
+version = "0.2.0"
+description = "Composable, agent-friendly job discovery pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv>=1.0,<2",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.400,<2",
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.12,<1",
+]
+
+[project.scripts]
+job-scraper = "job_scraper.cli.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "public_tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "C4",
+    "RUF",
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"public_tests/**/*.py" = ["B011"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+include = ["src"]
+exclude = [
+    "src/job_scraper/compatibility",
+]
+ignore = [
+    "src/job_scraper/collectors/data_integration_adapter.py",
+    "src/job_scraper/integrations/email_recommendations.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["public_tests"]
+addopts = "-ra -p no:cacheprovider"
+markers = [
+    "live: requires network access and real credentials",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["job_scraper"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
