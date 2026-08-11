@@ -28,6 +28,9 @@ class SQLiteV1Repository:
     def get_application_status(self, job_id: str) -> str:
         return self.database.get_application_status(job_id)
 
+    def has_recent_not_interested_match(self, job: JobRecord, started_at: datetime) -> bool:
+        return self.database.has_recent_not_interested_match(job, started_at)
+
     def get_job_history(
         self,
         job_id: str,

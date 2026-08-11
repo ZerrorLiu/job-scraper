@@ -123,7 +123,7 @@ def target_rule_keyword_groups(rule: object) -> list[list[str]]:
     )
     groups: list[list[str]] = []
     for raw_group in raw_groups:
-        if not isinstance(raw_group, list):
+        if isinstance(raw_group, (str, bytes)) or not isinstance(raw_group, Sequence):
             continue
         group = [str(value).strip().lower() for value in raw_group if str(value).strip()]
         if group:

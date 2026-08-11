@@ -257,7 +257,7 @@ class LiveRunTable:
             lines = [f"Job Scraper [{state}]"]
             lines.append(
                 f"{'Track':<14} {'Source':<10} {'Stage':<12} {'Progress':>9} "
-                f"{'Seen':>6} {'Keep':>6} {'Drop':>6}  Detail"
+                f"{'Seen':>6} {'Accept':>6} {'Drop':>6}  Detail"
             )
             lines.append("-" * 92)
             for track, rows in _group_rows_by_track(self._rows.values()):

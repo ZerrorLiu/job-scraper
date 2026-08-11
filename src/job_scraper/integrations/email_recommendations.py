@@ -7,6 +7,7 @@ import os
 import re
 import time
 import tomllib
+import unicodedata
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -139,6 +140,10 @@ LOCATION_LABELS = {
     "rotterdam": "Rotterdam",
     "utrecht": "Utrecht",
     "eindhoven": "Eindhoven",
+    "the hague": "The Hague",
+    "hague": "The Hague",
+    "maastricht": "Maastricht",
+    "tilburg": "Tilburg",
     "dublin": "Dublin",
     "cork": "Cork",
     "galway": "Galway",
@@ -162,6 +167,47 @@ LOCATION_LABELS = {
     "antwerpen": "Antwerp",
     "ghent": "Ghent",
     "gent": "Ghent",
+    "paris": "Paris",
+    "lyon": "Lyon",
+    "lille": "Lille",
+    "strasbourg": "Strasbourg",
+    "metz": "Metz",
+    "nancy": "Nancy",
+    "zurich": "Zurich",
+    "zuerich": "Zurich",
+    "geneva": "Geneva",
+    "geneve": "Geneva",
+    "basel": "Basel",
+    "bern": "Bern",
+    "prague": "Prague",
+    "praha": "Prague",
+    "brno": "Brno",
+    "warsaw": "Warsaw",
+    "warszawa": "Warsaw",
+    "krakow": "Krakow",
+    "wroclaw": "Wroclaw",
+    "poznan": "Poznan",
+    "chicago": "Chicago",
+    "st_louis": "St. Louis",
+    "new_york": "New York",
+    "atlanta": "Atlanta",
+    "austin": "Austin",
+    "abu_dhabi": "Abu Dhabi",
+}
+
+EFINANCIAL_LOCATION_ALIASES = {
+    **LOCATION_LABELS,
+    "brussel": "Brussels",
+    "bruessel": "Brussels",
+    "dusseldorf": "Dusseldorf",
+    "florence": "Florence",
+    "florenz": "Florence",
+    "gurgaon": "Gurgaon",
+    "london": "London",
+    "mitte": "Mitte",
+    "singapore": "Singapore",
+    "singapur": "Singapore",
+    "sydney": "Sydney",
 }
 
 COUNTRY_LOCATION_LABELS = {
@@ -244,13 +290,10 @@ class EmailJobCandidate:
 
 @dataclass(slots=True)
 class JobDetail:
-    final_url: str
     title: str = ""
     company_name: str = ""
     location_raw: str = ""
     description: str = ""
-    application_url: str = ""
-    company_url: str = ""
     posted_at_text: str = ""
     raw_payload: dict[str, object] = field(default_factory=dict)
 
@@ -300,8 +343,11 @@ class EmailIngestState:
 
 
 class ImapEmailClient:
-    def __init__(self, config: EmailIngestConfig) -> None:
+    def __init__(self, config: EmailIngestConfig, *, timeout_seconds: float = 30.0) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than 0")
         self.config = config
+        self._timeout_seconds = timeout_seconds
 
     def fetch_recent_messages(self) -> list[MailMessage]:
         if not self.config.username or not self.config.password:
@@ -309,9 +355,17 @@ class ImapEmailClient:
                 "Email credentials are missing. Set the configured username/password environment variables."
             )
         if self.config.use_ssl:
-            connection: imaplib.IMAP4 = imaplib.IMAP4_SSL(self.config.host, self.config.port)
+            connection: imaplib.IMAP4 = imaplib.IMAP4_SSL(
+                self.config.host,
+                self.config.port,
+                timeout=self._timeout_seconds,
+            )
         else:
-            connection = imaplib.IMAP4(self.config.host, self.config.port)
+            connection = imaplib.IMAP4(
+                self.config.host,
+                self.config.port,
+                timeout=self._timeout_seconds,
+            )
         try:
             connection.login(self.config.username, self.config.password)
             status, _ = connection.select(format_imap_mailbox(self.config.folder), readonly=True)
@@ -552,8 +606,28 @@ def extract_job_candidates(message: MailMessage) -> list[EmailJobCandidate]:
         title, company_from_title = infer_title(link.label, context, url, message.subject)
         if not title:
             continue
-        company = company_from_title or infer_company(context, title, message.sender)
-        location = infer_location(context, full_text)
+        if is_efinancialcareers_url(url):
+            _url_title, url_company, url_location = efinancial_url_metadata(url)
+            card_company, card_location = infer_efinancial_card_metadata(
+                title, context, url_location
+            )
+            company = card_company or company_from_title or infer_company(context, title, "")
+            if is_publisher_company(company):
+                company = ""
+            company = company or url_company
+            # The surrounding recommendation cards may contain unrelated
+            # locations. Prefer the selected job URL and detail page only.
+            location = card_location or url_location
+        else:
+            linkedin_company, linkedin_location = infer_linkedin_card_metadata(
+                title, context, link.label
+            )
+            company = (
+                linkedin_company
+                or company_from_title
+                or infer_company(context, title, message.sender)
+            )
+            location = linkedin_location or infer_location(context, full_text)
         if not is_jobish_candidate(url, title, context):
             continue
         dedupe_url = canonical_link_key(url)
@@ -593,7 +667,6 @@ def email_candidate_to_raw_job(
         posted_at_text=candidate.email_date.isoformat(),
         scraped_at=observed_at,
         job_description="",
-        application_url=candidate.url,
         raw_payload={
             "freshness_basis": "email_received",
             "acquisition_mode": "email",
@@ -630,6 +703,257 @@ def job_platform_from_url(url: str) -> str:
     return "unknown"
 
 
+def is_efinancialcareers_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").casefold()
+    roots = ("efinancialcareers.com", "efinancialcareers.de", "efinancialcareers.test")
+    return any(host == root or host.endswith(f".{root}") for root in roots)
+
+
+def is_publisher_company(value: str) -> bool:
+    normalized = normalize_whitespace(value).casefold()
+    return normalized in {"efinancialcareers", "emails", "unknown"}
+
+
+def efinancial_url_metadata(url: str) -> tuple[str, str, str]:
+    if not is_efinancialcareers_url(url):
+        return "", "", ""
+    path = unquote(urlsplit(url).path)
+    slug = re.sub(r"\.id\d+$", "", path.rsplit("/", 1)[-1], flags=re.IGNORECASE)
+    slug = re.sub(r"^jobs[-_]", "", slug, flags=re.IGNORECASE)
+    folded_slug = fold_url_text(slug)
+    aliases = sorted(
+        {
+            fold_url_text(alias): label for alias, label in EFINANCIAL_LOCATION_ALIASES.items()
+        }.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    if not aliases:
+        return "", "", ""
+    location_pattern_text = "|".join(re.escape(alias) for alias, _label in aliases)
+    match = re.search(
+        rf"(?<![a-z0-9])(?P<location>{location_pattern_text})(?![a-z0-9])",
+        folded_slug,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return "", "", ""
+    location = next(
+        label for alias, label in aliases if alias.casefold() == match.group("location").casefold()
+    )
+    title_slug = slug[match.end() :].lstrip("-_")
+    title_hint = normalize_whitespace(re.sub(r"_+", " ", title_slug))
+    title_hint, company_hint = split_title_company(title_hint, location_hint=location)
+    return title_hint, company_hint, location
+
+
+def fold_url_text(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value)
+    return "".join(
+        character for character in folded if not unicodedata.combining(character)
+    ).casefold()
+
+
+def infer_efinancial_card_metadata(title: str, context: str, url_location: str) -> tuple[str, str]:
+    """Split the selected eFinancial card's company/location row.
+
+    The email card commonly renders as ``title company city, country ...``
+    before the apply link. The URL slug gives us a trustworthy city anchor;
+    using that anchor prevents the company parser from absorbing the city.
+    """
+    normalized_title = normalize_whitespace(title)
+    normalized_context = normalize_whitespace(context)
+    normalized_location = normalize_whitespace(url_location)
+    if not normalized_title or not normalized_context or not normalized_location:
+        return "", ""
+
+    title_match = re.search(re.escape(normalized_title), normalized_context, flags=re.IGNORECASE)
+    if not title_match:
+        title_match = ROLE_PATTERN.search(normalized_context)
+    if not title_match:
+        return "", ""
+    remainder = normalized_context[title_match.end() :].lstrip(" -:|鈥?•·")
+    location_tokens = [
+        token for token in re.split(r"[^\w]+", fold_url_text(normalized_location)) if token
+    ]
+    if not location_tokens:
+        return "", ""
+    location_pattern = (
+        r"\b" + r"[\s.,/_-]+".join(re.escape(token) for token in location_tokens) + r"\b"
+    )
+    location_match = re.search(location_pattern, fold_url_text(remainder), flags=re.IGNORECASE)
+    if not location_match:
+        return "", ""
+
+    company = cleanup_company(remainder[: location_match.start()])
+    location_tail = remainder[location_match.start() :]
+    location = re.split(
+        r"\s*(?:•|·|\||鈥?)\s*|\s+(?:Festanstellung|Vollzeit|Teilzeit|Competitive|Jetzt\s+bewerben)\b",
+        location_tail,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    card_location_match = re.match(
+        r"(?P<location>.*?)(?:\s+(?:Festanstellung|Vollzeit|Teilzeit|Competitive|Jetzt\s+bewerben)\b|\s*[\u2022\u00b7|]\s*|$)",
+        location_tail,
+        flags=re.IGNORECASE,
+    )
+    if card_location_match:
+        location = card_location_match.group("location")
+    return company, normalize_whitespace(location).strip(" -,:")
+
+
+def infer_linkedin_card_metadata(title: str, context: str, label: str = "") -> tuple[str, str]:
+    """Read company/location from the selected LinkedIn email card.
+
+    LinkedIn job-detail requests can fail or return a guest page without the
+    structured posting fields. Its email cards still commonly contain the
+    selected job followed by ``Company · City``. The title anchor is
+    intentional: parsing the whole email would borrow metadata from adjacent
+    recommendation cards.
+    """
+    normalized_title = _normalize_linkedin_card_text(title)
+    if not normalized_title:
+        return "", ""
+
+    # Some cards put the company and city directly in the anchor label, so
+    # parse that form before looking for the title in the wider context.
+    company, location = _split_linkedin_card_label(normalized_title)
+    if company or location:
+        return company, location
+
+    for source in (label, context):
+        normalized_source = _normalize_linkedin_card_text(source)
+        if not normalized_source:
+            continue
+        title_match = re.search(re.escape(normalized_title), normalized_source, flags=re.IGNORECASE)
+        if not title_match:
+            continue
+        remainder = normalized_source[title_match.end() :]
+        company, location = _split_linkedin_card_suffix(remainder)
+        if company or location:
+            return company, location
+    return "", ""
+
+
+def _normalize_linkedin_card_text(value: str) -> str:
+    without_invisible = re.sub(r"[\u034f\u200b-\u200d\ufeff]", " ", value or "")
+    return normalize_whitespace(without_invisible)
+
+
+def _split_linkedin_card_label(value: str) -> tuple[str, str]:
+    cleaned = _normalize_linkedin_card_text(value)
+    if not cleaned:
+        return "", ""
+
+    at_match = re.search(r"\s+(?:at|@)\s+(?P<company>.+?)\s*$", cleaned, flags=re.IGNORECASE)
+    if at_match:
+        return _valid_linkedin_company(at_match.group("company")), ""
+
+    if not re.search(r"[\u2022\u00b7]", cleaned):
+        return "", ""
+    left, location = re.split(r"\s*[\u2022\u00b7]\s*", cleaned, maxsplit=1)
+    location = _clean_linkedin_card_location(location)
+    if not location:
+        return "", ""
+
+    # LinkedIn's visible card label is commonly: title (m/w/d) Company · City.
+    # A trailing parenthesized employment marker gives us a stable boundary
+    # even when the company name itself contains multiple words.
+    parenthesized = re.match(
+        r"(?P<title>.+\([^)]{1,24}\)\*?)\s+(?P<company>[^\u2022\u00b7]+)$",
+        left,
+    )
+    if parenthesized:
+        company = _valid_linkedin_company(parenthesized.group("company"))
+        if company:
+            return company, location
+
+    # For a simpler title, use the final role match and only accept a short
+    # suffix as the company. This does not attempt to infer from the whole
+    # email body.
+    role_matches = list(ROLE_PATTERN.finditer(left))
+    if role_matches:
+        company = _valid_linkedin_company(left[role_matches[-1].end() :])
+        if company and len(company.split()) <= 6:
+            return company, location
+    return "", ""
+
+
+def _split_linkedin_card_suffix(value: str) -> tuple[str, str]:
+    cleaned = _normalize_linkedin_card_text(value).lstrip(" -:|\u2022\u00b7")
+    if not cleaned:
+        return "", ""
+
+    at_match = re.match(
+        r"(?:at|@)\s+(?P<company>.+?)(?:\s+[|\u2022\u00b7].*)?$",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if at_match:
+        return _valid_linkedin_company(at_match.group("company")), ""
+
+    separator = re.search(r"\s*[\u2022\u00b7]\s*", cleaned)
+    if not separator:
+        return "", ""
+    company_candidate = cleaned[: separator.start()]
+    # A role at the start of this suffix means the selected card had no
+    # metadata; the text belongs to the next recommendation card.
+    if ROLE_PATTERN.match(company_candidate):
+        return "", ""
+    company = _valid_linkedin_company(company_candidate)
+    location = _clean_linkedin_card_location(cleaned[separator.end() :])
+    return company, location
+
+
+def _valid_linkedin_company(value: str) -> str:
+    company = cleanup_company(value)
+    if not company or is_publisher_company(company) or looks_like_location(company):
+        return ""
+    return company
+
+
+def _clean_linkedin_card_location(value: str) -> str:
+    location = normalize_whitespace(value)
+    location = re.split(r"\s*[\u2022\u00b7|]\s*", location, maxsplit=1)[0]
+    location = re.split(
+        r"\s+\((?:on-site|hybrid|remote|vollzeit|teilzeit)[^)]*\)",
+        location,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    next_role = _next_linkedin_role_start(location)
+    if next_role is not None:
+        location = location[:next_role]
+    return cleanup_location(location)
+
+
+def _next_linkedin_role_start(value: str) -> int | None:
+    role_starters = (
+        "embedded",
+        "platform",
+        "software",
+        "senior",
+        "junior",
+        "backend",
+        "frontend",
+        "firmware",
+        "system",
+        "systems",
+        "cloud",
+        "data",
+        "machine",
+        "computer",
+        "devops",
+    )
+    starter_pattern = "|".join(re.escape(value) for value in role_starters)
+    for match in re.finditer(rf"\b(?:{starter_pattern})\b", value, flags=re.IGNORECASE):
+        suffix = value[match.start() :]
+        if re.search(r"\b(?:engineer|developer|entwickler)\b", suffix, flags=re.IGNORECASE):
+            return match.start()
+    return None
+
+
 def enrich_email_candidate_to_raw_job(
     candidate: EmailJobCandidate,
     http_config: HttpConfig,
@@ -655,28 +979,36 @@ def enrich_email_candidate_to_raw_job(
     if has_usable_detail_text(detail.description):
         raw.job_description = detail.description
         raw.raw_payload["description_source"] = "job_detail"
-    if detail.application_url:
-        raw.application_url = detail.application_url
-    if detail.company_url:
-        raw.company_url = detail.company_url
     if detail.posted_at_text:
         raw.posted_at_text = detail.posted_at_text
-    if detail.final_url:
-        raw.canonical_url = detail.final_url
-        raw.raw_payload["detail_final_url"] = detail.final_url
+    raw.raw_payload.update(detail.raw_payload)
+    final_url = clean_url(str(detail.raw_payload.get("final_url") or ""))
+    if final_url:
+        raw.canonical_url = final_url
+        raw.source_job_id = stable_source_job_id_for_values(
+            final_url,
+            raw.title,
+            raw.company_name,
+        )
     raw.raw_payload["detail_status"] = (
         "ok"
-        if has_usable_detail_text(detail.description)
+        if has_usable_detail_text(detail.description) and has_known_metadata(raw)
         else "email_fallback"
         if can_use_email_fallback(candidate, raw)
         else "too_sparse"
     )
-    raw.raw_payload.update(detail.raw_payload)
     return raw
 
 
 def has_usable_detail_text(value: str) -> bool:
     return len(normalize_whitespace(value)) >= 120
+
+
+def has_known_metadata(raw: RawJobRecord) -> bool:
+    return all(
+        normalize_whitespace(value).casefold() not in {"", "unknown", "n/a"}
+        for value in (raw.title, raw.company_name, raw.location_raw)
+    )
 
 
 def can_use_email_fallback(candidate: EmailJobCandidate, raw: RawJobRecord) -> bool:
@@ -695,9 +1027,14 @@ def can_use_email_fallback(candidate: EmailJobCandidate, raw: RawJobRecord) -> b
 def fetch_job_detail(url: str, http_config: HttpConfig) -> JobDetail:
     fetch_url = detail_fetch_url(url)
     html, final_url = fetch_text(fetch_url, http_config)
-    detail = parse_job_detail_html(html, final_url or url)
-    if not detail.application_url:
-        detail.application_url = final_url or url
+    resolved_url = clean_url(final_url) or fetch_url
+    detail = parse_job_detail_html(html, resolved_url)
+    detail.raw_payload.update(
+        {
+            "detail_fetch_url": fetch_url,
+            "final_url": resolved_url,
+        }
+    )
     return detail
 
 
@@ -774,10 +1111,18 @@ def fetch_text(url: str, http_config: HttpConfig) -> tuple[str, str]:
     raise RuntimeError("detail fetch failed without an explicit error")
 
 
-def parse_job_detail_html(html: str, final_url: str) -> JobDetail:
+def parse_job_detail_html(html: str, url: str = "") -> JobDetail:
+    url_title, url_company, url_location = efinancial_url_metadata(url)
     payload = extract_json_ld_jobposting(html)
     if payload:
-        return detail_from_json_ld(payload, final_url)
+        detail = detail_from_json_ld(payload)
+        html_company, html_location = extract_html_header_metadata(html)
+        detail.title = detail.title or url_title
+        detail.company_name = detail.company_name or html_company or url_company
+        detail.location_raw = detail.location_raw or html_location or url_location
+        if url_location and not detail.raw_payload.get("location_options"):
+            detail.raw_payload["location_options"] = [url_location]
+        return detail
 
     title = first_non_empty(
         extract_meta_content(html, "og:title"),
@@ -790,14 +1135,20 @@ def parse_job_detail_html(html: str, final_url: str) -> JobDetail:
         extract_meta_content(html, "og:description"),
         html_to_text(remove_noise_html(html)),
     )
-    title, company = split_title_company(title)
+    title, company = split_title_company(title, location_hint=url_location)
+    html_company, html_location = extract_html_header_metadata(html)
+    title = title or url_title
+    company = company or html_company or url_company
+    location = html_location or url_location
+    raw_payload: dict[str, object] = {"detail_parser": "html"}
+    if location:
+        raw_payload["location_options"] = [location]
     return JobDetail(
-        final_url=final_url,
         title=title,
         company_name=company,
+        location_raw=location,
         description=description,
-        application_url=final_url,
-        raw_payload={"detail_parser": "html"},
+        raw_payload=raw_payload,
     )
 
 
@@ -836,7 +1187,7 @@ def find_jobposting_payload(value: object) -> dict | None:
     return None
 
 
-def detail_from_json_ld(payload: dict, final_url: str) -> JobDetail:
+def detail_from_json_ld(payload: dict) -> JobDetail:
     locations = extract_job_locations(payload)
     organization = (
         payload.get("hiringOrganization")
@@ -844,20 +1195,13 @@ def detail_from_json_ld(payload: dict, final_url: str) -> JobDetail:
         else {}
     )
     company_name = str((organization or {}).get("name") or "").strip()
-    company_url = str(
-        (organization or {}).get("sameAs") or (organization or {}).get("url") or ""
-    ).strip()
-    application_url = str(payload.get("url") or payload.get("sameAs") or final_url).strip()
     posted_at = str(payload.get("datePosted") or "").strip()
     description = html_to_text(str(payload.get("description") or ""))
     return JobDetail(
-        final_url=final_url,
         title=normalize_whitespace(str(payload.get("title") or "")),
         company_name=normalize_whitespace(company_name),
         location_raw=" | ".join(locations),
         description=description,
-        application_url=application_url,
-        company_url=company_url,
         posted_at_text=posted_at,
         raw_payload={
             "detail_parser": "json_ld",
@@ -980,6 +1324,42 @@ def extract_first_heading(html: str) -> str:
     return html_to_text(match.group(1)) if match else ""
 
 
+def extract_html_header_metadata(html: str) -> tuple[str, str]:
+    """Read the visible company/location row immediately below a job heading."""
+
+    heading = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.IGNORECASE | re.DOTALL)
+    if not heading:
+        return "", ""
+    nearby_html = remove_noise_html(html[heading.end() : heading.end() + 6000])
+    nearby_text = html_to_text(nearby_html)
+    for separator in ("•", "·", "|"):
+        parts = [normalize_whitespace(part) for part in nearby_text.split(separator)]
+        if len(parts) < 2:
+            continue
+        company = cleanup_company(parts[0])
+        location = cleanup_location(
+            re.split(
+                r"\s+(?:Festanstellung|Vollzeit|Teilzeit|Competitive|Posted|Gehaltsspanne)\b",
+                parts[1],
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+        )
+        if company and location and _looks_like_visible_location(location):
+            return company, location
+    return "", ""
+
+
+def _looks_like_visible_location(value: str) -> bool:
+    normalized = normalize_whitespace(value).casefold()
+    if "," in normalized:
+        return True
+    return any(
+        re.search(rf"(?<![a-z]){re.escape(key)}(?![a-z])", normalized)
+        for key in (*LOCATION_LABELS.keys(), *COUNTRY_LOCATION_LABELS.keys())
+    )
+
+
 def remove_noise_html(html: str) -> str:
     cleaned = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
     cleaned = re.sub(r"<style[\s\S]*?</style>", " ", cleaned, flags=re.IGNORECASE)
@@ -996,11 +1376,15 @@ def first_non_empty(*values: str) -> str:
 
 
 def stable_source_job_id(candidate: EmailJobCandidate) -> str:
+    return stable_source_job_id_for_values(candidate.url, candidate.title, candidate.company_name)
+
+
+def stable_source_job_id_for_values(url: str, title: str, company: str) -> str:
     basis = "|".join(
         [
-            canonical_link_key(candidate.url),
-            normalize_whitespace(candidate.title).lower(),
-            normalize_whitespace(candidate.company_name).lower(),
+            canonical_link_key(url),
+            normalize_whitespace(title).lower(),
+            normalize_whitespace(company).lower(),
         ]
     )
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
@@ -1161,11 +1545,15 @@ def is_indeed_job_url(url: str) -> bool:
 
 
 def infer_title(label: str, context: str, url: str, subject: str) -> tuple[str, str]:
+    url_title, url_company, _url_location = efinancial_url_metadata(url)
     label_title = cleanup_title(label)
     if label_title and not is_generic_label(label_title):
         title, company = split_title_company(label_title)
         if title:
             return title, company
+
+    if url_title:
+        return url_title, url_company
 
     for source in (context, subject, title_from_url(url)):
         match = ROLE_PATTERN.search(source or "")
@@ -1190,7 +1578,7 @@ def cleanup_title(value: str) -> str:
     return cleaned
 
 
-def split_title_company(value: str) -> tuple[str, str]:
+def split_title_company(value: str, location_hint: str = "") -> tuple[str, str]:
     cleaned = cleanup_title(value)
     if not cleaned:
         return "", ""
@@ -1207,6 +1595,14 @@ def split_title_company(value: str) -> tuple[str, str]:
         left, right = [part.strip() for part in cleaned.split(separator, 1)]
         if looks_like_role(left) and right and not looks_like_location(right):
             return cleanup_title(left), cleanup_company(right)
+        if looks_like_role(left) and location_hint:
+            location_prefix = re.match(
+                rf"{re.escape(location_hint)}\s*[-:|]\s*(?P<company>.+)$",
+                right,
+                flags=re.IGNORECASE,
+            )
+            if location_prefix:
+                return cleanup_title(left), cleanup_company(location_prefix.group("company"))
     return cleaned, ""
 
 

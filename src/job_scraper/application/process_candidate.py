@@ -45,7 +45,7 @@ class ProcessJobCandidate:
         normalizer: JobNormalizer,
         *,
         decision_recorder: CandidateDecisionRecorder | None = None,
-        processed_statuses: frozenset[str] = frozenset({"applied", "not fit"}),
+        processed_statuses: frozenset[str] = frozenset({"applied", "not_interested"}),
     ) -> None:
         self._repository = repository
         self._pipeline = pipeline
@@ -83,6 +83,19 @@ class ProcessJobCandidate:
             rejected = Decision.reject(
                 RejectionReason.ALREADY_PROCESSED,
                 step="processed_status",
+            )
+            self._record(job, rejected, context, legacy_job_id=job_id)
+            return CandidateProcessingResult(
+                job=job,
+                decision=rejected,
+                job_id=job_id,
+                is_new=is_new,
+            )
+
+        if self._repository.has_recent_not_interested_match(job, context.started_at):
+            rejected = Decision.reject(
+                RejectionReason.RECENTLY_NOT_INTERESTED,
+                step="recent_not_interested",
             )
             self._record(job, rejected, context, legacy_job_id=job_id)
             return CandidateProcessingResult(

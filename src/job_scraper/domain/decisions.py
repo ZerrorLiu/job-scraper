@@ -16,6 +16,7 @@ class RejectionReason(StrEnum):
     NON_ENGLISH = "non_english"
     ALREADY_PROCESSED = "already_processed"
     ALREADY_SEEN = "already_seen"
+    RECENTLY_NOT_INTERESTED = "recently_not_interested"
 
 
 @dataclass(frozen=True, slots=True)

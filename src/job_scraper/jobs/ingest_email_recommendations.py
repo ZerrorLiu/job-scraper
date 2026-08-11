@@ -5,10 +5,14 @@ import asyncio
 import os
 import sys
 from collections import Counter
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
+from queue import Empty
+from typing import Any
 
 from job_scraper.adapters.sinks.notion_workflow import (
     import_processed_statuses,
@@ -32,7 +36,8 @@ from job_scraper.cli.console import (
 )
 from job_scraper.collectors.data_integration_adapter import (
     BrightDataBatchResult,
-    execute_resilient_brightdata_url_batches,
+    BrightDataDetailResolutionResult,
+    execute_resilient_brightdata_detail_batches,
 )
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
@@ -49,6 +54,7 @@ from job_scraper.integrations.email_recommendations import (
     enrich_email_candidate_to_raw_job,
     extract_job_candidates,
     indeed_detail_url,
+    is_efinancialcareers_url,
     load_email_ingest_config,
     platform_job_reference,
 )
@@ -66,6 +72,9 @@ from job_scraper.storage.db import Database
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 EMAIL_SOURCE = "email"
+EFINANCIAL_ALLOWED_COUNTRIES = ("DE", "NL", "BE", "FR", "LU", "AT", "CH", "CZ", "PL", "DK")
+BRIGHTDATA_EMAIL_DETAIL_SNAPSHOT_TIMEOUT_SECONDS = 120.0
+BRIGHTDATA_EMAIL_DETAIL_TOTAL_TIMEOUT_SECONDS = 300.0
 
 
 @dataclass(slots=True)
@@ -141,7 +150,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--skip-status-import",
         action="store_true",
-        help="Skip the initial Notion-to-local application status import, but still write accepted jobs to Notion.",
+        help="Skip the initial Notion-to-local manual job-decision import, but still write accepted jobs to Notion.",
     )
     return parser.parse_args(argv)
 
@@ -222,7 +231,10 @@ def _prepare_with_runtimes(
 ) -> EmailPreparation:
     messages_to_mark: list[MailMessage] = []
     accepted_by_message: dict[str, int] = {}
-    messages = ImapEmailClient(email_config).fetch_recent_messages()
+    messages = ImapEmailClient(
+        email_config,
+        timeout_seconds=min(runtime.config.http.timeout_seconds for runtime in runtimes),
+    ).fetch_recent_messages()
     log_line(
         f"Email | Fetched {len(messages)} candidate recommendation emails | "
         f"Lookback {email_config.lookback_days}d | Max {email_config.max_messages}"
@@ -645,11 +657,11 @@ def prepare_email_details(
         source_id, source_job_id = platform_job_reference(candidate.url)
         if source_id == "indeed" and source_job_id:
             unresolved_indeed.append(candidate)
-    if not unresolved_indeed or not brightdata_url_resolution_enabled():
+    if not unresolved_indeed or not brightdata_detail_enrichment_enabled():
         return prepared
     urls = [indeed_detail_url(candidate.url) or candidate.url for candidate in unresolved_indeed]
     resolution = asyncio.run(
-        execute_resilient_brightdata_url_batches(
+        _execute_brightdata_detail_batches_bounded(
             urls,
             snapshot_database=runtimes[0].database,
             request_timeout_seconds=runtimes[0].config.http.timeout_seconds,
@@ -665,7 +677,7 @@ def prepare_email_details(
         for record in batch.records:
             records_by_id[str(record.get("record_id") or "")] = (record, batch)
     for failed_url, error in resolution.errors_by_url.items():
-        log_error(f"Email | Bright Data URL resolution failed | URL {failed_url} | {error}")
+        log_error(f"Email | Bright Data detail enrichment failed | URL {failed_url} | {error}")
     for candidate in unresolved_indeed:
         link_key = canonical_link_key(candidate.url)
         _source_id, source_job_id = platform_job_reference(candidate.url)
@@ -716,14 +728,44 @@ def _report_email_resolution(
         )
 
 
-def brightdata_url_resolution_enabled() -> bool:
+def brightdata_detail_enrichment_enabled() -> bool:
     return bool(
         os.getenv("BRIGHTDATA_API_KEY", "").strip()
-        and (
-            os.getenv("BRIGHTDATA_INDEED_JOBS_DATASET_ID", "").strip()
-            or os.getenv("BRIGHTDATA_DATASET_ID", "").strip()
-        )
+        and os.getenv("BRIGHTDATA_DATASET_ID", "").strip()
     )
+
+
+async def _execute_brightdata_detail_batches_bounded(
+    urls: Sequence[str],
+    *,
+    snapshot_database: Database | None,
+    request_timeout_seconds: float,
+    total_timeout_seconds: float = BRIGHTDATA_EMAIL_DETAIL_TOTAL_TIMEOUT_SECONDS,
+    event_logger: Callable[[str], None] | None = None,
+) -> BrightDataDetailResolutionResult:
+    unique_urls = list(dict.fromkeys(url.strip() for url in urls if url.strip()))
+    if not unique_urls:
+        return BrightDataDetailResolutionResult(batches=[], errors_by_url={})
+    try:
+        return await asyncio.wait_for(
+            execute_resilient_brightdata_detail_batches(
+                unique_urls,
+                snapshot_database=snapshot_database,
+                timeout_seconds=BRIGHTDATA_EMAIL_DETAIL_SNAPSHOT_TIMEOUT_SECONDS,
+                request_timeout_seconds=request_timeout_seconds,
+                event_logger=event_logger,
+            ),
+            timeout=total_timeout_seconds,
+        )
+    except TimeoutError:
+        message = (
+            "Bright Data detail enrichment exceeded total timeout of "
+            f"{total_timeout_seconds:g} seconds"
+        )
+        return BrightDataDetailResolutionResult(
+            batches=[],
+            errors_by_url=dict.fromkeys(unique_urls, message),
+        )
 
 
 def resolve_prepared_or_fetch(
@@ -735,7 +777,65 @@ def resolve_prepared_or_fetch(
     resolved = prepared.get(canonical_link_key(candidate.url))
     if resolved is not None:
         return resolved
-    return enrich_email_candidate(candidate, runtimes, scraped_at)
+    return enrich_email_candidate_with_hard_timeout(candidate, runtimes, scraped_at)
+
+
+def enrich_email_candidate_with_hard_timeout(
+    candidate: EmailJobCandidate,
+    runtimes: list[TrackRuntime],
+    scraped_at: datetime,
+    *,
+    process_context: Any | None = None,
+) -> RawJobRecord:
+    """Bound one external detail fetch even when a network call does not return."""
+    http_config = runtimes[0].config.http
+    context = process_context or get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_email_detail_worker,
+        args=(candidate, http_config, scraped_at, result_queue),
+    )
+    process.start()
+    timeout_seconds = max(1, int(http_config.timeout_seconds))
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        return _email_detail_failure_raw(candidate, scraped_at, "detail fetch timed out")
+    try:
+        outcome, payload = result_queue.get_nowait()
+    except Empty:
+        return _email_detail_failure_raw(candidate, scraped_at, "detail worker returned no result")
+    if outcome == "ok" and isinstance(payload, RawJobRecord):
+        return payload
+    return _email_detail_failure_raw(candidate, scraped_at, str(payload))
+
+
+def _email_detail_worker(
+    candidate: EmailJobCandidate,
+    http_config: Any,
+    scraped_at: datetime,
+    result_queue: Any,
+) -> None:
+    try:
+        result_queue.put(
+            ("ok", enrich_email_candidate_to_raw_job(candidate, http_config, scraped_at))
+        )
+    except Exception as exc:
+        result_queue.put(("error", exc.__class__.__name__))
+
+
+def _email_detail_failure_raw(
+    candidate: EmailJobCandidate,
+    scraped_at: datetime,
+    error: str,
+) -> RawJobRecord:
+    raw = email_candidate_to_raw_job(candidate, scraped_at=scraped_at)
+    raw.raw_payload["detail_status"] = (
+        "email_fallback" if can_use_email_fallback(candidate, raw) else "too_sparse"
+    )
+    raw.raw_payload["detail_error"] = error
+    return raw
 
 
 def process_message(
@@ -790,8 +890,6 @@ def raw_from_stored_detail(
     raw.location_raw = stored.location_text or raw.location_raw
     raw.job_description = stored.description
     raw.employment_type = stored.employment_type or raw.employment_type
-    raw.canonical_url = stored.canonical_url or stored.source_url or raw.canonical_url
-    raw.application_url = stored.application_url or raw.application_url
     raw.raw_payload.update(
         {
             "detail_status": "ok",
@@ -823,9 +921,9 @@ def raw_from_brightdata_detail(
     raw.raw_payload.update(
         {
             "detail_status": "ok",
-            "detail_source": "brightdata_url",
-            "description_source": "brightdata_url",
-            "title_source": "brightdata_url",
+            "detail_source": "brightdata_detail",
+            "description_source": "brightdata_detail",
+            "title_source": "brightdata_detail",
             "brightdata_snapshot_id": batch.snapshot_id,
             "matched_source_id": "indeed",
             "matched_source_job_id": str(record.get("record_id") or ""),
@@ -865,6 +963,7 @@ def process_raw_job(
         runtime.config.filters,
         max_post_age_hours=0,
     )
+    policy = email_policy_for_raw(raw, policy)
     if str(raw.raw_payload.get("detail_status") or "") == "email_fallback":
         policy = email_fallback_policy(policy)
     normalized = normalize_candidate(raw, policy)
@@ -918,6 +1017,23 @@ def process_raw_job(
     return True
 
 
+def email_policy_for_raw(raw: RawJobRecord, policy: FilterPolicy) -> FilterPolicy:
+    """Apply source-specific location scope without changing other sources."""
+
+    if not is_efinancial_email_source(raw):
+        return policy
+    return replace(policy, countries=EFINANCIAL_ALLOWED_COUNTRIES)
+
+
+def is_efinancial_email_source(raw: RawJobRecord) -> bool:
+    platforms = raw.raw_payload.get("source_platforms", [])
+    if isinstance(platforms, (list, tuple, set)) and any(
+        str(platform).casefold() == "efinancialcareers" for platform in platforms
+    ):
+        return True
+    return is_efinancialcareers_url(raw.source_url)
+
+
 def email_fallback_policy(policy: FilterPolicy) -> FilterPolicy:
     """Require title-local role evidence when a full job description is unavailable."""
 
@@ -954,11 +1070,10 @@ def is_processable_detail_status(value: object) -> bool:
 
 
 def stable_email_dedupe_key(job: JobRecord) -> str:
-    payload = job.raw_payload or {}
     return build_dedupe_key(
-        str(payload.get("email_candidate_title") or job.title),
-        str(payload.get("email_candidate_company") or job.company_name),
-        str(payload.get("email_candidate_location") or job.location_raw),
+        job.title,
+        job.company_name,
+        job.location_raw,
         job.source_job_id,
         description="",
         source=job.source,

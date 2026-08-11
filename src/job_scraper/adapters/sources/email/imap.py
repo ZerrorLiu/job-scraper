@@ -43,7 +43,10 @@ class ImapEmailChannel:
         self.validate_runtime()
         seen_links: set[str] = set()
         scraped_at = datetime.now(UTC)
-        for message in ImapEmailClient(self._config).fetch_recent_messages():
+        for message in ImapEmailClient(
+            self._config,
+            timeout_seconds=self._http.timeout_seconds,
+        ).fetch_recent_messages():
             for candidate in extract_job_candidates(message):
                 link_key = canonical_link_key(candidate.url)
                 if link_key in seen_links:

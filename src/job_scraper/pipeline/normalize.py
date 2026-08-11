@@ -90,6 +90,18 @@ COUNTRY_ALIASES = {
     "LU": {"lu", "luxembourg", "luxemburg"},
     "AT": {"at", "austria", "osterreich"},
     "BE": {"be", "belgium", "belgie", "belgien", "belgique"},
+    "FR": {"fr", "france", "frankreich"},
+    "CH": {"ch", "switzerland", "schweiz", "suisse"},
+    "CZ": {"cz", "czech republic", "czechia", "tschechien"},
+    "PL": {"pl", "poland", "polen"},
+    "SG": {"sg", "singapore", "singapur"},
+    "GB": {"gb", "uk", "united kingdom", "england", "great britain"},
+    "US": {"us", "usa", "united states", "united states of america"},
+    "AE": {"ae", "uae", "united arab emirates", "vereinigte arabische emirate"},
+    "AU": {"au", "australia", "australien"},
+    "IN": {"in", "india", "indien"},
+    "IT": {"it", "italy", "italien"},
+    "HK": {"hk", "hong kong", "hongkong"},
 }
 
 COUNTRY_LOCATION_HINTS = {
@@ -172,6 +184,96 @@ COUNTRY_LOCATION_HINTS = {
         "leuven",
         "liege",
         "louvain",
+    },
+    "FR": {
+        "france",
+        "frankreich",
+        "lille",
+        "lyon",
+        "metz",
+        "nancy",
+        "paris",
+        "strasbourg",
+    },
+    "CH": {
+        "basel",
+        "bern",
+        "geneva",
+        "genf",
+        "schweiz",
+        "suisse",
+        "switzerland",
+        "zurich",
+        "zürich",
+    },
+    "CZ": {
+        "brno",
+        "czech republic",
+        "czechia",
+        "prague",
+        "praha",
+        "tschechien",
+    },
+    "PL": {
+        "krakow",
+        "kraków",
+        "poland",
+        "polen",
+        "poznan",
+        "poznań",
+        "warsaw",
+        "warszawa",
+        "wroclaw",
+        "wrocław",
+    },
+    "SG": {
+        "singapore",
+        "singapur",
+    },
+    "GB": {
+        "england",
+        "london",
+        "united kingdom",
+        "uk",
+    },
+    "US": {
+        "atlanta",
+        "austin",
+        "chicago",
+        "new york",
+        "saint louis",
+        "st louis",
+        "united states",
+        "usa",
+    },
+    "AE": {
+        "abu dhabi",
+        "dubai",
+        "uae",
+        "united arab emirates",
+    },
+    "AU": {
+        "australia",
+        "australien",
+        "melbourne",
+        "sydney",
+    },
+    "IN": {
+        "gurgaon",
+        "gurugram",
+        "india",
+        "indien",
+    },
+    "IT": {
+        "florence",
+        "italy",
+        "italien",
+        "milan",
+        "rome",
+    },
+    "HK": {
+        "hong kong",
+        "hongkong",
     },
 }
 
@@ -395,6 +497,10 @@ def looks_like_target_countries(
     if not target_codes:
         return True
 
+    location_country_code = known_location_country(location_raw)
+    if location_country_code:
+        return location_country_code in target_codes
+
     raw_country_code = country_to_code(str(raw_country or ""))
     if raw_country_code and raw_country_code in target_codes:
         return True
@@ -446,6 +552,17 @@ def location_matches_country(normalized_location: str, country_code: str) -> boo
         ):
             return True
     return False
+
+
+def known_location_country(location_raw: str) -> str:
+    exact_location_country = country_to_code(location_raw)
+    if exact_location_country:
+        return exact_location_country
+    normalized_location = normalize_location_key(location_raw)
+    for country_code in COUNTRY_LOCATION_HINTS:
+        if location_matches_country(normalized_location, country_code):
+            return country_code
+    return ""
 
 
 def parse_relative_posted_at(posted_at_text: str, now: datetime) -> datetime | None:
@@ -546,8 +663,6 @@ def normalize_candidate(raw: RawJobRecord, policy: FilterPolicy) -> JobRecord:
         salary_min=None,
         salary_max=None,
         salary_currency="EUR" if "\u20ac" in salary_text else None,
-        application_url=raw.application_url,
-        company_url=raw.company_url,
         dedupe_key=dedupe_key,
         raw_payload=payload,
     )
@@ -560,10 +675,7 @@ def infer_country(raw_country: object, location_raw: str, default_country: str) 
         if country_code:
             return country_code
         return normalized_country
-    for country_code in parse_country_codes(default_country):
-        if location_matches_country(normalize_location_key(location_raw), country_code):
-            return country_code
-    return ""
+    return known_location_country(location_raw)
 
 
 def infer_search_location_country(search_location: object, target_country_filter: str) -> str:

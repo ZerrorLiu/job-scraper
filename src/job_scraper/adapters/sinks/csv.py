@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import csv
-import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -16,7 +15,7 @@ class CumulativeJobReader(Protocol):
     def export_jobs(
         self,
         languages: list[str] | None = None,
-    ) -> Sequence[sqlite3.Row]: ...
+    ) -> Sequence[Mapping[str, object]]: ...
 
 
 class CsvSink:

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Protocol
 
 from job_scraper.domain.decisions import Decision
-from job_scraper.domain.models import ApplicationJob, JobHistorySnapshot, JobRecord, RunStats
+from job_scraper.domain.models import JobHistorySnapshot, JobRecord, RunStats
 
 
 class JobRepository(Protocol):
@@ -15,6 +15,8 @@ class JobRepository(Protocol):
     def upsert_job(self, job: JobRecord, run_id: str) -> tuple[str, bool]: ...
 
     def get_application_status(self, job_id: str) -> str: ...
+
+    def has_recent_not_interested_match(self, job: JobRecord, started_at: datetime) -> bool: ...
 
     def get_job_history(
         self,
@@ -35,11 +37,3 @@ class CandidateDecisionRecorder(Protocol):
         evaluated_at: datetime,
         legacy_job_id: str = "",
     ) -> str: ...
-
-
-class ApplicationJobReader(Protocol):
-    def get_accepted_application_job(self, canonical_job_id: str) -> ApplicationJob | None: ...
-
-    def get_accepted_application_jobs(
-        self, *, limit: int = 20, offset: int = 0
-    ) -> list[ApplicationJob]: ...

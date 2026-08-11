@@ -9,8 +9,8 @@ offline and credential-free.
 2. Run `uv sync --extra dev`.
 3. Copy `.env.example` to `.env` only when local integrations are needed.
 
-Never commit the private `config/` workspace, `.env`, credentials, browser
-profiles, mail content, databases, logs, exports, personal documents, search
+Never commit the private `config/` workspace, `.env`, credentials, mail
+content, databases, logs, exports, personal documents, search
 queries, locations, watchlists, or external workspace identifiers.
 
 ## Before opening a pull request

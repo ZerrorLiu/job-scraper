@@ -42,7 +42,7 @@ def build_daily_properties(
 
 
 def build_job_title(job: JobRecord) -> dict:
-    url = job.application_url or job.source_url
+    url = job.source_url or job.canonical_url
     text: dict[str, object] = {"content": na_value(job.title)[:200]}
     if url:
         text["link"] = {"url": url}
@@ -89,11 +89,7 @@ def build_children(job: JobRecord) -> list[dict]:
             },
         }
     )
-    for label, url in (
-        ("Apply URL", job.application_url),
-        ("Job URL", job.source_url),
-    ):
-        blocks.append(_url_block(label, url))
+    blocks.append(_url_block("Job URL", job.source_url or job.canonical_url))
     return blocks
 
 

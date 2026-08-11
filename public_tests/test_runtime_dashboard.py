@@ -35,6 +35,8 @@ def test_dashboard_uses_one_fixed_screen_and_one_final_scrollback_table() -> Non
     normal_scrollback = output.split("\x1b[?1049l", maxsplit=1)[1]
     assert normal_scrollback.count("Job Scraper [FINAL]") == 1
     assert "Elapsed" not in normal_scrollback.splitlines()[0]
+    assert "Seen Accept   Drop" in normal_scrollback
+    assert "Keep" not in normal_scrollback
     assert "21/21" in normal_scrollback
 
 

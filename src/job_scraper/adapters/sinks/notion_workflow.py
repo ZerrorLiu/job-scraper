@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from job_scraper.adapters.sinks.notion_daily import NotionDailySink
 from job_scraper.adapters.sinks.notion_payload import (
@@ -80,9 +80,19 @@ def import_processed_statuses(
                 job_id = database.match_job_id_for_notion_page(title, company_name, job_url)
             if not job_id or database.get_application_status(job_id) == status:
                 continue
-            database.set_application_status(job_id, status)
+            database.set_application_status(job_id, status, edited_at=_page_edited_at(page))
             imported += 1
     return imported
+
+
+def _page_edited_at(page: dict) -> datetime | None:
+    value = str(page.get("last_edited_time", "") or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def configured_data_source_ids(

@@ -114,7 +114,6 @@ class LinkedInCollector(BaseCollector):
             for record in self.parse_listings(html):
                 record.raw_payload["query"] = query
                 record.raw_payload["search_location"] = location
-                record.application_url = record.source_url
                 if company_matches_allowlist(record.company_name, self.company_names):
                     records.append(record)
             if page + 1 < self.source_config.max_listing_pages:
@@ -249,8 +248,6 @@ class LinkedInCollector(BaseCollector):
         payload = _extract_json_ld_jobposting(html)
         if payload:
             seed.job_description = _html_to_text(payload.get("description", ""))
-            seed.application_url = payload.get("url", seed.application_url)
-            seed.company_url = (payload.get("hiringOrganization") or {}).get("sameAs", "")
             detail_locations = _extract_job_locations(payload)
             if detail_locations:
                 seed.location_raw = " | ".join(detail_locations)

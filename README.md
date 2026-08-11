@@ -90,7 +90,7 @@ uv run job-scraper run
 # Run only one local profile
 uv run job-scraper run --profile <profile-id>
 
-# Apply a temporary freshness override
+# Use a temporary freshness override
 uv run job-scraper run --post-age-days 7
 ```
 
@@ -102,9 +102,9 @@ workflow consistently.
 
 ### Repairing email detail enrichment
 
-Indeed links discovered in recommendation emails are resolved through Bright
+Indeed jobs discovered in recommendation emails are enriched through Bright
 Data before filtering. Transient `408`, `429`, and `5xx` responses are retried
-with backoff. URL inputs are processed in small concurrent batches; a batch
+with backoff. Listing URLs are processed in small concurrent batches; a batch
 that still fails is split until a persistently bad URL is isolated, so one
 vendor error does not downgrade every email job.
 
@@ -119,8 +119,11 @@ uv run python -m job_scraper.jobs.ingest_email_recommendations `
 This is a repair command, not the normal daily entry point. It ignores the
 processed-message state, evaluates the same email cards against every enabled
 email profile, and keeps normal database/Notion deduplication. Add
-`--skip-status-import` when the current Notion application states do not need
+`--skip-status-import` when the current Notion job-decision states do not need
 to be imported before the repair.
+
+Jobs marked `Applied` or `Not Interested` in Notion are normalized locally and
+excluded from later candidate processing so manual decisions remain authoritative.
 
 ## Architecture
 
@@ -128,7 +131,7 @@ to be imported before the repair.
 CLI / adapters
       |
       v
-application orchestration
+use-case orchestration
       |
       v
 ports + domain <- composable pipeline
@@ -142,23 +145,6 @@ See [architecture](docs/public/architecture.md) and the
 the [development workflow](docs/public/agent-development-workflow.md), which
 keeps specifications, implementation, verification, and user-path review in
 one repeatable lifecycle.
-
-## Application delivery
-
-Application delivery runs directly in this repository after discovery accepts a
-job. It uses a private, dedicated Chrome/Chromium profile and private runtime
-facts and documents; those values never belong in Git. The first live workflow
-will support one known form-flow signature before broader batch execution.
-
-The planned commands are:
-
-```powershell
-uv run job-scraper apply doctor
-uv run job-scraper apply inspect --job-id <accepted-canonical-job-id>
-```
-
-See the [in-process browser application specification](docs/public/specs/2026-07-27-in-process-browser-application.md)
-for state handling, evidence, and live-validation boundaries.
 
 ## Quality checks
 

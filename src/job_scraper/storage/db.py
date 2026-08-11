@@ -5,11 +5,17 @@ import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+from job_scraper.domain.payload_sanitization import sanitize_job_payload
 from job_scraper.models import JobHistorySnapshot, JobRecord, RunStats
-from job_scraper.pipeline.normalize import combine_locations, serialize_payload
+from job_scraper.pipeline.normalize import (
+    combine_locations,
+    normalize_title_for_dedupe,
+    serialize_payload,
+)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -156,11 +162,26 @@ class Database:
         provider: str,
         dataset_id: str,
         request_hash: str,
+        *,
+        max_age_seconds: float | None = None,
     ) -> sqlite3.Row | None:
         """Return the newest unconsumed snapshot for the exact same request."""
+        age_clause = ""
+        parameters: list[object] = [provider, dataset_id, request_hash]
+        if max_age_seconds is not None:
+            if max_age_seconds <= 0:
+                raise ValueError("max_age_seconds must be greater than 0")
+            cutoff = datetime.now(UTC) - timedelta(seconds=max_age_seconds)
+            age_clause = """
+                  AND (
+                      status = 'ready'
+                      OR (status IN ('starting', 'running') AND created_at >= ?)
+                  )
+            """
+            parameters.append(cutoff.isoformat())
         with self.connect() as connection:
             return connection.execute(
-                """
+                f"""
                 SELECT snapshot_id, status, request_payload_json, updated_at, last_error
                 FROM external_snapshot_state
                 WHERE provider = ?
@@ -168,10 +189,11 @@ class Database:
                   AND request_hash = ?
                   AND consumed_at IS NULL
                   AND status IN ('starting', 'running', 'ready')
+                  {age_clause}
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (provider, dataset_id, request_hash),
+                parameters,
             ).fetchone()
 
     def register_snapshot(
@@ -265,7 +287,7 @@ class Database:
             )
 
     def upsert_job(self, job: JobRecord, run_id: str) -> tuple[str, bool]:
-        existing = self._lookup_job_row(job.dedupe_key)
+        existing = self._lookup_job_row(job.dedupe_key, job.source_url, job.canonical_url)
         existing_id = str(existing["id"]) if existing else None
         is_new = existing_id is None
         with self.connect() as connection:
@@ -277,21 +299,41 @@ class Database:
                     str(existing["city"] or ""),
                     job.city,
                 )
-                merged_payload = json.loads(str(existing["raw_payload_json"] or "{}"))
-                merged_payload.update(job.raw_payload)
+                existing_payload = json.loads(str(existing["raw_payload_json"] or "{}"))
+                merged_payload = sanitize_job_payload(
+                    existing_payload if isinstance(existing_payload, dict) else {}
+                )
+                merged_payload.update(sanitize_job_payload(job.raw_payload))
                 if merged_options:
                     merged_payload["location_options"] = merged_options
+                company_name = _prefer_job_metadata(
+                    job.company_name,
+                    str(existing["company_name"] or ""),
+                )
+                country_code = _prefer_job_metadata(
+                    job.country,
+                    str(existing["country_code"] or ""),
+                )
+                normalized_title = _prefer_job_metadata(
+                    job.title,
+                    str(existing["normalized_title"] or ""),
+                )
                 connection.execute(
                     """
                     UPDATE jobs
-                    SET location_text = ?, city = ?, last_seen_at = ?, description_full = ?, description_language = ?, english_ratio = ?, salary_text = ?,
+                    SET normalized_title = ?, company_name = ?, location_text = ?, country_code = ?, city = ?,
+                        canonical_url = ?, last_seen_at = ?, description_full = ?, description_language = ?, english_ratio = ?, salary_text = ?,
                         salary_min = ?, salary_max = ?, currency = ?, apply_url = ?, company_url = ?,
                         keyword_hits_json = ?, tech_stack_json = ?, raw_payload_json = ?
                     WHERE id = ?
                     """,
                     (
+                        normalized_title,
+                        company_name,
                         merged_location_text or job.location_raw,
+                        country_code,
                         merged_city or job.city,
+                        job.canonical_url or str(existing["canonical_url"] or ""),
                         job.scraped_at.isoformat(),
                         job.job_description,
                         job.description_language,
@@ -300,8 +342,8 @@ class Database:
                         job.salary_min,
                         job.salary_max,
                         job.salary_currency,
-                        job.application_url,
-                        job.company_url,
+                        "",
+                        "",
                         json.dumps(job.keyword_hits),
                         json.dumps(job.tech_stack),
                         serialize_payload(merged_payload),
@@ -347,11 +389,11 @@ class Database:
                         job.salary_min,
                         job.salary_max,
                         job.salary_currency,
-                        job.application_url,
-                        job.company_url,
+                        "",
+                        "",
                         json.dumps(job.keyword_hits),
                         json.dumps(job.tech_stack),
-                        serialize_payload(job.raw_payload),
+                        serialize_payload(sanitize_job_payload(job.raw_payload)),
                     ),
                 )
                 connection.execute(
@@ -376,16 +418,25 @@ class Database:
                     job.title,
                     job.company_name,
                     job.location_raw,
-                    serialize_payload(job.raw_payload),
+                    serialize_payload(sanitize_job_payload(job.raw_payload)),
                     "ok",
                 ),
             )
         return job_id, is_new
 
-    def export_jobs(self, languages: list[str] | None = None) -> list[sqlite3.Row]:
+    def export_jobs(self, languages: list[str] | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             query = """
-                SELECT j.*, a.application_status, a.applied_at, a.priority, a.notes
+                SELECT
+                    j.id, j.dedupe_key, j.source, j.source_job_id,
+                    j.source_url, j.canonical_url, j.normalized_title,
+                    j.company_name, j.location_text, j.country_code,
+                    j.city, j.region, j.remote_mode, j.employment_type,
+                    j.seniority, j.posted_at, j.first_seen_at, j.last_seen_at,
+                    j.description_full, j.description_language, j.english_ratio,
+                    j.salary_text, j.salary_min, j.salary_max, j.currency,
+                    j.keyword_hits_json, j.tech_stack_json, j.raw_payload_json,
+                    a.application_status, a.applied_at, a.priority, a.notes
                 FROM jobs j
                 LEFT JOIN application_state a ON a.job_id = j.id
             """
@@ -395,7 +446,14 @@ class Database:
                 query += f" WHERE j.description_language IN ({placeholders})"
                 params.extend(languages)
             query += " ORDER BY j.first_seen_at DESC"
-            return list(connection.execute(query, params))
+            rows = connection.execute(query, params).fetchall()
+            exported: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                payload = _json_object(item.get("raw_payload_json"))
+                item["raw_payload_json"] = serialize_payload(sanitize_job_payload(payload))
+                exported.append(item)
+            return exported
 
     def has_jobs(self) -> bool:
         with self.connect() as connection:
@@ -409,19 +467,6 @@ class Database:
                 (source,),
             ).fetchone()
             return row is not None
-
-    def pending_notion_jobs(self) -> list[sqlite3.Row]:
-        with self.connect() as connection:
-            return list(
-                connection.execute(
-                    """
-                    SELECT j.*, n.notion_page_id, n.last_payload_hash
-                    FROM jobs j
-                    LEFT JOIN notion_sync_state n ON n.job_id = j.id
-                    ORDER BY j.first_seen_at DESC
-                    """
-                )
-            )
 
     def upsert_notion_state(
         self, job_id: str, page_id: str, data_source_id: str, payload_hash: str, status: str
@@ -464,10 +509,10 @@ class Database:
                         """
                         SELECT id, normalized_title, company_name, last_seen_at
                         FROM jobs
-                        WHERE source_url = ? OR canonical_url = ? OR apply_url = ?
+                        WHERE source_url = ? OR canonical_url = ?
                         ORDER BY last_seen_at DESC
                         """,
-                        (normalized_url, normalized_url, normalized_url),
+                        (normalized_url, normalized_url),
                     )
                 )
                 filtered = [
@@ -514,12 +559,14 @@ class Database:
             ).fetchone()
             return str(row["application_status"]) if row else ""
 
-    def set_application_status(self, job_id: str, status: str) -> None:
+    def set_application_status(
+        self, job_id: str, status: str, *, edited_at: datetime | None = None
+    ) -> None:
         normalized_job_id = str(job_id).strip()
         normalized_status = " ".join(str(status or "").split()).strip().lower()
         if not normalized_job_id or not normalized_status:
             return
-        now = datetime.now(UTC).isoformat()
+        recorded_at = (edited_at or datetime.now(UTC)).astimezone(UTC).isoformat()
         with self.connect() as connection:
             connection.execute(
                 """
@@ -529,8 +576,44 @@ class Database:
                     application_status = excluded.application_status,
                     last_user_edit_at = excluded.last_user_edit_at
                 """,
-                (normalized_job_id, normalized_status, now),
+                (normalized_job_id, normalized_status, recorded_at),
             )
+
+    def has_recent_not_interested_match(
+        self,
+        job: JobRecord,
+        started_at: datetime,
+        *,
+        lookback: timedelta = timedelta(days=30),
+    ) -> bool:
+        cutoff = started_at.astimezone(UTC) - lookback
+        normalized_title = normalize_title_for_dedupe(job.title, job.location_raw)
+        normalized_company = " ".join(job.company_name.split()).strip().casefold()
+        current_location = _normalized_location(job.city or job.location_raw)
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT j.normalized_title, j.company_name, j.city, j.location_text
+                FROM jobs j
+                JOIN application_state a ON a.job_id = j.id
+                WHERE lower(a.application_status) = 'not_interested'
+                  AND a.last_user_edit_at > ?
+                  AND a.last_user_edit_at <= ?
+                  AND lower(j.company_name) = ?
+                """,
+                (cutoff.isoformat(), started_at.astimezone(UTC).isoformat(), normalized_company),
+            ).fetchall()
+        for row in rows:
+            previous_title = normalize_title_for_dedupe(
+                str(row["normalized_title"] or ""), str(row["location_text"] or "")
+            )
+            if previous_title != normalized_title:
+                continue
+            previous_location = _normalized_location(str(row["city"] or row["location_text"] or ""))
+            if current_location and previous_location and current_location != previous_location:
+                continue
+            return True
+        return False
 
     def clear_notion_state_for_page_ids(self, page_ids: list[str]) -> None:
         normalized_ids = [str(page_id).strip() for page_id in page_ids if str(page_id).strip()]
@@ -592,9 +675,47 @@ class Database:
 
         return JobHistorySnapshot(status_label="New")
 
-    def _lookup_job_row(self, dedupe_key: str) -> sqlite3.Row | None:
+    def _lookup_job_row(
+        self,
+        dedupe_key: str,
+        source_url: str = "",
+        canonical_url: str = "",
+    ) -> sqlite3.Row | None:
         with self.connect() as connection:
-            return connection.execute(
-                "SELECT id, location_text, city, raw_payload_json FROM jobs WHERE dedupe_key = ?",
-                (dedupe_key,),
-            ).fetchone()
+            conditions = ["dedupe_key = ?"]
+            parameters: list[str] = [dedupe_key]
+            for url in dict.fromkeys(value for value in (source_url, canonical_url) if value):
+                conditions.append("(source_url = ? OR canonical_url = ?)")
+                parameters.extend([url, url])
+            query = f"""
+                SELECT id, normalized_title, company_name, country_code,
+                       source_url, canonical_url, location_text, city, raw_payload_json
+                FROM jobs
+                WHERE {" OR ".join(conditions)}
+                ORDER BY CASE WHEN dedupe_key = ? THEN 0 ELSE 1 END
+                LIMIT 1
+            """
+            parameters.append(dedupe_key)
+            return connection.execute(query, parameters).fetchone()
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _normalized_location(value: str) -> str:
+    normalized = " ".join(value.split()).strip().casefold()
+    if normalized in {"", "unknown", "n/a", "multiple locations"}:
+        return ""
+    return normalized
+
+
+def _prefer_job_metadata(new_value: str, existing_value: str) -> str:
+    normalized_new = " ".join(str(new_value or "").split()).strip()
+    if normalized_new.casefold() in {"", "unknown", "n/a"}:
+        return existing_value
+    return normalized_new

@@ -4,8 +4,6 @@ from job_scraper.domain.context import EvaluationContext
 from job_scraper.domain.decisions import Decision, RejectionReason
 from job_scraper.domain.locations import merge_locations
 from job_scraper.domain.models import (
-    ApplicationJob,
-    ApplicationRecord,
     CanonicalJob,
     JobHistorySnapshot,
     JobRecord,
@@ -19,8 +17,6 @@ from job_scraper.domain.models import (
 from job_scraper.domain.policies import FilterPolicy, FreshnessPolicy, TargetRule
 
 __all__ = [
-    "ApplicationJob",
-    "ApplicationRecord",
     "CanonicalJob",
     "Decision",
     "EvaluationContext",

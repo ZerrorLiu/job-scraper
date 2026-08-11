@@ -2,9 +2,8 @@
 
 ## Sensitive local data
 
-Credentials belong in `.env` or ignored local configuration. Browser profiles, cookies, mailbox
-content, SQLite databases, logs, exports, Notion backups, and personal documents must never be
-committed.
+Credentials belong in `.env` or ignored local configuration. Cookies, mailbox content, SQLite
+databases, logs, exports, Notion backups, and personal documents must never be committed.
 
 If a credential is committed accidentally, revoke or rotate it immediately and remove it from the
 entire Git history before sharing the repository.

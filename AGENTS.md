@@ -56,8 +56,7 @@ Historical source values may remain readable for data compatibility.
 
 ## Extension workflow
 
-1. Choose the relevant Port: Source, Channel, PipelineStep, Repository, Sink,
-   or StatusGateway.
+1. Choose the relevant Port: Source, Channel, PipelineStep, Repository, or Sink.
 2. Implement the adapter or pure step without modifying the core runner.
 3. Register a stable component ID in `registry/builtins.py`.
 4. Configure it only in the local private workspace.

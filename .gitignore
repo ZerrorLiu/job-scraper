@@ -27,8 +27,10 @@ data/
 *.db-shm
 logs/
 output/
+outputs/
 tmp/
 exports/
+.vibe/archive/
 # Personal design history and one-off migration utilities are retained locally.
 /docs/*.md
 /src/job_scraper/jobs/migrate_notion_daily_tables.py

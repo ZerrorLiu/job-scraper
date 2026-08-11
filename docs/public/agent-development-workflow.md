@@ -67,9 +67,9 @@ For Domain, Pipeline, or configuration behavior changes, retain at least 90%
 focused branch coverage for the changed core behavior. Run live tests only
 when explicitly requested and credentials are available.
 
-If `uv` is unavailable but the repository's active virtual environment contains
-the required tools, run the equivalent executable from that environment and
-say so in the handoff. Never report an unavailable gate as passed.
+If `uv` is unavailable, stop executable Python verification and report the gate
+as blocked. Do not substitute system Python or direct virtual-environment
+executables, and never report an unavailable gate as passed.
 
 ### 5. Simulate the user path
 
