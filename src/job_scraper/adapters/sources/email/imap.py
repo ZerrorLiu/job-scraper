@@ -16,7 +16,17 @@ from job_scraper.integrations.email_recommendations import (
 
 
 class ImapEmailChannel:
-    """Read recommendation emails once and emit platform-aware raw jobs."""
+    """Read recommendation emails once and emit platform-aware raw jobs.
+
+    Registered as the "email_imap" channel, but the production `run`/
+    `run_all_tracks` path never calls it. It dispatches to
+    `jobs.ingest_email_recommendations`, which has its own directly
+    instantiated `ImapEmailClient` and persisted `EmailIngestState`
+    (message-processed bookkeeping) instead of going through this port. This
+    class's own dedup (an in-memory `seen_links` set, reset every call) is
+    intentionally not being hardened to match, since it is not on the live
+    path; removing it entirely is a separate decision.
+    """
 
     channel_id = "email_imap"
 

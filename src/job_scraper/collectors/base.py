@@ -4,6 +4,7 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from http.client import IncompleteRead
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -43,7 +44,14 @@ class BaseCollector(ABC):
                 if "captcha" in lowered or "unusual traffic" in lowered:
                     raise RuntimeError(f"{self.source_name} returned a blocking page")
                 return body
-            except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
+            except (
+                HTTPError,
+                URLError,
+                TimeoutError,
+                RuntimeError,
+                IncompleteRead,
+                ConnectionResetError,
+            ) as exc:
                 last_error = exc
                 if isinstance(exc, HTTPError) and exc.code == 429:
                     raise

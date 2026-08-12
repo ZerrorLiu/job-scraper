@@ -1089,7 +1089,7 @@ def platform_job_reference(url: str) -> tuple[str, str]:
 
 def fetch_text(url: str, http_config: HttpConfig) -> tuple[str, str]:
     last_error: Exception | None = None
-    max_retries = 0
+    max_retries = http_config.max_retries
     timeout_seconds = min(http_config.timeout_seconds, 6)
     for attempt in range(max_retries + 1):
         request = Request(url, headers={"User-Agent": http_config.user_agent})
