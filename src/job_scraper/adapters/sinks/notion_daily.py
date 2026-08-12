@@ -140,86 +140,101 @@ class NotionDailySink:
         inserted = 0
         updated = 0
         skipped = 0
+        errors: list[str] = []
         self._logger(
             f"Notion | Track {self._track_label} | "
             f"Writing up to {len(jobs)} jobs into table {table_title}"
         )
         for accepted in jobs:
-            job_ids = _accepted_database_ids(accepted)
-            histories = [
-                self._repository.get_job_history(
-                    job_id,
-                    accepted.job.company_name,
-                    self._started_at,
-                )
-                for job_id in job_ids
-            ]
-            existing_page = _find_existing_page(existing_index, accepted.job)
-            if existing_page is not None:
+            label = f"{accepted.job.title} @ {accepted.job.company_name}"
+            try:
+                job_ids = _accepted_database_ids(accepted)
+                histories = [
+                    self._repository.get_job_history(
+                        job_id,
+                        accepted.job.company_name,
+                        self._started_at,
+                    )
+                    for job_id in job_ids
+                ]
+                existing_page = _find_existing_page(existing_index, accepted.job)
+                if existing_page is not None:
+                    properties = build_daily_properties(
+                        accepted.job,
+                        property_types,
+                        found_date=_page_date(existing_page) or local_date,
+                    )
+                    properties = _merge_page_properties(existing_page, properties)
+                    page = self._client.create_or_update_page(
+                        str(existing_page.get("id", "")),
+                        properties,
+                    )
+                    self._sync_url_children(
+                        str(page.get("id", existing_page.get("id", ""))), accepted.job
+                    )
+                    for job_id in job_ids:
+                        self._repository.upsert_notion_state(
+                            job_id,
+                            str(page.get("id", existing_page.get("id", ""))),
+                            data_source_id,
+                            self._client.payload_hash(properties),
+                            "synced",
+                        )
+                    existing_index.update(_page_index_entries(page))
+                    updated += 1
+                    continue
+                if (
+                    any(
+                        history.exact_seen_before and history.previous_notion_page_id
+                        for history in histories
+                    )
+                    and not allow_history_backfill
+                ):
+                    skipped += 1
+                    continue
                 properties = build_daily_properties(
                     accepted.job,
                     property_types,
-                    found_date=_page_date(existing_page) or local_date,
+                    found_date=local_date,
                 )
-                properties = _merge_page_properties(existing_page, properties)
-                page = self._client.create_or_update_page(
-                    str(existing_page.get("id", "")),
+                page = self._client.create_data_source_page(
+                    data_source_id,
                     properties,
-                )
-                self._sync_url_children(
-                    str(page.get("id", existing_page.get("id", ""))), accepted.job
+                    build_children(accepted.job),
                 )
                 for job_id in job_ids:
                     self._repository.upsert_notion_state(
                         job_id,
-                        str(page.get("id", existing_page.get("id", ""))),
+                        str(page.get("id", "")),
                         data_source_id,
                         self._client.payload_hash(properties),
                         "synced",
                     )
-                updated += 1
+                # Keep the in-batch lookup current so a later record in this
+                # same batch that should merge into this job (same URL, or
+                # same title+company) finds it instead of creating a
+                # duplicate page.
+                existing_index.update(_page_index_entries(page))
+                inserted += 1
+                if inserted % 5 == 0 or inserted == len(jobs):
+                    self._logger(f"Notion | Progress {inserted}/{len(jobs)}")
+                self._sleeper(0.35)
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+                self._logger(f"Notion | Failed | {label} | {exc}")
                 continue
-            if (
-                any(
-                    history.exact_seen_before and history.previous_notion_page_id
-                    for history in histories
-                )
-                and not allow_history_backfill
-            ):
-                skipped += 1
-                continue
-            properties = build_daily_properties(
-                accepted.job,
-                property_types,
-                found_date=local_date,
-            )
-            page = self._client.create_data_source_page(
-                data_source_id,
-                properties,
-                build_children(accepted.job),
-            )
-            for job_id in job_ids:
-                self._repository.upsert_notion_state(
-                    job_id,
-                    str(page.get("id", "")),
-                    data_source_id,
-                    self._client.payload_hash(properties),
-                    "synced",
-                )
-            inserted += 1
-            if inserted % 5 == 0 or inserted == len(jobs):
-                self._logger(f"Notion | Progress {inserted}/{len(jobs)}")
-            self._sleeper(0.35)
         self._logger(
             f"Notion | Done | Track {self._track_label} | "
             f"Inserted {inserted} rows into {table_title} | "
             f"Updated {updated} existing rows | "
-            f"Skipped exact duplicates {skipped}"
+            f"Skipped exact duplicates {skipped} | "
+            f"Failed {len(errors)}"
         )
         return PublishResult(
             sink_id=self.sink_id,
             published=inserted + updated,
             skipped=skipped,
+            errors=tuple(errors),
         )
 
     def _sync_url_children(self, page_id: str, job: JobRecord) -> None:
@@ -268,13 +283,19 @@ def _accepted_database_ids(accepted: AcceptedJob) -> list[str]:
 def _existing_page_index(pages: list[dict]) -> dict[str, dict]:
     index: dict[str, dict] = {}
     for page in pages:
-        title, url = notion_page_job_title_and_url(page)
-        company = notion_page_company_name(page)
-        if url:
-            index[f"url:{_normalized_match_url(url)}"] = page
-        if title and company:
-            index[f"text:{title.casefold()}|{company.casefold()}"] = page
+        index.update(_page_index_entries(page))
     return index
+
+
+def _page_index_entries(page: dict) -> dict[str, dict]:
+    title, url = notion_page_job_title_and_url(page)
+    company = notion_page_company_name(page)
+    entries: dict[str, dict] = {}
+    if url:
+        entries[f"url:{_normalized_match_url(url)}"] = page
+    if title and company:
+        entries[f"text:{title.casefold()}|{company.casefold()}"] = page
+    return entries
 
 
 def _find_existing_page(index: dict[str, dict], job: IdentifiableJob) -> dict | None:

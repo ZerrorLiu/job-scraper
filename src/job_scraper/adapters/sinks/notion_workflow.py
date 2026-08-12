@@ -16,7 +16,7 @@ from job_scraper.integrations.notion import (
     normalize_notion_id,
     normalize_status_name,
 )
-from job_scraper.ports.sinks import PublishContext
+from job_scraper.ports.sinks import PublishContext, PublishResult
 from job_scraper.storage.db import Database
 
 PROCESSED_APPLICATION_STATUSES = frozenset({"applied", "not_interested"})
@@ -33,7 +33,7 @@ def publish_daily(
     *,
     logger: Callable[[str], None] = lambda message: None,
     sleeper: Callable[[float], None] = time.sleep,
-) -> None:
+) -> PublishResult:
     sink = NotionDailySink(
         database,
         notion,
@@ -44,7 +44,7 @@ def publish_daily(
         logger=logger,
         sleeper=sleeper,
     )
-    sink.publish(
+    return sink.publish(
         jobs,
         PublishContext(run_id="legacy", profile_id=track_label),
     )

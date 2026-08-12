@@ -395,6 +395,7 @@ def main(
         run_id=f"profile:{profile.profile_id if profile is not None else track_label}",
         profile_id=profile.profile_id if profile is not None else track_label,
     )
+    publish_had_errors = False
     for sink_id in sink_ids:
         sink = build_sink(
             registry,
@@ -421,9 +422,17 @@ def main(
                 log_line(f"Export | Wrote {result.published} rows to {export_destination}")
             else:
                 log_line(f"Export | No rows to write: {export_destination}")
+        if result.errors:
+            publish_had_errors = True
+            log_line(
+                f"{sink_id} | {result.published} synced, {len(result.errors)} failed | "
+                f"Track: {track_label}"
+            )
+            for error in result.errors:
+                log_line(f"{sink_id} | Failed | {error}")
 
     log_line(f"Run finished | Track: {track_label} | Accepted total: {len(accepted_jobs)}")
-    return 1 if collection_failed else 0
+    return 1 if collection_failed or publish_had_errors else 0
 
 
 def _initialize_workspace_database(
