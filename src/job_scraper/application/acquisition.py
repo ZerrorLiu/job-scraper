@@ -33,6 +33,13 @@ class RequestCoalescer:
         try:
             result = operation()
         except BaseException as exc:
+            with self._lock:
+                # Evict on failure so a future independent call retries
+                # instead of permanently replaying this exception. Callers
+                # already waiting on this in-flight future still observe the
+                # original failure via future.set_exception below.
+                if self._requests.get(key) is future:
+                    del self._requests[key]
             future.set_exception(exc)
             raise
         future.set_result(result)
@@ -96,5 +103,7 @@ class RequestGate:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    status = getattr(exc, "code", None)
-    return status == 429 or "429" in str(exc)
+    # Only trust a structured status code, not a substring search over the
+    # exception message, which can false-positive on unrelated text (a job
+    # id, a URL path segment, ...) that happens to contain "429".
+    return getattr(exc, "code", None) == 429

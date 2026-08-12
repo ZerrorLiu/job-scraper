@@ -77,7 +77,18 @@ class RunProfileSource:
         try:
             for raw in source.collect(window):
                 stats.jobs_seen += 1
-                result = self._processor.process_raw(raw, context)
+                try:
+                    result = self._processor.process_raw(raw, context)
+                except Exception as record_exc:
+                    # One malformed record should not abort the remaining
+                    # records from this source; the iterator itself is still
+                    # healthy. A genuinely broken iterator (source.collect
+                    # raising while advancing) is still caught by the outer
+                    # except below, which correctly fails the whole source.
+                    stats.jobs_failed += 1
+                    stats.errors.append(str(record_exc))
+                    reject_counts["processing_error"] += 1
+                    continue
                 reason = "" if result.decision.reason is None else result.decision.reason.value
                 if reason:
                     stats.jobs_filtered += 1
