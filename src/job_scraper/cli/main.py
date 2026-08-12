@@ -14,7 +14,12 @@ from job_scraper.cli.bootstrap import (
     BootstrapRequest,
     initialize_profile,
 )
-from job_scraper.cli.database import initialize_profiles, migrate_profiles, show_status
+from job_scraper.cli.database import (
+    initialize_profiles,
+    migrate_profiles,
+    resolve_status_workspace_path,
+    show_status,
+)
 from job_scraper.cli.doctor import has_errors, run_doctor
 from job_scraper.config import load_config
 from job_scraper.configuration import (
@@ -69,8 +74,13 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--config-dir", type=Path)
 
     doctor = subparsers.add_parser("doctor", help="Check runtime and configuration.")
-    doctor.add_argument("--profile")
-    doctor.add_argument("--all", action="store_true")
+    doctor.add_argument("--profile", help="Check only this profile.")
+    doctor.add_argument(
+        "--all",
+        action="store_true",
+        help="Check every local profile explicitly. This is also the default when "
+        "neither --profile nor --all is given.",
+    )
 
     subparsers.add_parser("list", help="List available profiles.")
     capabilities = subparsers.add_parser(
@@ -87,8 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     validate = config_subparsers.add_parser("validate")
-    validate.add_argument("--profile")
-    validate.add_argument("--all", action="store_true")
+    validate.add_argument("--profile", help="Validate only this profile.")
+    validate.add_argument(
+        "--all",
+        action="store_true",
+        help="Validate every local profile explicitly. This is also the default when "
+        "neither --profile nor --all is given.",
+    )
 
     run = subparsers.add_parser(
         "run",
@@ -153,14 +168,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize only this profile. By default all enabled profiles are initialized.",
     )
     migrate = database_subparsers.add_parser("migrate")
-    migrate.add_argument("--profile", action="append", dest="profiles")
-    migrate.add_argument("--workspace", type=Path)
+    migrate.add_argument(
+        "--profile",
+        action="append",
+        dest="profiles",
+        help="Migrate only this profile. Repeatable. By default every local profile is migrated.",
+    )
+    migrate.add_argument(
+        "--workspace",
+        type=Path,
+        help="Destination workspace database path. Defaults to the path the selected "
+        "profiles' runtime config agrees on. Must not match a source profile's own "
+        "database.",
+    )
     migrate.add_argument("--dry-run", action="store_true")
     status = database_subparsers.add_parser("status")
     status.add_argument(
+        "--profile",
+        action="append",
+        dest="profiles",
+        help="Resolve the workspace database from this profile's runtime config. "
+        "Repeatable. By default every local profile is considered.",
+    )
+    status.add_argument(
         "--workspace",
         type=Path,
-        default=Path("data/workspace.db"),
+        help="Inspect this workspace database path directly instead of resolving it "
+        "from local profiles.",
     )
 
     return parser
@@ -188,8 +222,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _validate_config(args.profile, all_profiles=args.all)
     if args.command == "run":
         return _run(args)
-    if args.command == "ingest-email":
-        return ingest_email_recommendations.main(list(args.arguments))
+    # "ingest-email" is handled by the raw_argv[0] check above, before
+    # build_parser().parse_args() ever runs, so args.command == "ingest-email"
+    # is unreachable here. The subparser above stays registered only so
+    # `job-scraper --help` still lists it as an available command.
     if args.command == "db":
         if args.database_command == "init":
             return initialize_profiles(args.profile)
@@ -200,7 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
         if args.database_command == "status":
-            return show_status(args.workspace.resolve())
+            return show_status(resolve_status_workspace_path(args.profiles, args.workspace))
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
@@ -246,6 +282,7 @@ def _doctor(profile_id: str | None, *, all_profiles: bool) -> int:
         for result in results:
             print(f"{result.status.upper():7} {result.name}: {result.message}")
         failed = failed or has_errors(results)
+    print(f"Checked {len(selected)} profile(s): {', '.join(selected)}")
     return 1 if failed else 0
 
 
@@ -331,6 +368,7 @@ def _validate_config(profile_id: str | None, *, all_profiles: bool) -> int:
             status = 2
             continue
         print(f"OK {profile.profile_id}: {profile.runtime_config}")
+    print(f"Checked {len(selected)} profile(s): {', '.join(selected)}")
     return status
 
 
@@ -425,7 +463,12 @@ def _selected_profile_ids(
     if requested and all_profiles:
         print("ERROR choose either --profile or --all", file=sys.stderr)
         return ()
-    if all_profiles:
+    if all_profiles or requested is None:
+        # No --profile and no --all: check every local profile by default,
+        # matching `run`'s default of running all enabled profiles.
+        # Silently checking only the alphabetically-first profile would
+        # produce a misleadingly clean report while other profiles go
+        # unchecked.
         profiles = available_profiles()
         if profiles:
             return profiles
@@ -434,8 +477,7 @@ def _selected_profile_ids(
             file=sys.stderr,
         )
         return ()
-    selected = _selected_profile_id(requested)
-    return () if selected is None else (selected,)
+    return (requested,)
 
 
 if __name__ == "__main__":

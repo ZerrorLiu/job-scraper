@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 
 from job_scraper.configuration.models import ProfileDefinition
 
+PROFILE_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_ROOT = PROJECT_ROOT / "config"
 ALLOWED_PROFILE_FIELDS = {
@@ -48,6 +50,13 @@ def load_profile_definition(
 ) -> ProfileDefinition:
     config_root = get_config_root(config_root)
     normalized_id = profile_id.strip().lower().replace("-", "_")
+    if not PROFILE_ID_PATTERN.fullmatch(normalized_id):
+        # Reject before it is used to build a filesystem path: without this,
+        # a value like "../../pyproject" would resolve outside
+        # config_root/profiles.
+        raise ValueError(
+            "profile_id must start with a letter and use letters, digits, or underscores"
+        )
     profile_path = config_root / "profiles" / f"{normalized_id}.toml"
     if not profile_path.exists():
         available = ", ".join(available_profiles(config_root)) or "(none)"

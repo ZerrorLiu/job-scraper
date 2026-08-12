@@ -48,6 +48,22 @@ def migrate_profiles(
         print("No workspace database path is configured.")
         return 2
 
+    resolved_destination = destination.resolve()
+    overlapping = [
+        definition.profile_id
+        for definition, config in zip(definitions, configs, strict=True)
+        if config.project.database_path.resolve() == resolved_destination
+    ]
+    if overlapping:
+        print(
+            "ERROR --workspace resolves to the same file as the source database for: "
+            f"{', '.join(overlapping)} ({resolved_destination}). Migrations must never "
+            "write to their own source database. Pass a different --workspace path "
+            "(for example, one under the config's data/ directory that is not any "
+            "profile's own database_path).",
+        )
+        return 2
+
     if dry_run:
         total = 0
         for definition, config in zip(definitions, configs, strict=True):
@@ -77,10 +93,35 @@ def migrate_profiles(
     return 0
 
 
+def resolve_status_workspace_path(
+    profile_ids: list[str] | None,
+    workspace_path: Path | None,
+) -> Path:
+    """Resolve the workspace path `db status` should inspect.
+
+    Mirrors `db init`/`db migrate`: prefer the path configured by the
+    selected (or, by default, all local) profiles' runtime_config over a
+    CWD-relative literal default, so `status` reports on the same workspace
+    `init`/`migrate` just acted on regardless of the current directory or a
+    non-default JOB_SCRAPER_CONFIG_DIR.
+    """
+    if workspace_path is not None:
+        return workspace_path.resolve()
+    selected = profile_ids or list(available_profiles())
+    if selected:
+        definitions = [load_profile_definition(profile_id) for profile_id in selected]
+        configs = [load_config(definition.runtime_config) for definition in definitions]
+        configured = _configured_workspace_path(configs)
+        if configured is not None:
+            return configured.resolve()
+    return Path("data/workspace.db").resolve()
+
+
 def show_status(workspace_path: Path) -> int:
     if not workspace_path.is_file():
         print(f"Workspace database does not exist: {workspace_path}")
         return 1
+    print(f"Workspace: {workspace_path}")
     workspace = WorkspaceDatabase(workspace_path)
     workspace.initialize()
     for name, value in workspace.counts().items():

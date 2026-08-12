@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from pathlib import Path
 
 
@@ -211,8 +212,21 @@ def load_source_config(sources: dict, source_name: str) -> SourceConfig:
     explicit_options = values.pop("options", {})
     if explicit_options and not isinstance(explicit_options, dict):
         raise ValueError(f"sources.{source_name}.options must be a TOML table")
+    unknown_keys = [key for key in raw_source if key not in known_fields]
+    # Unknown top-level keys are the documented extension point for
+    # adapter-specific settings (docs/public/configuration.md) and are
+    # preserved in SourceConfig.options unchanged. Only flag a key close
+    # enough to a known field name to plausibly be a typo of it (e.g.
+    # "max_detial_fetches"), so a mistyped known field surfaces as an error
+    # instead of silently taking SourceConfig's default value.
+    for key in unknown_keys:
+        suggestion = get_close_matches(key, known_fields, n=1, cutoff=0.8)
+        if suggestion:
+            raise ValueError(
+                f"sources.{source_name}.{key} is not a known field; did you mean {suggestion[0]!r}?"
+            )
     options = dict(explicit_options)
-    options.update({key: value for key, value in raw_source.items() if key not in known_fields})
+    options.update({key: raw_source[key] for key in unknown_keys})
     return SourceConfig(**values, options=options)
 
 
