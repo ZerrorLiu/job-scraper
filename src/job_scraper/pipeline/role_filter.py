@@ -17,26 +17,6 @@ STUDENT_OR_INTERNSHIP_PATTERNS = (
 PART_TIME_PATTERNS = (r"\bpart[- ]time\b", r"\bteilzeit\b")
 
 
-def is_target_role(
-    title: str,
-    description: str,
-    employment_type: str = "unknown",
-    target_keywords: list[str] | None = None,
-    match_scope: str = "title",
-    target_rules: Sequence[object] | None = None,
-    full_time_only: bool = True,
-) -> bool:
-    if full_time_only and not is_full_time_role(title, description, employment_type):
-        return False
-    return text_matches_target(
-        title,
-        description,
-        target_keywords or [],
-        match_scope,
-        target_rules=target_rules,
-    )
-
-
 def is_full_time_role(
     title: str,
     description: str,
@@ -63,6 +43,9 @@ def is_full_time_role(
 def has_excluded_keyword(
     title: str, description: str, employment_type: str, exclude_keywords: list[str] | None = None
 ) -> bool:
+    # Title-only by design: excluded_terms is a fast title-level filter.
+    # Description-level exclusion is a separate policy
+    # (excluded_requirement_patterns / RequirementExclusionStep).
     del description, employment_type
     if not exclude_keywords:
         return False

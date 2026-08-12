@@ -80,13 +80,20 @@ def tokenize_words(text: str) -> list[str]:
     return re.findall(r"[a-z']+", normalized)
 
 
+# Minimum combined hint-word hits before the ratio is trusted. Below this,
+# there is too little evidence to distinguish "confidently English" from
+# "just happened to contain a couple of English tech nouns" (e.g. a German
+# title like "Werkstudent Data Engineer" scoring 1.0 from two hits).
+MINIMUM_LANGUAGE_HINT_HITS = 3
+
+
 def english_ratio(text: str) -> float:
     tokens = tokenize_words(text)
     if not tokens:
         return 0.0
     english_hits = sum(1 for token in tokens if token in ENGLISH_HINTS)
     german_hits = sum(1 for token in tokens if token in GERMAN_HINTS)
-    if english_hits == 0 and german_hits == 0:
+    if english_hits + german_hits < MINIMUM_LANGUAGE_HINT_HITS:
         return 0.0
     score = english_hits / max(english_hits + german_hits, 1)
     return round(score, 4)
@@ -98,6 +105,8 @@ def german_ratio(text: str) -> float:
         return 0.0
     english_hits = sum(1 for token in tokens if token in ENGLISH_HINTS)
     german_hits = sum(1 for token in tokens if token in GERMAN_HINTS)
+    if english_hits + german_hits < MINIMUM_LANGUAGE_HINT_HITS:
+        return 0.0
     score = german_hits / max(english_hits + german_hits, 1)
     return round(score, 4)
 
@@ -115,17 +124,6 @@ def classify_description_language(text: str) -> str:
     if en == 0 and de == 0:
         return "Unknown"
     return "Mixed"
-
-
-def has_usable_description(text: str, minimum_chars: int = 120, minimum_tokens: int = 25) -> bool:
-    cleaned = " ".join(text.split())
-    if len(cleaned) < minimum_chars:
-        return False
-    return len(tokenize_words(cleaned)) >= minimum_tokens
-
-
-def is_english_enough(text: str, threshold: float) -> bool:
-    return english_ratio(text) >= threshold
 
 
 def is_english_job(language: str, ratio: float, threshold: float) -> bool:
@@ -156,11 +154,15 @@ def is_allowed_description_language(
 
 def matches_requirement_patterns(text: str, patterns: tuple[str, ...]) -> bool:
     lowered = normalize_language_text(text)
-    return any(
-        normalized_pattern in lowered
-        for pattern in patterns
-        if (normalized_pattern := normalize_language_text(pattern))
-    )
+    for pattern in patterns:
+        normalized_pattern = normalize_language_text(pattern)
+        if not normalized_pattern:
+            continue
+        escaped = re.escape(normalized_pattern).replace(r"\ ", r"\s+")
+        regex = rf"(?<![a-z0-9]){escaped}(?![a-z0-9])"
+        if re.search(regex, lowered) is not None:
+            return True
+    return False
 
 
 def normalize_language_text(text: str) -> str:

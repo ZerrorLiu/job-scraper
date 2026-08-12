@@ -295,8 +295,6 @@ def canonicalize_url(url: str) -> str:
 def repair_mojibake(value: str) -> str:
     if not value:
         return value
-    if "\u59e3?" in value and re.search(r"[A-Za-z]", value):
-        value = re.sub(r"\s+\u59e3\u5eebs+", " - ", value)
     if not any(marker in value for marker in MOJIBAKE_MARKERS):
         return value
     baseline_score = sum(value.count(marker) for marker in MOJIBAKE_MARKERS)
@@ -558,6 +556,18 @@ def known_location_country(location_raw: str) -> str:
     exact_location_country = country_to_code(location_raw)
     if exact_location_country:
         return exact_location_country
+    # A country/region designator is most often the last comma-separated
+    # segment (e.g. "Vienna, VA, USA"). Check segments from last to first so
+    # an explicit signal there wins over an earlier, unrelated city-name
+    # hint (e.g. "Vienna" alone would otherwise match Austria first).
+    segments = location_raw.split(",")
+    for segment in reversed(segments):
+        normalized_segment = normalize_location_key(segment)
+        if not normalized_segment:
+            continue
+        for country_code in COUNTRY_LOCATION_HINTS:
+            if location_matches_country(normalized_segment, country_code):
+                return country_code
     normalized_location = normalize_location_key(location_raw)
     for country_code in COUNTRY_LOCATION_HINTS:
         if location_matches_country(normalized_location, country_code):

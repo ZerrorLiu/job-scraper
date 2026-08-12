@@ -10,7 +10,11 @@ from job_scraper.domain.models import JobRecord
 def canonical_identity(job: JobRecord) -> str:
     title = _normalized_title(job.title, job.location_raw)
     company = _normalized(job.company_name)
-    location = _normalized(job.city or job.location_raw or job.country)
+    # location_raw carries the full location list (e.g. "Berlin | Munich");
+    # city collapses to the lossy literal "Multiple locations" for display
+    # when there are 2+ options, which would make distinct multi-city
+    # postings hash to the same identity if used here instead.
+    location = _normalized(job.location_raw or job.city or job.country)
     if not any((title, company, location)):
         return job.dedupe_key
     return "|".join((title, company, location))

@@ -21,7 +21,8 @@ def merge_locations(*values: str) -> tuple[str, str, list[str]]:
         return "", "", []
     if len(unique) == 1:
         return unique[0], unique[0], unique
-    return " | ".join(unique), "Multiple locations", unique
+    ordered = sorted(unique, key=str.casefold)
+    return " | ".join(ordered), "Multiple locations", unique
 
 
 def _split_location_options(value: str) -> list[str]:
