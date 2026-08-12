@@ -312,6 +312,7 @@ def finish(
     runtimes = preparation.runtimes
     started_at = preparation.started_at
     status = "completed"
+    had_track_failure = False
     try:
         for runtime in runtimes:
             if dashboard is not None:
@@ -376,16 +377,47 @@ def finish(
             for runtime in runtimes:
                 if "notion_daily" not in runtime.enabled_sinks or not runtime.notion.enabled():
                     continue
-                publish_daily(
-                    runtime.database,
-                    list(runtime.accepted_jobs.values()),
-                    runtime.notion,
-                    runtime.config.project.timezone,
-                    started_at,
-                    table_prefix=runtime.config.notion.daily_table_prefix,
-                    track_label=runtime.track_label,
-                    logger=log_line,
-                )
+                try:
+                    result = publish_daily(
+                        runtime.database,
+                        list(runtime.accepted_jobs.values()),
+                        runtime.notion,
+                        runtime.config.project.timezone,
+                        started_at,
+                        table_prefix=runtime.config.notion.daily_table_prefix,
+                        track_label=runtime.track_label,
+                        logger=log_line,
+                    )
+                except Exception as track_exc:
+                    # A track-level publish failure (auth, database access,
+                    # ...) marks only this track's run as failed. It must
+                    # not block reaching state.mark_processed/save() below
+                    # for messages this track and other, unrelated tracks
+                    # already finished processing.
+                    had_track_failure = True
+                    runtime.run.errors.append(str(track_exc))
+                    runtime.database.finish_run(runtime.run, "failed")
+                    log_error(
+                        f"Email | Track {runtime.track_label} | Notion publish failed | {track_exc}"
+                    )
+                    if dashboard is not None:
+                        dashboard.update(
+                            runtime.track_label,
+                            "Email",
+                            stage="Failed",
+                            progress_text="Notion failed",
+                            detail=str(track_exc),
+                        )
+                    continue
+                if result.errors:
+                    log_error(
+                        f"Email | Track {runtime.track_label} | Notion | "
+                        f"{result.published} synced, {len(result.errors)} failed"
+                    )
+                    for error in result.errors:
+                        log_error(
+                            f"Email | Track {runtime.track_label} | Notion | Failed | {error}"
+                        )
 
         for message in preparation.messages_to_mark:
             preparation.state.mark_processed(
@@ -415,7 +447,7 @@ def finish(
                 )
         return 1
 
-    return 0 if status == "completed" else 1
+    return 1 if status != "completed" or had_track_failure else 0
 
 
 def default_email_config_path() -> Path:
