@@ -16,6 +16,15 @@ from urllib.request import Request, urlopen
 from job_scraper.config import NotionConfig
 
 
+def _retry_after_seconds(exc: HTTPError) -> float:
+    if exc.headers is None:
+        return 0.0
+    try:
+        return float(exc.headers.get("Retry-After", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class NotionClient:
     def __init__(self, config: NotionConfig) -> None:
         token = environment_credential("NOTION_INTEGRATION_TOKEN") or config.token
@@ -663,7 +672,7 @@ class NotionClient:
             except HTTPError as exc:  # pragma: no cover
                 details = exc.read().decode("utf-8", errors="replace")
                 if exc.code in {429, 500, 502, 503, 504} and attempt < 3:
-                    time.sleep(attempt + 1)
+                    time.sleep(max(_retry_after_seconds(exc), attempt + 1))
                     last_error = RuntimeError(f"Notion API {exc.code}: {details}")
                     continue
                 raise RuntimeError(f"Notion API {exc.code}: {details}") from exc

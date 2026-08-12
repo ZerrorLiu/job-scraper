@@ -138,6 +138,7 @@ class Database:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
             connection.commit()
@@ -536,16 +537,21 @@ class Database:
             if not normalized_title or not normalized_company:
                 return ""
 
-            row = connection.execute(
+            # Title+company alone is a weak signal (a repost or a distinct
+            # opening can share both). Only trust it when it identifies
+            # exactly one job; an ambiguous match is left unresolved rather
+            # than guessing and writing a status onto the wrong job.
+            candidate_rows = connection.execute(
                 """
                 SELECT id
                 FROM jobs
                 WHERE lower(normalized_title) = ? AND lower(company_name) = ?
-                ORDER BY last_seen_at DESC
-                LIMIT 1
                 """,
                 (normalized_title, normalized_company),
-            ).fetchone()
+            ).fetchall()
+            if len(candidate_rows) != 1:
+                return ""
+            row = candidate_rows[0]
             return str(row["id"]) if row else ""
 
     def get_application_status(self, job_id: str) -> str:

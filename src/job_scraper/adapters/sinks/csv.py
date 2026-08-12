@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, cast
@@ -49,8 +51,22 @@ class CsvSink:
 
         self._destination.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = list(rows[0].keys())
-        with self._destination.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows({field: row[field] for field in fieldnames} for row in rows)
+        # Write to a temp file in the same directory, then atomically replace
+        # the destination, so a crash mid-write cannot leave the existing
+        # cumulative CSV truncated.
+        descriptor, temp_path_str = tempfile.mkstemp(
+            dir=self._destination.parent,
+            prefix=f".{self._destination.name}.",
+            suffix=".tmp",
+        )
+        temp_path = Path(temp_path_str)
+        try:
+            with os.fdopen(descriptor, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows({field: row[field] for field in fieldnames} for row in rows)
+            os.replace(temp_path, self._destination)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
         return PublishResult(sink_id=self.sink_id, published=len(rows))

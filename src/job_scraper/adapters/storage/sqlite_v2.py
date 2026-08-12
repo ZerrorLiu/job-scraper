@@ -302,7 +302,9 @@ class WorkspaceDatabase:
         if not database_path.is_file():
             return MigrationReport(profile_id=profile_id, database_path=database_path)
 
-        source = sqlite3.connect(database_path)
+        # Read-only: this migration must never modify or delete its source
+        # database (see AGENTS.md data-safety rules).
+        source = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
         source.row_factory = sqlite3.Row
         try:
             if not _table_exists(source, "jobs"):
