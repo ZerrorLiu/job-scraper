@@ -31,6 +31,11 @@ outputs/
 tmp/
 exports/
 .vibe/archive/
+# Personal career strategy output and analysis derived from private job data.
+/career-strategy-analysis/
+/job-market-analysis/
+/最终求职结论.md
+
 # Personal design history and one-off migration utilities are retained locally.
 /docs/*.md
 /src/job_scraper/jobs/migrate_notion_daily_tables.py
