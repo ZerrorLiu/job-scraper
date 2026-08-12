@@ -230,6 +230,62 @@ def test_transient_server_errors_are_retried(monkeypatch) -> None:
     assert delays == [0.5, 1.0]
 
 
+def test_network_level_errors_are_retried_like_transient_http_errors(monkeypatch) -> None:
+    attempts = 0
+
+    def fake_request(*args: Any, **kwargs: Any) -> Any:
+        nonlocal attempts
+        del args, kwargs
+        attempts += 1
+        if attempts < 3:
+            raise TimeoutError("timed out")
+        return {"ok": True}
+
+    async def fake_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr(adapter, "_brightdata_json_request_blocking", fake_request)
+    monkeypatch.setattr(adapter.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(adapter.random, "uniform", lambda _start, _end: 0.0)
+
+    result = asyncio.run(
+        adapter._brightdata_json_request(
+            "https://api.example.test/trigger",
+            "test-key",
+            method="POST",
+            body=[{"url": "https://example.test/job"}],
+            timeout_seconds=1,
+        )
+    )
+
+    assert result == {"ok": True}
+    assert attempts == 3
+
+
+def test_network_level_errors_still_fail_after_exhausting_attempts(monkeypatch) -> None:
+    def always_times_out(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise TimeoutError("timed out")
+
+    async def fake_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr(adapter, "_brightdata_json_request_blocking", always_times_out)
+    monkeypatch.setattr(adapter.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(adapter.random, "uniform", lambda _start, _end: 0.0)
+
+    with pytest.raises(adapter.DataSyncError):
+        asyncio.run(
+            adapter._brightdata_json_request(
+                "https://api.example.test/trigger",
+                "test-key",
+                method="POST",
+                body=None,
+                timeout_seconds=1,
+            )
+        )
+
+
 def test_email_brightdata_detail_enrichment_has_total_timeout(monkeypatch) -> None:
     async def slow_detail_batches(*args: Any, **kwargs: Any) -> BrightDataDetailResolutionResult:
         del args, kwargs

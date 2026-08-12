@@ -750,6 +750,23 @@ async def _brightdata_json_request(
                 retry_delay,
             )
             await asyncio.sleep(retry_delay)
+        except (TimeoutError, URLError) as exc:
+            # Network-level failures (DNS, connection reset, socket timeout)
+            # get the same retry treatment as a retryable HTTP status,
+            # instead of aborting immediately with zero retries.
+            if attempt == BRIGHTDATA_REQUEST_MAX_ATTEMPTS:
+                suffix = f" after {attempt} attempts" if attempt > 1 else ""
+                raise DataSyncError(f"Bright Data request failed: {exc}{suffix}") from exc
+            exponential_delay = BRIGHTDATA_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            retry_delay = exponential_delay + random.uniform(0.0, BRIGHTDATA_RETRY_BASE_SECONDS)
+            LOGGER.warning(
+                "Transient Bright Data network error during %s; retrying attempt %s/%s in %.2fs",
+                method,
+                attempt + 1,
+                BRIGHTDATA_REQUEST_MAX_ATTEMPTS,
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
     raise AssertionError("Bright Data retry loop exited unexpectedly")
 
 
@@ -778,8 +795,9 @@ def _brightdata_json_request_blocking(
             except (TypeError, ValueError):
                 retry_after = None
         raise _BrightDataHTTPError(exc.code, details, retry_after) from exc
-    except (TimeoutError, URLError) as exc:
-        raise DataSyncError(f"Bright Data request failed: {exc}") from exc
+    # TimeoutError/URLError propagate as-is so the async retry loop in
+    # _brightdata_json_request can retry them like a transient HTTP error,
+    # instead of being pre-wrapped into a DataSyncError it can't catch.
     try:
         return json.loads(content)
     except json.JSONDecodeError as exc:
