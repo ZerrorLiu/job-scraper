@@ -487,9 +487,7 @@ async def _execute_brightdata_snapshots_via_webhook(
     for records, snapshot_id in per_input_results:
         all_records.extend(records)
         all_snapshot_ids.append(snapshot_id)
-    request_hash = hashlib.sha256(
-        json.dumps(sorted(all_snapshot_ids)).encode("utf-8")
-    ).hexdigest()
+    request_hash = hashlib.sha256(json.dumps(sorted(all_snapshot_ids)).encode("utf-8")).hexdigest()
     return BrightDataBatchResult(
         snapshot_id=all_snapshot_ids[0] if all_snapshot_ids else "",
         request_hash=request_hash,
@@ -538,7 +536,9 @@ async def _execute_one_brightdata_snapshot_via_webhook(
                 "/snapshots",
                 request_timeout_seconds=request_timeout_seconds,
             )
-            if not isinstance(ready_ids, Mapping) or snapshot_id not in (ready_ids.get("ready") or []):
+            if not isinstance(ready_ids, Mapping) or snapshot_id not in (
+                ready_ids.get("ready") or []
+            ):
                 _log_cloud_event(
                     f"Webhook snapshot still pending | Query {search_input.search_query!r} | "
                     f"Snapshot {snapshot_id}",
@@ -1220,9 +1220,7 @@ class IndeedBrightDataCollector(BaseCollector):
         batch = asyncio.run(result) if inspect.isawaitable(result) else result
         if isinstance(batch, BrightDataBatchResult):
             records = batch.records
-            snapshot_ids = batch.snapshot_ids or (
-                [batch.snapshot_id] if batch.snapshot_id else []
-            )
+            snapshot_ids = batch.snapshot_ids or ([batch.snapshot_id] if batch.snapshot_id else [])
             mark_consumed_on_collect = batch.mark_consumed_on_collect
         else:
             records = batch
