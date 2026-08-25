@@ -8,7 +8,7 @@ import logging
 import os
 import random
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ BRIGHTDATA_REQUEST_MAX_ATTEMPTS = 3
 BRIGHTDATA_RETRY_BASE_SECONDS = 0.5
 BRIGHTDATA_SNAPSHOT_TIMEOUT_SECONDS = 1800.0
 BRIGHTDATA_SNAPSHOT_CANCEL_PATH = "/snapshot/{snapshot_id}/cancel"
+BRIGHTDATA_WEBHOOK_PENDING_MAX_AGE_SECONDS = 259200.0  # 3 days
 INDEED_MARKETS = {
     "AT": "at.indeed.com",
     "BE": "be.indeed.com",
@@ -119,6 +120,17 @@ class BrightDataBatchResult:
     snapshot_id: str
     request_hash: str
     records: list[dict[str, Any]]
+    # False when the runner itself owns (or intentionally defers) marking the
+    # snapshot consumed -- e.g. the webhook runner, which may return zero
+    # records for a snapshot that is still pending on Bright Data's side and
+    # must remain resumable on a later run rather than be treated as done.
+    mark_consumed_on_collect: bool = True
+    # One entry per Bright Data snapshot this result draws from. The webhook
+    # runner submits one snapshot per search input (so each keyword runs as
+    # its own concurrent job instead of queueing inside one shared batch);
+    # `snapshot_id` above stays populated with the first one for callers that
+    # only care about a single representative id.
+    snapshot_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -129,6 +141,12 @@ class BrightDataDetailResolutionResult:
 
 def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     """Map one Bright Data object into the stable Indeed interchange schema."""
+    if entry.get("error") or entry.get("error_code"):
+        # `include_errors=true` makes Bright Data report a URL it failed to
+        # parse instead of silently omitting it. It carries no job fields, so
+        # without this check `_first_text`'s "N/A" default would look like a
+        # real (if garbage) record_id instead of being dropped here.
+        return None
     reference_url = _first_text(
         entry,
         "reference_url",
@@ -316,6 +334,26 @@ async def execute_brightdata_dataset_batch_sync(
         ).encode("utf-8")
     ).hexdigest()
 
+    webhook_base_url = os.getenv("BRIGHTDATA_WEBHOOK_URL", "").strip()
+    webhook_token = os.getenv("BRIGHTDATA_WEBHOOK_TOKEN", "").strip()
+    if webhook_base_url and webhook_token:
+        if snapshot_database is None:
+            raise DataSyncError(
+                "BRIGHTDATA_WEBHOOK_URL is configured but no snapshot_database was provided "
+                "to track pending snapshots across runs"
+            )
+        return await _execute_brightdata_snapshots_via_webhook(
+            search_inputs,
+            trigger_url=trigger_url,
+            api_key=api_key,
+            dataset_id=dataset_id,
+            snapshot_database=snapshot_database,
+            webhook_base_url=webhook_base_url,
+            webhook_token=webhook_token,
+            request_timeout_seconds=request_timeout_seconds,
+            event_logger=event_logger,
+        )
+
     markets = sorted({f"{item.country}/{item.domain}" for item in search_inputs})
     snapshot_id, downloaded = await _execute_brightdata_snapshot(
         trigger_url=trigger_url,
@@ -331,10 +369,55 @@ async def execute_brightdata_dataset_batch_sync(
         trigger_detail=(f"Markets {', '.join(markets)} | Global limit {limit_multiple_results}"),
     )
 
+    ingested_records = _normalize_brightdata_entries(
+        downloaded,
+        snapshot_id=snapshot_id,
+        search_inputs=search_inputs,
+        event_logger=event_logger,
+    )
+
+    if output_path is not None:
+        _write_json(Path(output_path), ingested_records)
+    _log_cloud_event(
+        f"Cloud snapshot downloaded | Snapshot {snapshot_id} | "
+        f"Raw rows {len(downloaded)} | Mapped rows {len(ingested_records)}",
+        event_logger,
+    )
+    return BrightDataBatchResult(
+        snapshot_id=snapshot_id,
+        request_hash=request_hash,
+        records=ingested_records,
+        snapshot_ids=[snapshot_id],
+    )
+
+
+def _normalize_brightdata_entries(
+    downloaded: Iterable[object],
+    *,
+    snapshot_id: str,
+    search_inputs: Sequence[BrightDataSearchInput],
+    event_logger: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Deduplicate and tag every downloaded entry -- no count-based cutoff here.
+
+    Per-query bounding happens later in `_select_brightdata_records`, which
+    can see each record's originating query. Cutting off early here (by raw
+    download order) would let one query's results crowd out every other
+    query's before that grouping ever gets a chance to run.
+    """
     ingested_records: list[dict[str, Any]] = []
     seen_record_ids: set[str] = set()
     for entry in downloaded:
         if not isinstance(entry, Mapping):
+            continue
+        error_detail = entry.get("error") or entry.get("error_code")
+        if error_detail:
+            failed_url = str((entry.get("input") or {}).get("url") or entry.get("url") or "")
+            _log_cloud_event(
+                f"Snapshot {snapshot_id} | Bright Data could not parse a candidate URL | "
+                f"{failed_url} | {error_detail}",
+                event_logger,
+            )
             continue
         normalized = normalize_upstream_entry(entry)
         if normalized is None or normalized["record_id"] in seen_record_ids:
@@ -351,21 +434,213 @@ async def execute_brightdata_dataset_batch_sync(
             }
         )
         ingested_records.append(normalized)
-        if len(ingested_records) >= limit_multiple_results:
-            break
+    return ingested_records
 
-    if output_path is not None:
-        _write_json(Path(output_path), ingested_records)
+
+async def _execute_brightdata_snapshots_via_webhook(
+    search_inputs: Sequence[BrightDataSearchInput],
+    *,
+    trigger_url: str,
+    api_key: str,
+    dataset_id: str,
+    snapshot_database: Database,
+    webhook_base_url: str,
+    webhook_token: str,
+    request_timeout_seconds: float,
+    event_logger: Callable[[str], None] | None,
+) -> BrightDataBatchResult:
+    """Non-blocking Indeed acquisition backed by the vps-dev webhook receiver.
+
+    Submits one independent Bright Data snapshot per search input rather than
+    one combined batch. Empirically, a single Bright Data snapshot covering
+    13 keywords processes them with limited internal concurrency (~2h16m
+    total, keywords starting minutes to an hour apart), while independently
+    submitted single-keyword snapshots run genuinely in parallel (confirmed:
+    three submitted together advanced in lockstep). Splitting per input lets
+    every keyword actually run at once instead of queueing behind the rest.
+
+    Never waits on Bright Data: each input independently reuses a snapshot
+    the receiver already downloaded, checks whether one it is still watching
+    has become ready, or submits a new one with `notify` pointed at the
+    receiver -- all without blocking. A given run may therefore contribute
+    records for only some inputs while others are still in flight; a later
+    run picks up whatever becomes ready next.
+    """
+    per_input_results = await asyncio.gather(
+        *(
+            _execute_one_brightdata_snapshot_via_webhook(
+                search_input,
+                trigger_url=trigger_url,
+                api_key=api_key,
+                dataset_id=dataset_id,
+                snapshot_database=snapshot_database,
+                webhook_base_url=webhook_base_url,
+                webhook_token=webhook_token,
+                request_timeout_seconds=request_timeout_seconds,
+                event_logger=event_logger,
+            )
+            for search_input in search_inputs
+        )
+    )
+    all_records: list[dict[str, Any]] = []
+    all_snapshot_ids: list[str] = []
+    for records, snapshot_id in per_input_results:
+        all_records.extend(records)
+        all_snapshot_ids.append(snapshot_id)
+    request_hash = hashlib.sha256(
+        json.dumps(sorted(all_snapshot_ids)).encode("utf-8")
+    ).hexdigest()
+    return BrightDataBatchResult(
+        snapshot_id=all_snapshot_ids[0] if all_snapshot_ids else "",
+        request_hash=request_hash,
+        records=all_records,
+        mark_consumed_on_collect=False,
+        snapshot_ids=all_snapshot_ids,
+    )
+
+
+async def _execute_one_brightdata_snapshot_via_webhook(
+    search_input: BrightDataSearchInput,
+    *,
+    trigger_url: str,
+    api_key: str,
+    dataset_id: str,
+    snapshot_database: Database,
+    webhook_base_url: str,
+    webhook_token: str,
+    request_timeout_seconds: float,
+    event_logger: Callable[[str], None] | None,
+) -> tuple[list[dict[str, Any]], str]:
+    item_payload = [search_input.as_payload()]
+    item_hash = hashlib.sha256(
+        json.dumps(
+            {"dataset_id": dataset_id, "input": item_payload},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    resumable = snapshot_database.find_resumable_snapshot(
+        "brightdata",
+        dataset_id,
+        item_hash,
+        max_age_seconds=BRIGHTDATA_WEBHOOK_PENDING_MAX_AGE_SECONDS,
+    )
+    if resumable is not None:
+        snapshot_id = str(resumable["snapshot_id"])
+        status = str(resumable["status"])
+        if status != "ready":
+            ready_ids = await _webhook_request(
+                webhook_base_url,
+                webhook_token,
+                "GET",
+                "/snapshots",
+                request_timeout_seconds=request_timeout_seconds,
+            )
+            if not isinstance(ready_ids, Mapping) or snapshot_id not in (ready_ids.get("ready") or []):
+                _log_cloud_event(
+                    f"Webhook snapshot still pending | Query {search_input.search_query!r} | "
+                    f"Snapshot {snapshot_id}",
+                    event_logger,
+                )
+                return [], snapshot_id
+            snapshot_database.update_snapshot_status(snapshot_id, "ready")
+
+        downloaded = await _webhook_request(
+            webhook_base_url,
+            webhook_token,
+            "GET",
+            f"/snapshots/{snapshot_id}",
+            request_timeout_seconds=request_timeout_seconds,
+        )
+        if not isinstance(downloaded, list):
+            raise DataSyncError(
+                f"Webhook receiver snapshot payload for {snapshot_id} was not a JSON array"
+            )
+        records = _normalize_brightdata_entries(
+            downloaded,
+            snapshot_id=snapshot_id,
+            search_inputs=[search_input],
+            event_logger=event_logger,
+        )
+        await _webhook_request(
+            webhook_base_url,
+            webhook_token,
+            "POST",
+            f"/snapshots/{snapshot_id}/ack",
+            request_timeout_seconds=request_timeout_seconds,
+        )
+        snapshot_database.mark_snapshot_consumed(snapshot_id)
+        _log_cloud_event(
+            f"Webhook snapshot collected | Query {search_input.search_query!r} | "
+            f"Snapshot {snapshot_id} | Raw rows {len(downloaded)} | Mapped rows {len(records)}",
+            event_logger,
+        )
+        return records, snapshot_id
+
+    notify_url = f"{webhook_base_url}/webhook?{urlencode({'token': webhook_token})}"
+    trigger_response = await _brightdata_json_request(
+        f"{trigger_url}&{urlencode({'notify': notify_url})}",
+        api_key,
+        method="POST",
+        body=item_payload,
+        timeout_seconds=request_timeout_seconds,
+    )
+    if not isinstance(trigger_response, Mapping):
+        raise DataSyncError("Bright Data trigger response was not a JSON object")
+    snapshot_id = str(trigger_response.get("snapshot_id") or "").strip()
+    if not snapshot_id:
+        raise DataSyncError("Bright Data trigger response did not include snapshot_id")
+    snapshot_database.register_snapshot(
+        snapshot_id, "brightdata", dataset_id, item_hash, item_payload
+    )
+    await _webhook_request(
+        webhook_base_url,
+        webhook_token,
+        "POST",
+        "/register",
+        body={"snapshot_id": snapshot_id},
+        request_timeout_seconds=request_timeout_seconds,
+    )
     _log_cloud_event(
-        f"Cloud snapshot downloaded | Snapshot {snapshot_id} | "
-        f"Raw rows {len(downloaded)} | Mapped rows {len(ingested_records)}",
+        f"Submitted webhook snapshot | Query {search_input.search_query!r} | Snapshot {snapshot_id}",
         event_logger,
     )
-    return BrightDataBatchResult(
-        snapshot_id=snapshot_id,
-        request_hash=request_hash,
-        records=ingested_records,
-    )
+    return [], snapshot_id
+
+
+async def _webhook_request(
+    base_url: str,
+    token: str,
+    method: str,
+    path: str,
+    *,
+    body: Any = None,
+    request_timeout_seconds: float,
+) -> Any:
+    separator = "&" if "?" in path else "?"
+    endpoint = f"{base_url}{path}{separator}{urlencode({'token': token})}"
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    request = Request(endpoint, data=payload, method=method)
+    request.add_header("Accept", "application/json")
+    # Cloudflare's default bot protection blocks urllib's stock User-Agent
+    # ("Python-urllib/x.y") as a known non-browser signature.
+    request.add_header("User-Agent", "job-scraper-webhook-client/1.0")
+    if payload is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        return await asyncio.to_thread(_open_json_request, request, request_timeout_seconds)
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise DataSyncError(f"Webhook receiver {exc.code} on {path}: {details}") from exc
+    except (TimeoutError, URLError) as exc:
+        raise DataSyncError(f"Webhook receiver request to {path} failed: {exc}") from exc
+
+
+def _open_json_request(request: Request, timeout_seconds: float) -> Any:
+    with urlopen(request, timeout=timeout_seconds) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 async def execute_brightdata_detail_batch_sync(
@@ -935,8 +1210,7 @@ class IndeedBrightDataCollector(BaseCollector):
 
         result = self.batch_sync_runner(
             search_inputs,
-            limit_per_input=self.source_config.max_listing_pages
-            * self.source_config.results_per_input,
+            limit_per_input=self.source_config.max_detail_fetches,
             limit_multiple_results=self.source_config.max_detail_fetches,
             output_path=None,
             snapshot_database=self.snapshot_database,
@@ -946,14 +1220,18 @@ class IndeedBrightDataCollector(BaseCollector):
         batch = asyncio.run(result) if inspect.isawaitable(result) else result
         if isinstance(batch, BrightDataBatchResult):
             records = batch.records
-            snapshot_id = batch.snapshot_id
+            snapshot_ids = batch.snapshot_ids or (
+                [batch.snapshot_id] if batch.snapshot_id else []
+            )
+            mark_consumed_on_collect = batch.mark_consumed_on_collect
         else:
             records = batch
-            snapshot_id = ""
+            snapshot_ids = []
+            mark_consumed_on_collect = True
 
         selected_records = _select_brightdata_records(
             records,
-            maximum_records=self.source_config.max_detail_fetches,
+            maximum_records_per_query=self.source_config.max_detail_fetches,
         )
         completed = False
         try:
@@ -968,8 +1246,9 @@ class IndeedBrightDataCollector(BaseCollector):
                 )
             completed = True
         finally:
-            if completed and snapshot_id and self.snapshot_database is not None:
-                self.snapshot_database.mark_snapshot_consumed(snapshot_id)
+            if completed and mark_consumed_on_collect and self.snapshot_database is not None:
+                for snapshot_id in snapshot_ids:
+                    self.snapshot_database.mark_snapshot_consumed(snapshot_id)
 
     def _collect_with_legacy_runner(
         self,
@@ -1009,7 +1288,7 @@ class IndeedBrightDataCollector(BaseCollector):
                 break
         selected_records = _select_brightdata_records(
             collected_records,
-            maximum_records=self.source_config.max_detail_fetches,
+            maximum_records_per_query=self.source_config.max_detail_fetches,
         )
         for record in selected_records:
             yield _to_raw_job(
@@ -1023,18 +1302,26 @@ class IndeedBrightDataCollector(BaseCollector):
 def _select_brightdata_records(
     records: Iterable[Mapping[str, Any]],
     *,
-    maximum_records: int,
+    maximum_records_per_query: int,
 ) -> list[dict[str, Any]]:
-    """Keep the bounded, deduplicated records that may enter the shared pipeline."""
+    """Keep dedup'd records, capped per originating query.
+
+    A per-query budget (rather than one flat total) means a broad keyword
+    that alone matches hundreds of postings can't crowd out every other
+    keyword's results -- each query gets its own allowance.
+    """
     selected: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    counts_by_query: dict[str, int] = {}
     for record in records:
-        if len(selected) >= maximum_records:
-            break
         source_job_id = str(record.get("record_id") or "").strip()
         if not source_job_id or source_job_id in seen_ids:
             continue
+        query = str(record.get("brightdata_query") or "").strip()
+        if counts_by_query.get(query, 0) >= maximum_records_per_query:
+            continue
         seen_ids.add(source_job_id)
+        counts_by_query[query] = counts_by_query.get(query, 0) + 1
         selected.append(dict(record))
     return selected
 

@@ -94,7 +94,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--profile-workers",
         type=run_daily.positive_int,
-        default=3,
+        default=4,
         help="Maximum online profiles to run concurrently. Notion publishing remains serialized.",
     )
     parser.add_argument("--email-folder", help="Override the configured email IMAP folder/label.")
