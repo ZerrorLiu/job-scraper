@@ -154,7 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     email.add_argument("arguments", nargs=argparse.REMAINDER)
 
-    database = subparsers.add_parser("db", help="Workspace database commands.")
+    database = subparsers.add_parser(
+        "db",
+        help="Workspace database commands and local Notion binding status.",
+    )
     database_subparsers = database.add_subparsers(
         dest="database_command",
         required=True,
@@ -182,7 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
         "database.",
     )
     migrate.add_argument("--dry-run", action="store_true")
-    status = database_subparsers.add_parser("status")
+    status = database_subparsers.add_parser(
+        "status",
+        help="Inspect workspace state and local Notion database bindings without writes.",
+    )
     status.add_argument(
         "--profile",
         action="append",
@@ -236,7 +242,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
         if args.database_command == "status":
-            return show_status(resolve_status_workspace_path(args.profiles, args.workspace))
+            return show_status(
+                resolve_status_workspace_path(args.profiles, args.workspace),
+                args.profiles,
+            )
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

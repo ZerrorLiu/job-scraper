@@ -18,7 +18,7 @@ from job_scraper.domain.identity import (
 from job_scraper.domain.models import JobRecord
 from job_scraper.domain.payload_sanitization import sanitize_job_payload
 
-SCHEMA_VERSION = 5
+BASE_SCHEMA_VERSION = 5
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 
 
+-- FROZEN. Only `migrate_v1` writes this table, so it holds publication state
+-- as of the last migration and nothing since. Live publication state is the V1
+-- store's `notion_sync_state`, which the Notion sink updates every run.
+--
+-- Reading this table as if it were current is a real trap: it looks exactly
+-- like live data, and it silently under-reports any source that started
+-- producing after the last migration. `WorkspaceDatabase.counts()` labels it,
+-- and `db status` says so. Do not add a write path here until the V1/V2 split
+-- is resolved -- a second live writer would make the two stores disagree.
 CREATE TABLE IF NOT EXISTS external_publications (
     canonical_job_id TEXT NOT NULL,
     sink_id TEXT NOT NULL,
@@ -128,6 +137,56 @@ ON source_observations(run_id, profile_id);
 CREATE INDEX IF NOT EXISTS idx_matches_profile
 ON profile_matches(profile_id, accepted, last_evaluated_at);
 """
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    """One ordered, idempotent schema step recorded in `schema_migrations`."""
+
+    version: int
+    description: str
+    statements: tuple[str, ...]
+
+
+# Versions <= BASE_SCHEMA_VERSION describe the shape that `SCHEMA` above already
+# creates, so they are only ever *recorded* for a fresh database. Every change
+# after that must be appended here as a new version -- `CREATE TABLE IF NOT
+# EXISTS` alone silently skips existing databases, so column and index changes
+# would never reach a workspace that was created before the change.
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(
+        version=6,
+        description="index source postings for detail lookup and canonical identity",
+        statements=(
+            "CREATE INDEX IF NOT EXISTS idx_postings_source_lookup "
+            "ON source_postings(source_id, source_job_id, last_seen_at)",
+            "CREATE INDEX IF NOT EXISTS idx_canonical_identity ON canonical_jobs(identity_key)",
+            "CREATE INDEX IF NOT EXISTS idx_publications_external "
+            "ON external_publications(sink_id, external_id)",
+        ),
+    ),
+)
+
+LATEST_SCHEMA_VERSION = max(
+    (migration.version for migration in MIGRATIONS),
+    default=BASE_SCHEMA_VERSION,
+)
+
+KNOWN_TABLES = (
+    "schema_migrations",
+    "canonical_jobs",
+    "source_postings",
+    "source_observations",
+    "profile_matches",
+    "applications",
+    "external_publications",
+    "legacy_job_links",
+)
+
+# Tables no run writes to. They are populated once by `migrate_v1` and then
+# stand still, so any report built from them describes the moment of migration
+# rather than the present.
+FROZEN_TABLES = frozenset({"external_publications", "legacy_job_links"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,12 +242,54 @@ class WorkspaceDatabase:
                 VALUES (?, ?, ?)
                 """,
                 (
-                    SCHEMA_VERSION,
+                    BASE_SCHEMA_VERSION,
                     datetime.now(UTC).isoformat(),
                     "workspace canonical job schema",
                 ),
             )
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._apply_pending_migrations(connection)
+            connection.execute(f"PRAGMA user_version = {LATEST_SCHEMA_VERSION}")
+
+    def pending_migrations(self) -> tuple[Migration, ...]:
+        """Migrations this database has not recorded yet (for dry-run reporting)."""
+        with self.connect() as connection:
+            if not _table_exists(connection, "schema_migrations"):
+                return MIGRATIONS
+            return self._pending(connection)
+
+    def unknown_tables(self) -> tuple[str, ...]:
+        """Tables present in the file that this schema no longer defines.
+
+        Surfacing drift beats silently ignoring it: a workspace that outlived a
+        removed feature keeps those tables and their rows, and an operator
+        should be able to see that from `db status` rather than by opening the
+        file by hand.
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        return tuple(sorted(str(row["name"]) for row in rows if row["name"] not in KNOWN_TABLES))
+
+    @staticmethod
+    def _pending(connection: sqlite3.Connection) -> tuple[Migration, ...]:
+        applied = {
+            int(row["version"])
+            for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        return tuple(migration for migration in MIGRATIONS if migration.version not in applied)
+
+    def _apply_pending_migrations(self, connection: sqlite3.Connection) -> None:
+        for migration in self._pending(connection):
+            for statement in migration.statements:
+                connection.execute(statement)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at, description)
+                VALUES (?, ?, ?)
+                """,
+                (migration.version, datetime.now(UTC).isoformat(), migration.description),
+            )
 
     def record_candidate(
         self,
@@ -205,6 +306,7 @@ class WorkspaceDatabase:
         observed_at = job.scraped_at.astimezone(UTC).isoformat()
         evaluated = evaluated_at.astimezone(UTC).isoformat()
         platform, acquisition_mode = _source_provenance(job)
+        payload_json = _json(sanitize_job_payload(job.raw_payload))
 
         with self.connect() as connection:
             self._upsert_canonical_job(connection, canonical_id, job)
@@ -237,7 +339,7 @@ class WorkspaceDatabase:
                     "",
                     job.first_seen_at.astimezone(UTC).isoformat(),
                     observed_at,
-                    _json(sanitize_job_payload(job.raw_payload)),
+                    payload_json,
                 ),
             )
             observation_id = stable_id(
@@ -247,20 +349,18 @@ class WorkspaceDatabase:
                 profile_id,
                 observed_at,
             )
+            # An observation is an audit trail entry, so it only needs to carry
+            # a payload when that payload differs from what the posting already
+            # records. Storing a byte-identical copy of every payload on both
+            # tables roughly doubled the workspace file for no added
+            # information; "" means "identical to the posting at this time".
             connection.execute(
                 """
                 INSERT OR IGNORE INTO source_observations(
                     id, posting_id, run_id, profile_id, observed_at, raw_payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, '')
                 """,
-                (
-                    observation_id,
-                    posting_id,
-                    run_id,
-                    profile_id,
-                    observed_at,
-                    _json(sanitize_job_payload(job.raw_payload)),
-                ),
+                (observation_id, posting_id, run_id, profile_id, observed_at),
             )
             connection.execute(
                 """
@@ -362,20 +462,33 @@ class WorkspaceDatabase:
         )
 
     def counts(self) -> dict[str, int]:
-        tables = (
-            "canonical_jobs",
-            "source_postings",
-            "source_observations",
-            "profile_matches",
-            "applications",
-            "external_publications",
-            "legacy_job_links",
-        )
+        """Row counts, labelled so a frozen table cannot be read as current."""
+        tables = tuple(table for table in KNOWN_TABLES if table != "schema_migrations")
         with self.connect() as connection:
-            return {
-                table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            counted = {
+                _count_label(table): int(
+                    connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                )
                 for table in tables
             }
+            for table in self.unknown_tables():
+                counted[f"{table} (unknown)"] = int(
+                    connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                )
+        return counted
+
+    def frozen_table_watermarks(self) -> dict[str, str]:
+        """Newest timestamp in each frozen table, to show how stale it is."""
+        columns = {"external_publications": "last_synced_at"}
+        watermarks: dict[str, str] = {}
+        with self.connect() as connection:
+            for table, column in columns.items():
+                if table not in FROZEN_TABLES:
+                    continue
+                row = connection.execute(f'SELECT MAX("{column}") FROM "{table}"').fetchone()
+                if row and row[0]:
+                    watermarks[table] = str(row[0])
+        return watermarks
 
     def find_source_job_detail(
         self,
@@ -674,3 +787,7 @@ def _json_object(value: object) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _count_label(table: str) -> str:
+    return f"{table} (frozen)" if table in FROZEN_TABLES else table

@@ -79,6 +79,7 @@ class ProjectConfig:
     recent_post_age_hours: int = 24
     bootstrap_post_age_hours: int = 24
     workspace_database_path: Path | None = None
+    retained_exports: int = 0
 
 
 @dataclass(slots=True)
@@ -88,6 +89,67 @@ class AppConfig:
     http: HttpConfig
     sources: dict[str, SourceConfig]
     notion: NotionConfig
+
+
+KNOWN_PROJECT_FIELDS = {
+    "timezone",
+    "database_path",
+    "overlap_hours",
+    "export_dir",
+    "track_label",
+    "export_filename_prefix",
+    "recent_post_age_hours",
+    "bootstrap_post_age_hours",
+    "workspace_database_path",
+    "retained_exports",
+}
+KNOWN_FILTER_FIELDS = {
+    "country",
+    "include_keywords",
+    "exclude_keywords",
+    "target_keywords",
+    "target_match_scope",
+    "target_rules",
+    "minimum_english_ratio",
+    "company_names",
+    "full_time_only",
+    "allow_part_time",
+    "allow_temporary",
+    "excluded_requirement_patterns",
+    "require_english",
+    "allowed_description_languages",
+}
+KNOWN_HTTP_FIELDS = {
+    "user_agent",
+    "timeout_seconds",
+    "base_delay_seconds",
+    "jitter_seconds",
+    "max_retries",
+}
+KNOWN_NOTION_FIELDS = {
+    "enabled",
+    "data_source_id",
+    "parent_page_id",
+    "container_title",
+    "daily_table_prefix",
+}
+
+
+def reject_unknown_keys(section: str, values: dict, known: set[str]) -> None:
+    """Fail on a key this section does not understand.
+
+    Unlike `sources.*`, these sections have no documented extension point, so a
+    key that is not recognized is a typo or a setting that was removed. Silently
+    ignoring it meant a config could look configured while running on defaults.
+    """
+    unknown = sorted(key for key in values if key not in known)
+    if not unknown:
+        return
+    hints = []
+    for key in unknown:
+        suggestion = get_close_matches(key, known, n=1, cutoff=0.8)
+        hints.append(f"{key} (did you mean {suggestion[0]!r}?)" if suggestion else key)
+    raise ValueError(f"[{section}] has unknown fields: {', '.join(hints)}")
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -101,6 +163,10 @@ def load_config(path: str | Path) -> AppConfig:
     http = raw["http"]
     sources = raw["sources"]
     notion = raw.get("notion", {})
+    reject_unknown_keys("project", project, KNOWN_PROJECT_FIELDS)
+    reject_unknown_keys("filters", filters, KNOWN_FILTER_FIELDS)
+    reject_unknown_keys("http", http, KNOWN_HTTP_FIELDS)
+    reject_unknown_keys("notion", notion, KNOWN_NOTION_FIELDS)
     notion_token = environment_credential("NOTION_INTEGRATION_TOKEN")
     notion_database_id = environment_credential("NOTION_DATABASE_ID")
     notion_parent_page_id = environment_credential("NOTION_PARENT_PAGE_ID")
@@ -125,6 +191,7 @@ def load_config(path: str | Path) -> AppConfig:
             export_filename_prefix=str(project.get("export_filename_prefix", "jobs")).strip()
             or "jobs",
             recent_post_age_hours=int(project.get("recent_post_age_hours", 24)),
+            retained_exports=max(0, int(project.get("retained_exports", 0))),
             bootstrap_post_age_hours=int(
                 project.get("bootstrap_post_age_hours", project.get("recent_post_age_hours", 24))
             ),

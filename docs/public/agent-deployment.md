@@ -27,7 +27,11 @@ Never print, copy into TOML, or commit them.
 4. Run `job-scraper init` once per requested profile. This creates the private
    configuration tree under ignored `config/`, or under
    `JOB_SCRAPER_CONFIG_DIR`.
-5. Create `.env` locally or inject equivalent environment secrets.
+5. Create `.env` locally or inject equivalent environment secrets. For Notion,
+   set `NOTION_INTEGRATION_TOKEN` and configure the non-secret target
+   page/database ID for each profile. A normal `job-scraper run` may create,
+   rename, or write Notion content through its configured sink and needs the
+   owner's explicit approval.
 6. Run `job-scraper config validate --all` and `job-scraper doctor --all`.
 7. Run `job-scraper db init` as an offline database check.
 8. Run one bounded live profile, inspect the summary, then run

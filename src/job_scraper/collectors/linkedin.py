@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,9 +8,21 @@ from datetime import UTC, datetime
 from html import unescape
 from urllib.parse import urlencode
 
+from job_scraper.adapters.jobposting_jsonld import (
+    extract_city as _extract_city,
+)
+from job_scraper.adapters.jobposting_jsonld import (
+    extract_country as _extract_country,
+)
+from job_scraper.adapters.jobposting_jsonld import (
+    extract_job_locations as _extract_job_locations,
+)
+from job_scraper.adapters.jobposting_jsonld import (
+    extract_jobposting as _extract_json_ld_jobposting,
+)
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
 from job_scraper.collectors.base import BaseCollector, SearchWindow
-from job_scraper.models import RawJobRecord
+from job_scraper.domain.models import RawJobRecord
 from job_scraper.pipeline.role_filter import company_matches_allowlist
 
 
@@ -267,19 +278,6 @@ class LinkedInCollector(BaseCollector):
         return seed
 
 
-def _extract_json_ld_jobposting(html: str) -> dict | None:
-    for payload in re.findall(
-        r'<script type="application/ld\+json">(.*?)</script>', html, re.DOTALL
-    ):
-        try:
-            data = json.loads(unescape(payload))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict) and data.get("@type") == "JobPosting":
-            return data
-    return None
-
-
 def _strip_tags(value: str) -> str:
     return re.sub(r"<[^>]+>", " ", unescape(value)).strip()
 
@@ -293,100 +291,6 @@ def _extract_job_id(url: str) -> str:
 
 def _html_to_text(value: str) -> str:
     return _strip_tags(unescape(value))
-
-
-def _extract_job_locations(payload: dict) -> list[str]:
-    job_locations = payload.get("jobLocation")
-    options: list[str] = []
-    for entry in _iter_places(job_locations):
-        location_text = _format_place(entry)
-        if location_text:
-            options.append(location_text)
-    if not options:
-        city = _extract_city(payload)
-        country = _extract_country(payload)
-        parts = [part for part in [city, country_name(country)] if part]
-        if parts:
-            options.append(", ".join(parts))
-    unique: list[str] = []
-    seen: set[str] = set()
-    for value in options:
-        key = value.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(value)
-    return unique
-
-
-def _extract_country(payload: dict) -> str:
-    for entry in _iter_places(payload.get("jobLocation")):
-        address = entry.get("address") if isinstance(entry, dict) else {}
-        country = str((address or {}).get("addressCountry") or "").strip()
-        if country:
-            return country
-    requirements = payload.get("applicantLocationRequirements")
-    for entry in _iter_places(requirements):
-        address = entry.get("address") if isinstance(entry, dict) else {}
-        country = str((address or {}).get("addressCountry") or "").strip()
-        if country:
-            return country
-    return ""
-
-
-def _extract_city(payload: dict) -> str:
-    for entry in _iter_places(payload.get("jobLocation")):
-        address = entry.get("address") if isinstance(entry, dict) else {}
-        city = str((address or {}).get("addressLocality") or "").strip()
-        if city:
-            return city
-    return ""
-
-
-def _iter_places(value: object) -> list[dict]:
-    if isinstance(value, dict):
-        return [value]
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def _format_place(place: dict) -> str:
-    address = place.get("address") if isinstance(place, dict) else {}
-    if not isinstance(address, dict):
-        return ""
-    city = str(address.get("addressLocality") or "").strip()
-    region = str(address.get("addressRegion") or "").strip()
-    country = country_name(str(address.get("addressCountry") or "").strip())
-    parts = [part for part in [city, region, country] if part]
-    return ", ".join(parts)
-
-
-def country_name(value: str) -> str:
-    normalized = value.strip().upper()
-    mapping = {
-        "DE": "Germany",
-        "GB": "United Kingdom",
-        "UK": "United Kingdom",
-        "RO": "Romania",
-        "IN": "India",
-        "PL": "Poland",
-        "NL": "Netherlands",
-        "CZ": "Czech Republic",
-        "IT": "Italy",
-        "CA": "Canada",
-        "PT": "Portugal",
-        "FR": "France",
-        "CH": "Switzerland",
-        "DK": "Denmark",
-        "IE": "Ireland",
-        "AT": "Austria",
-        "BE": "Belgium",
-        "LU": "Luxembourg",
-        "SE": "Sweden",
-        "VN": "Vietnam",
-    }
-    return mapping.get(normalized, value.strip())
 
 
 def _deduplicate_round_robin(

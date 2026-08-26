@@ -5,19 +5,17 @@ import asyncio
 import os
 import sys
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from multiprocessing import get_context
 from pathlib import Path
-from queue import Empty
-from typing import Any
 
 from job_scraper.adapters.sinks.notion_workflow import (
     import_processed_statuses,
     publish_daily,
 )
+from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.adapters.storage.sqlite_v2 import StoredJobDetail, WorkspaceDatabase
 from job_scraper.application.aggregation import AcceptedJob, merge_accepted_job
 from job_scraper.application.process_candidate import (
@@ -41,7 +39,9 @@ from job_scraper.collectors.data_integration_adapter import (
 )
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
-from job_scraper.domain.policies import FilterPolicy
+from job_scraper.configuration.policy import policy_from_legacy
+from job_scraper.domain.models import JobRecord, RawJobRecord, RunStats
+from job_scraper.domain.policies import FilterPolicy, title_scoped
 from job_scraper.integrations.email_recommendations import (
     EmailIngestConfig,
     EmailIngestState,
@@ -59,20 +59,16 @@ from job_scraper.integrations.email_recommendations import (
     platform_job_reference,
 )
 from job_scraper.integrations.notion import NotionClient
-from job_scraper.models import JobRecord, RawJobRecord, RunStats
 from job_scraper.pipeline.normalize import (
     build_dedupe_key,
     normalize_candidate,
 )
-from job_scraper.pipeline.policy_adapter import policy_from_legacy
-from job_scraper.pipeline.role_filter import text_matches_target
 from job_scraper.pipeline.steps import default_pipeline
 from job_scraper.registry.builtins import build_pipeline, create_builtin_registry
 from job_scraper.storage.db import Database
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 EMAIL_SOURCE = "email"
-EFINANCIAL_ALLOWED_COUNTRIES = ("DE", "NL", "BE", "FR", "LU", "AT", "CH", "CZ", "PL", "DK")
 BRIGHTDATA_EMAIL_DETAIL_SNAPSHOT_TIMEOUT_SECONDS = 120.0
 BRIGHTDATA_EMAIL_DETAIL_TOTAL_TIMEOUT_SECONDS = 300.0
 
@@ -87,7 +83,9 @@ class TrackRuntime:
     processor: ProcessJobCandidate
     profile_id: str
     enabled_sinks: tuple[str, ...]
+    notion_binding_store: NotionDatabaseBindingStore | None = None
     workspace_database: WorkspaceDatabase | None = None
+    platform_country_scope: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     accepted_jobs: dict[str, AcceptedJob] = field(default_factory=dict)
     reject_counts: Counter[str] = field(default_factory=Counter)
 
@@ -248,7 +246,11 @@ def _prepare_with_runtimes(
         messages_to_mark.append(message)
         accepted_by_message[message.message_id] = 0
 
-    candidate_tasks = collect_candidate_tasks(messages_to_mark, runtimes)
+    candidate_tasks = collect_candidate_tasks(
+        messages_to_mark,
+        runtimes,
+        email_config.skipped_link_hosts,
+    )
     for runtime in runtimes:
         if dashboard is not None:
             dashboard.update(
@@ -386,6 +388,8 @@ def finish(
                         started_at,
                         table_prefix=runtime.config.notion.daily_table_prefix,
                         track_label=runtime.track_label,
+                        profile_id=runtime.profile_id,
+                        binding_store=runtime.notion_binding_store,
                         logger=log_line,
                     )
                 except Exception as track_exc:
@@ -483,7 +487,15 @@ def initialize_tracks(
             continue
         database = Database(config.project.database_path)
         database.initialize()
+        profile_id = (
+            profile.profile_id
+            if profile is not None
+            else display_track_label(config.project.track_label)
+        )
         notion = NotionClient(config.notion)
+        notion_binding_store = NotionDatabaseBindingStore(
+            config.project.database_path.parent / "notion_database_bindings.json"
+        )
         workspace_database = (
             WorkspaceDatabase(config.project.workspace_database_path)
             if config.project.workspace_database_path is not None
@@ -501,6 +513,8 @@ def initialize_tracks(
                 database,
                 notion,
                 table_title=f"{(config.notion.daily_table_prefix or display_track_label(config.project.track_label)).strip()} Jobs",
+                binding_store=notion_binding_store,
+                profile_id=profile_id,
                 error_logger=log_error,
             )
             log_line(
@@ -519,26 +533,26 @@ def initialize_tracks(
                     normalize_candidate,
                     decision_recorder=workspace_database,
                 ),
-                profile_id=(
-                    profile.profile_id
-                    if profile is not None
-                    else display_track_label(config.project.track_label)
-                ),
+                profile_id=profile_id,
                 enabled_sinks=(profile.sinks if profile is not None else ("csv", "notion_daily")),
+                notion_binding_store=notion_binding_store,
                 workspace_database=workspace_database,
+                platform_country_scope=email_config.platform_country_scope,
             )
         )
     return runtimes
 
 
 def collect_candidate_tasks(
-    messages: list[MailMessage], runtimes: list[TrackRuntime]
+    messages: list[MailMessage],
+    runtimes: list[TrackRuntime],
+    skipped_link_hosts: Sequence[str] = (),
 ) -> list[tuple[MailMessage, EmailJobCandidate]]:
     del runtimes
     tasks: list[tuple[MailMessage, EmailJobCandidate]] = []
     seen_detail_links: set[str] = set()
     for message in messages:
-        candidates = extract_job_candidates(message)
+        candidates = extract_job_candidates(message, skipped_link_hosts)
         log_line(f"Email | {message.subject} | Extracted {len(candidates)} job-like links")
         for candidate in candidates:
             link_key = canonical_link_key(candidate.url)
@@ -548,59 +562,6 @@ def collect_candidate_tasks(
             tasks.append((message, candidate))
     log_line(f"Email | Detail fetch queue | Unique job-like links {len(tasks)}")
     return tasks
-
-
-def candidate_may_match_any_track(
-    candidate: EmailJobCandidate,
-    runtimes: list[TrackRuntime],
-    allow_broad_platform_scan: bool = False,
-) -> bool:
-    context = " ".join(
-        str(value or "")
-        for value in [
-            candidate.context,
-            candidate.email_subject,
-            candidate.anchor_text,
-        ]
-    )
-    if allow_broad_platform_scan and candidate_is_from_job_platform(candidate):
-        return True
-    for runtime in runtimes:
-        filters = runtime.config.filters
-        if text_matches_target(
-            candidate.title,
-            context,
-            filters.target_keywords,
-            filters.target_match_scope,
-            filters.target_rules,
-        ):
-            return True
-    return False
-
-
-def candidate_is_from_job_platform(candidate: EmailJobCandidate) -> bool:
-    searchable = " ".join(
-        str(value or "").lower()
-        for value in [
-            candidate.url,
-            candidate.email_from,
-            candidate.email_subject,
-        ]
-    )
-    platform_tokens = (
-        "linkedin.com/jobs",
-        "indeed.com",
-        "efinancialcareers",
-        "glassdoor",
-        "stepstone",
-        "instaffo",
-        "workday",
-        "greenhouse",
-        "successfactors",
-        "softgarden",
-        "join.com",
-    )
-    return any(token in searchable for token in platform_tokens)
 
 
 def process_candidate_tasks(
@@ -762,7 +723,8 @@ def _report_email_resolution(
 
 def brightdata_detail_enrichment_enabled() -> bool:
     return bool(
-        os.getenv("BRIGHTDATA_API_KEY", "").strip()
+        os.getenv("BRIGHTDATA_EMAIL_DETAIL_ENRICHMENT_ENABLED", "").strip().lower() == "true"
+        and os.getenv("BRIGHTDATA_API_KEY", "").strip()
         and os.getenv("BRIGHTDATA_DATASET_ID", "").strip()
     )
 
@@ -809,52 +771,27 @@ def resolve_prepared_or_fetch(
     resolved = prepared.get(canonical_link_key(candidate.url))
     if resolved is not None:
         return resolved
-    return enrich_email_candidate_with_hard_timeout(candidate, runtimes, scraped_at)
+    return enrich_email_candidate_bounded(candidate, runtimes, scraped_at)
 
 
-def enrich_email_candidate_with_hard_timeout(
+def enrich_email_candidate_bounded(
     candidate: EmailJobCandidate,
     runtimes: list[TrackRuntime],
     scraped_at: datetime,
-    *,
-    process_context: Any | None = None,
 ) -> RawJobRecord:
-    """Bound one external detail fetch even when a network call does not return."""
+    """Resolve one email card's detail page, degrading instead of raising.
+
+    The fetch bounds itself (socket timeout, response-size cap, and a total
+    wall-clock budget shared across retries), so this runs on the caller's
+    worker thread. It previously spawned one short-lived interpreter per
+    candidate purely to get a hard timeout -- about 160ms of process startup
+    per URL, and up to `--detail-workers` full interpreters resident at once.
+    """
     http_config = runtimes[0].config.http
-    context = process_context or get_context("spawn")
-    result_queue = context.Queue(maxsize=1)
-    process = context.Process(
-        target=_email_detail_worker,
-        args=(candidate, http_config, scraped_at, result_queue),
-    )
-    process.start()
-    timeout_seconds = max(1, int(http_config.timeout_seconds))
-    process.join(timeout_seconds)
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        return _email_detail_failure_raw(candidate, scraped_at, "detail fetch timed out")
     try:
-        outcome, payload = result_queue.get_nowait()
-    except Empty:
-        return _email_detail_failure_raw(candidate, scraped_at, "detail worker returned no result")
-    if outcome == "ok" and isinstance(payload, RawJobRecord):
-        return payload
-    return _email_detail_failure_raw(candidate, scraped_at, str(payload))
-
-
-def _email_detail_worker(
-    candidate: EmailJobCandidate,
-    http_config: Any,
-    scraped_at: datetime,
-    result_queue: Any,
-) -> None:
-    try:
-        result_queue.put(
-            ("ok", enrich_email_candidate_to_raw_job(candidate, http_config, scraped_at))
-        )
+        return enrich_email_candidate_to_raw_job(candidate, http_config, scraped_at)
     except Exception as exc:
-        result_queue.put(("error", exc.__class__.__name__))
+        return _email_detail_failure_raw(candidate, scraped_at, f"{type(exc).__name__}: {exc}")
 
 
 def _email_detail_failure_raw(
@@ -868,47 +805,6 @@ def _email_detail_failure_raw(
     )
     raw.raw_payload["detail_error"] = error
     return raw
-
-
-def process_message(
-    message: MailMessage,
-    runtimes: list[TrackRuntime],
-    started_at: datetime,
-    seen_detail_links: set[str] | None = None,
-) -> int:
-    seen_detail_links = seen_detail_links if seen_detail_links is not None else set()
-    candidates = extract_job_candidates(message)
-    log_line(f"Email | {message.subject} | Extracted {len(candidates)} job-like links")
-    accepted_for_message = 0
-    for candidate in candidates:
-        link_key = canonical_link_key(candidate.url)
-        if link_key in seen_detail_links:
-            continue
-        seen_detail_links.add(link_key)
-        raw = enrich_email_candidate(candidate, runtimes, started_at)
-        if not is_processable_detail_status(raw.raw_payload.get("detail_status")):
-            reject_detail_unavailable(raw, runtimes)
-            continue
-        for runtime in runtimes:
-            accepted = process_raw_job(raw, runtime, started_at)
-            if accepted:
-                accepted_for_message += 1
-    return accepted_for_message
-
-
-def enrich_email_candidate(
-    candidate: EmailJobCandidate,
-    runtimes: list[TrackRuntime],
-    scraped_at: datetime,
-) -> RawJobRecord:
-    stored = find_stored_job_detail(candidate, runtimes)
-    if stored is None:
-        return enrich_email_candidate_to_raw_job(
-            candidate,
-            runtimes[0].config.http,
-            scraped_at=scraped_at,
-        )
-    return raw_from_stored_detail(candidate, stored, scraped_at)
 
 
 def raw_from_stored_detail(
@@ -995,9 +891,9 @@ def process_raw_job(
         runtime.config.filters,
         max_post_age_hours=0,
     )
-    policy = email_policy_for_raw(raw, policy)
+    policy = email_policy_for_raw(raw, policy, runtime.platform_country_scope)
     if str(raw.raw_payload.get("detail_status") or "") == "email_fallback":
-        policy = email_fallback_policy(policy)
+        policy = title_scoped(policy)
     normalized = normalize_candidate(raw, policy)
     normalized.dedupe_key = stable_email_dedupe_key(normalized)
     result = runtime.processor.process_normalized(
@@ -1049,33 +945,38 @@ def process_raw_job(
     return True
 
 
-def email_policy_for_raw(raw: RawJobRecord, policy: FilterPolicy) -> FilterPolicy:
-    """Apply source-specific location scope without changing other sources."""
+def email_policy_for_raw(
+    raw: RawJobRecord,
+    policy: FilterPolicy,
+    platform_country_overrides: Mapping[str, tuple[str, ...]] | None = None,
+) -> FilterPolicy:
+    """Widen the country scope for platforms configured to allow it.
 
-    if not is_efinancial_email_source(raw):
+    Some job boards list a role in one country but recruit across a region, so
+    a profile may choose to accept neighbouring countries from that source
+    only. Which platforms and which countries is a private routing decision,
+    supplied through `[platform_country_scope]` in the mailbox config rather
+    than baked in here.
+    """
+    if not platform_country_overrides:
         return policy
-    return replace(policy, countries=EFINANCIAL_ALLOWED_COUNTRIES)
+    for platform in email_source_platforms(raw):
+        countries = platform_country_overrides.get(platform)
+        if countries:
+            return replace(policy, countries=tuple(countries))
+    return policy
 
 
-def is_efinancial_email_source(raw: RawJobRecord) -> bool:
+def email_source_platforms(raw: RawJobRecord) -> tuple[str, ...]:
     platforms = raw.raw_payload.get("source_platforms", [])
-    if isinstance(platforms, (list, tuple, set)) and any(
-        str(platform).casefold() == "efinancialcareers" for platform in platforms
-    ):
-        return True
-    return is_efinancialcareers_url(raw.source_url)
-
-
-def email_fallback_policy(policy: FilterPolicy) -> FilterPolicy:
-    """Require title-local role evidence when a full job description is unavailable."""
-
-    return replace(
-        policy,
-        acceptance_scope="title",
-        acceptance_rules=tuple(
-            replace(rule, match_scope="title") for rule in policy.acceptance_rules
-        ),
+    values = (
+        [str(platform).strip().casefold() for platform in platforms]
+        if isinstance(platforms, (list, tuple, set))
+        else []
     )
+    if is_efinancialcareers_url(raw.source_url):
+        values.append("efinancialcareers")
+    return tuple(dict.fromkeys(value for value in values if value))
 
 
 def reject_detail_unavailable(

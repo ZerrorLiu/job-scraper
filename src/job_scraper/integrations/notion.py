@@ -1,19 +1,39 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
+from contextlib import suppress
 from dataclasses import replace
 from datetime import date
 from hashlib import sha256
 from http.client import RemoteDisconnected
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from job_scraper.config import NotionConfig
+
+NOTION_API_VERSION = "2026-03-11"
+MAX_RETRIES = 3
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+# Endpoints that create a new object. Replaying one of these after a 5xx can
+# produce a duplicate page or database, because the first attempt may have
+# succeeded server-side even though the response never arrived. Only 429
+# (rejected before any work happened) is retried for these.
+NON_IDEMPOTENT_CREATE_PATHS = ("/v1/pages", "/v1/databases", "/v1/views")
+
+
+class NotionNotFoundError(RuntimeError):
+    """Raised when a requested Notion object no longer exists."""
+
+
+def _is_retry_safe(endpoint: str, method: str) -> bool:
+    if method.upper() != "POST":
+        return True
+    path = urlsplit(endpoint).path.rstrip("/")
+    return path not in NON_IDEMPOTENT_CREATE_PATHS
 
 
 def _retry_after_seconds(exc: HTTPError) -> float:
@@ -37,29 +57,36 @@ class NotionClient:
         self._resolved_data_source_id = ""
 
     def enabled(self) -> bool:
-        target_is_configured = bool(
+        target_is_configured = self.target_is_configured()
+        return self.config.enabled and bool(self.config.token) and target_is_configured
+
+    def target_is_configured(self) -> bool:
+        return bool(
             self.config.database_id or self.config.data_source_id or self.config.parent_page_id
         )
-        return self.config.enabled and bool(self.config.token) and target_is_configured
+
+    def verify_access(self) -> None:
+        """Read the configured target without creating or changing Notion content."""
+        if not self.config.enabled:
+            raise RuntimeError("Notion is disabled for this profile")
+        if not self.target_is_configured():
+            raise RuntimeError("Notion destination is not configured")
+        if self.config.database_id:
+            self.request(f"https://api.notion.com/v1/databases/{self.config.database_id}", "GET")
+            return
+        if self.config.data_source_id:
+            self.request(
+                f"https://api.notion.com/v1/data_sources/{self.config.data_source_id}", "GET"
+            )
+            return
+        self.request(
+            f"https://api.notion.com/v1/pages/{normalize_notion_id(self.config.parent_page_id)}",
+            "GET",
+        )
 
     def payload_hash(self, properties: dict[str, Any]) -> str:
         encoded = json.dumps(properties, sort_keys=True, ensure_ascii=True).encode("utf-8")
         return sha256(encoded).hexdigest()
-
-    def build_properties(self, row: dict[str, Any]) -> dict[str, Any]:
-        properties = {
-            "Status": {
-                "select": {"name": notion_status_name(row.get("application_status", "new"))}
-            },
-            "Job": {"title": [{"text": {"content": row["normalized_title"][:200]}}]},
-            "Company": {"rich_text": [{"text": {"content": row["company_name"][:200]}}]},
-            "Location": {"rich_text": [{"text": {"content": (row["city"] or "N/A")[:200]}}]},
-            "Language": {"select": {"name": row.get("description_language") or "Unknown"}},
-            "Source": {
-                "multi_select": [{"name": notion_source_name(str(row.get("source") or "unknown"))}]
-            },
-        }
-        return properties
 
     def create_or_update_page(
         self, page_id: str | None, properties: dict[str, Any]
@@ -83,32 +110,94 @@ class NotionClient:
         table_title: str,
         legacy_titles: list[str] | None = None,
         *,
+        bound_database_id: str = "",
         parent_page_id: str = "",
         is_inline: bool = True,
     ) -> dict[str, Any]:
-        if self.config.database_id:
-            database_id = normalize_notion_id(self.config.database_id)
-            database = self.request(
-                f"https://api.notion.com/v1/databases/{database_id}",
-                "GET",
-            )
-            data_sources = database.get("data_sources", [])
-            if not data_sources:
-                raise RuntimeError("Configured Notion database has no data source")
-            self._resolved_data_source_id = str(data_sources[0].get("id", "")).strip()
-            if not self._resolved_data_source_id:
-                raise RuntimeError("Configured Notion database returned an empty data source ID")
-            if notion_title_text(database.get("title", [])) != table_title:
-                self.update_database_title(database_id, table_title)
-            self.sync_daily_schema(self._resolved_data_source_id)
-            return database
+        database: dict[str, Any] | None = None
+        if bound_database_id:
+            # A stale local binding alone is eligible for title recovery.
+            with suppress(NotionNotFoundError):
+                database = self._retrieve_database(bound_database_id)
+        if database is None and self.config.database_id and not bound_database_id:
+            database = self._retrieve_database(self.config.database_id)
 
-        container_page_id = (
-            normalize_notion_id(parent_page_id)
-            if parent_page_id
-            else str(self.ensure_container_page()["id"])
+        if database is None:
+            container_page_id = (
+                normalize_notion_id(parent_page_id)
+                if parent_page_id
+                else str(self.ensure_container_page()["id"])
+            )
+            database = self._find_daily_database_by_title(
+                container_page_id,
+                table_title,
+                legacy_titles=legacy_titles,
+                is_inline=is_inline,
+            )
+            if database is not None and parent_page_id:
+                self.move_database(str(database["id"]), container_page_id, is_inline=is_inline)
+            if database is None:
+                database = self._create_daily_database(
+                    container_page_id,
+                    table_title,
+                    is_inline=is_inline,
+                )
+        self._set_resolved_data_source_id(database)
+        if notion_title_text(database.get("title", [])) != table_title:
+            # An ID binding makes the configured title authoritative. Never
+            # rewrite local addressing from a mutable Notion display title.
+            self.update_database_title(str(database["id"]), table_title)
+        self.sync_daily_schema(self.resolve_data_source_id())
+        return database
+
+    def find_daily_database(
+        self,
+        table_title: str,
+        legacy_titles: list[str] | None = None,
+        *,
+        bound_database_id: str = "",
+        parent_page_id: str = "",
+        is_inline: bool = True,
+    ) -> dict[str, Any] | None:
+        if bound_database_id:
+            try:
+                return self._retrieve_database(bound_database_id)
+            except NotionNotFoundError:
+                pass
+        if self.config.database_id and not bound_database_id:
+            return self._retrieve_database(self.config.database_id)
+        if not parent_page_id:
+            # Discovery must stay read-only when a caller is only importing
+            # statuses. Publication uses ensure_daily_database(), which can
+            # create the configured container if that is its normal behavior.
+            return None
+
+        return self._find_daily_database_by_title(
+            normalize_notion_id(parent_page_id),
+            table_title,
+            legacy_titles=legacy_titles,
+            is_inline=is_inline,
         )
+
+    def _find_daily_database_by_title(
+        self,
+        container_page_id: str,
+        table_title: str,
+        *,
+        legacy_titles: list[str] | None,
+        is_inline: bool,
+    ) -> dict[str, Any] | None:
         legacy_titles = [title for title in (legacy_titles or []) if title and title != table_title]
+        candidate_blocks = self._daily_database_blocks(container_page_id, is_inline=is_inline)
+        for block in candidate_blocks:
+            database_title = block.get("child_database", {}).get("title")
+            if database_title == table_title or database_title in legacy_titles:
+                return self._retrieve_database(str(block["id"]))
+        return None
+
+    def _daily_database_blocks(
+        self, container_page_id: str, *, is_inline: bool
+    ) -> list[dict[str, Any]]:
         direct_blocks = self.list_child_blocks(container_page_id)
         candidate_blocks = [
             block for block in direct_blocks if block.get("type") == "child_database"
@@ -120,32 +209,33 @@ class NotionClient:
                     for block in self.list_child_blocks(str(page.get("id", "")))
                     if block.get("type") == "child_database"
                 )
-        for block in candidate_blocks:
-            if block.get("type") != "child_database":
-                continue
-            database_title = block.get("child_database", {}).get("title")
-            if database_title == table_title:
-                if parent_page_id:
-                    self.move_database(
-                        str(block["id"]),
-                        container_page_id,
-                        is_inline=is_inline,
-                    )
-                database = self.request(f"https://api.notion.com/v1/databases/{block['id']}", "GET")
-                self.sync_daily_schema(database["data_sources"][0]["id"])
-                return database
-            if database_title in legacy_titles:
-                self.update_database_title(str(block["id"]), table_title)
-                if parent_page_id:
-                    self.move_database(
-                        str(block["id"]),
-                        container_page_id,
-                        is_inline=is_inline,
-                    )
-                database = self.request(f"https://api.notion.com/v1/databases/{block['id']}", "GET")
-                self.sync_daily_schema(database["data_sources"][0]["id"])
-                return database
+        return candidate_blocks
+
+    def _retrieve_database(self, database_id: str) -> dict[str, Any]:
+        normalized_database_id = normalize_notion_id(database_id)
         database = self.request(
+            f"https://api.notion.com/v1/databases/{normalized_database_id}",
+            "GET",
+        )
+        self._set_resolved_data_source_id(database)
+        return database
+
+    def _set_resolved_data_source_id(self, database: dict[str, Any]) -> None:
+        data_sources = database.get("data_sources", [])
+        if not data_sources:
+            raise RuntimeError("Configured Notion database has no data source")
+        self._resolved_data_source_id = str(data_sources[0].get("id", "")).strip()
+        if not self._resolved_data_source_id:
+            raise RuntimeError("Configured Notion database returned an empty data source ID")
+
+    def _create_daily_database(
+        self,
+        container_page_id: str,
+        table_title: str,
+        *,
+        is_inline: bool,
+    ) -> dict[str, Any]:
+        return self.request(
             "https://api.notion.com/v1/databases",
             "POST",
             {
@@ -192,7 +282,6 @@ class NotionClient:
                 },
             },
         )
-        return database
 
     def resolve_data_source_id(self) -> str:
         if self._resolved_data_source_id:
@@ -202,16 +291,7 @@ class NotionClient:
             return self._resolved_data_source_id
         if not self.config.database_id:
             raise RuntimeError("NOTION_DATABASE_ID is not configured")
-        database = self.request(
-            f"https://api.notion.com/v1/databases/{normalize_notion_id(self.config.database_id)}",
-            "GET",
-        )
-        data_sources = database.get("data_sources", [])
-        if not data_sources:
-            raise RuntimeError("Configured Notion database has no data source")
-        self._resolved_data_source_id = str(data_sources[0].get("id", "")).strip()
-        if not self._resolved_data_source_id:
-            raise RuntimeError("Configured Notion database returned an empty data source ID")
+        self._retrieve_database(self.config.database_id)
         return self._resolved_data_source_id
 
     def update_database_title(self, database_id: str, table_title: str) -> dict[str, Any]:
@@ -660,31 +740,41 @@ class NotionClient:
         self, endpoint: str, method: str, body: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
+        # A rejected request (429) can always be replayed. Anything that may
+        # have been applied server-side before the failure surfaced -- a 5xx or
+        # a dropped connection -- may only be replayed when the call is
+        # idempotent; otherwise a retry can create a duplicate page.
+        replay_unacknowledged = _is_retry_safe(endpoint, method)
         last_error: Exception | None = None
-        for attempt in range(4):
+        for attempt in range(MAX_RETRIES + 1):
             request = Request(endpoint, method=method)
             request.add_header("Authorization", f"Bearer {self.config.token}")
             request.add_header("Content-Type", "application/json")
-            request.add_header("Notion-Version", "2026-03-11")
+            request.add_header("Notion-Version", NOTION_API_VERSION)
             try:
                 with urlopen(request, data=payload, timeout=30) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:  # pragma: no cover
                 details = exc.read().decode("utf-8", errors="replace")
-                if exc.code in {429, 500, 502, 503, 504} and attempt < 3:
+                if exc.code == 404:
+                    raise NotionNotFoundError(f"Notion API 404: {details}") from exc
+                retryable = exc.code == 429 or (
+                    exc.code in RETRYABLE_STATUSES and replay_unacknowledged
+                )
+                if retryable and attempt < MAX_RETRIES:
                     time.sleep(max(_retry_after_seconds(exc), attempt + 1))
                     last_error = RuntimeError(f"Notion API {exc.code}: {details}")
                     continue
                 raise RuntimeError(f"Notion API {exc.code}: {details}") from exc
             except (URLError, RemoteDisconnected, ConnectionError) as exc:  # pragma: no cover
                 last_error = exc
-                if attempt < 3:
+                if replay_unacknowledged and attempt < MAX_RETRIES:
                     time.sleep(attempt + 1)
                     continue
                 raise RuntimeError(f"Notion request failed: {exc}") from exc
             except TimeoutError as exc:  # pragma: no cover
                 last_error = exc
-                if attempt < 3:
+                if replay_unacknowledged and attempt < MAX_RETRIES:
                     time.sleep(attempt + 1)
                     continue
                 raise RuntimeError(f"Notion request timed out: {exc}") from exc
@@ -724,6 +814,8 @@ def notion_title_text(value: object) -> str:
 
 
 def environment_credential(name: str) -> str:
+    import os
+
     value = os.getenv(name, "").strip()
     return "" if "YOUR_ACTUAL_" in value.upper() else value
 
@@ -773,15 +865,3 @@ def notion_status_name(value: object) -> str:
     if normalized == "not_interested":
         return "Not Interested"
     return "Not Applied"
-
-
-def notion_source_name(value: str) -> str:
-    normalized = value.strip().lower()
-    return {
-        "linkedin": "LinkedIn",
-        "linkedin_direct": "LinkedIn",
-        "indeed": "Indeed",
-        "indeed_brightdata": "Indeed",
-        "email": "Email",
-        "email_imap": "Email",
-    }.get(normalized, normalized.title() or "Unknown")

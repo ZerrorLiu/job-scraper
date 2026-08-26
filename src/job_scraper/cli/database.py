@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.adapters.storage.sqlite_v2 import WorkspaceDatabase
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import available_profiles, load_profile_definition
@@ -117,16 +118,44 @@ def resolve_status_workspace_path(
     return Path("data/workspace.db").resolve()
 
 
-def show_status(workspace_path: Path) -> int:
-    if not workspace_path.is_file():
+def show_status(workspace_path: Path, profile_ids: list[str] | None = None) -> int:
+    """Report on a workspace without modifying it.
+
+    `status` used to call `initialize()`, which creates tables and applies
+    migrations -- a write, from a command whose whole purpose is to look.
+    """
+    workspace_exists = workspace_path.is_file()
+    if not workspace_exists:
         print(f"Workspace database does not exist: {workspace_path}")
-        return 1
-    print(f"Workspace: {workspace_path}")
-    workspace = WorkspaceDatabase(workspace_path)
-    workspace.initialize()
-    for name, value in workspace.counts().items():
-        print(f"{name:24} {value}")
-    return 0
+    else:
+        print(f"Workspace: {workspace_path}")
+        workspace = WorkspaceDatabase(workspace_path)
+        for name, value in workspace.counts().items():
+            print(f"{name:24} {value}")
+        pending = workspace.pending_migrations()
+        if pending:
+            versions = ", ".join(str(migration.version) for migration in pending)
+            print(f"{'pending migrations':24} {versions} (run `job-scraper db init`)")
+        unknown = workspace.unknown_tables()
+        if unknown:
+            print(f"{'unrecognized tables':24} {', '.join(unknown)}")
+        for table, watermark in workspace.frozen_table_watermarks().items():
+            print(f"{'frozen since':24} {table}: {watermark[:19]} (migration snapshot, not live)")
+    selected = profile_ids or list(available_profiles())
+    for profile_id in selected:
+        definition = load_profile_definition(profile_id)
+        config = load_config(definition.runtime_config)
+        binding = NotionDatabaseBindingStore(
+            config.project.database_path.parent / "notion_database_bindings.json"
+        ).load(definition.profile_id)
+        if binding is None:
+            print(f"notion binding {definition.profile_id}: unbound")
+        else:
+            print(
+                f"notion binding {definition.profile_id}: "
+                f"database_id={binding.database_id}, data_source_id={binding.data_source_id}"
+            )
+    return 0 if workspace_exists else 1
 
 
 def _configured_workspace_path(configs: list[AppConfig]) -> Path | None:

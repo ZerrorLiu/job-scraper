@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from job_scraper.config import AppConfig, load_config
+from job_scraper.configuration.brightdata import brightdata_direct_collection_enabled
 from job_scraper.integrations.notion import NotionClient
 from job_scraper.jobs import run_daily
 
@@ -101,6 +102,13 @@ def count_synced_notion_rows(database_path: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    if not brightdata_direct_collection_enabled():
+        print(
+            "E2E preflight failed: Bright Data direct collection is suspended. "
+            "Set BRIGHTDATA_DIRECT_COLLECTION_ENABLED=true only after approval.",
+            file=sys.stderr,
+        )
+        return 2
     config_path = Path(args.config).resolve()
     database_path = Path(args.database).resolve()
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     if not notion.enabled():
         print(
             "E2E preflight failed: Notion is not configured. "
-            "Check NOTION_INTEGRATION_TOKEN and the configured Notion target.",
+            "Set NOTION_INTEGRATION_TOKEN and check the configured target.",
             file=sys.stderr,
         )
         return 2

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Generic, TypeVar
+
+from job_scraper.ports.channels import JobChannel
+from job_scraper.ports.processors import PipelineStep
+from job_scraper.ports.sinks import JobSink
+from job_scraper.ports.sources import JobSource
 
 
 class RegistryError(ValueError):
@@ -22,11 +27,19 @@ Factory = Callable[..., T]
 
 
 @dataclass(slots=True)
-class FactoryRegistry:
-    component_kind: str
-    _factories: dict[str, Factory[object]] = field(default_factory=dict)
+class FactoryRegistry(Generic[T]):
+    """Stable ids to factories for one kind of component.
 
-    def register(self, component_id: str, factory: Factory[object]) -> None:
+    Parameterized by what it builds, so `create` returns that type instead of
+    `object`. Without this every call site had to `cast` the result back, which
+    is the same type information travelling by convention rather than by
+    signature.
+    """
+
+    component_kind: str
+    _factories: dict[str, Factory[T]] = field(default_factory=dict)
+
+    def register(self, component_id: str, factory: Factory[T]) -> None:
         normalized_id = _normalize_id(component_id)
         if normalized_id in self._factories:
             raise DuplicateRegistrationError(
@@ -34,7 +47,7 @@ class FactoryRegistry:
             )
         self._factories[normalized_id] = factory
 
-    def create(self, component_id: str, *args: object, **kwargs: object) -> object:
+    def create(self, component_id: str, *args: object, **kwargs: object) -> T:
         normalized_id = _normalize_id(component_id)
         try:
             factory = self._factories[normalized_id]
@@ -51,21 +64,31 @@ class FactoryRegistry:
 
 @dataclass(slots=True)
 class ComponentRegistry:
-    sources: FactoryRegistry = field(default_factory=lambda: FactoryRegistry("source"))
-    channels: FactoryRegistry = field(default_factory=lambda: FactoryRegistry("channel"))
-    steps: FactoryRegistry = field(default_factory=lambda: FactoryRegistry("step"))
-    sinks: FactoryRegistry = field(default_factory=lambda: FactoryRegistry("sink"))
+    """The composition mechanism: one typed registry per extension point."""
 
-    def register_source(self, component_id: str, factory: Factory[object]) -> None:
+    sources: FactoryRegistry[JobSource] = field(
+        default_factory=lambda: FactoryRegistry[JobSource]("source")
+    )
+    channels: FactoryRegistry[JobChannel] = field(
+        default_factory=lambda: FactoryRegistry[JobChannel]("channel")
+    )
+    steps: FactoryRegistry[PipelineStep] = field(
+        default_factory=lambda: FactoryRegistry[PipelineStep]("step")
+    )
+    sinks: FactoryRegistry[JobSink] = field(
+        default_factory=lambda: FactoryRegistry[JobSink]("sink")
+    )
+
+    def register_source(self, component_id: str, factory: Factory[JobSource]) -> None:
         self.sources.register(component_id, factory)
 
-    def register_channel(self, component_id: str, factory: Factory[object]) -> None:
+    def register_channel(self, component_id: str, factory: Factory[JobChannel]) -> None:
         self.channels.register(component_id, factory)
 
-    def register_step(self, component_id: str, factory: Factory[object]) -> None:
+    def register_step(self, component_id: str, factory: Factory[PipelineStep]) -> None:
         self.steps.register(component_id, factory)
 
-    def register_sink(self, component_id: str, factory: Factory[object]) -> None:
+    def register_sink(self, component_id: str, factory: Factory[JobSink]) -> None:
         self.sinks.register(component_id, factory)
 
 

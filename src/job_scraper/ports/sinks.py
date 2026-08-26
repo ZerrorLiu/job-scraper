@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from job_scraper.domain.models import JobRecord
+from job_scraper.domain.models import AcceptedJob
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +26,6 @@ class JobSink(Protocol):
 
     def publish(
         self,
-        jobs: Sequence[JobRecord],
+        jobs: Sequence[AcceptedJob],
         context: PublishContext,
     ) -> PublishResult: ...

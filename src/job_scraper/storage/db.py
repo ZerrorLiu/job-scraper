@@ -9,10 +9,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from job_scraper.domain.locations import merge_locations
+from job_scraper.domain.models import JobHistorySnapshot, JobRecord, RunStats
 from job_scraper.domain.payload_sanitization import sanitize_job_payload
-from job_scraper.models import JobHistorySnapshot, JobRecord, RunStats
 from job_scraper.pipeline.normalize import (
-    combine_locations,
     normalize_title_for_dedupe,
     serialize_payload,
 )
@@ -125,6 +125,20 @@ CREATE TABLE IF NOT EXISTS external_snapshot_state (
 
 CREATE INDEX IF NOT EXISTS idx_external_snapshot_resume
 ON external_snapshot_state(provider, dataset_id, request_hash, consumed_at, updated_at);
+
+-- Lookup indexes. Without these, every candidate upsert and every history
+-- probe degrades to a full table scan of `jobs`, which grows with the run
+-- history rather than with the size of one run.
+CREATE INDEX IF NOT EXISTS idx_jobs_source_url ON jobs(source_url);
+CREATE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url);
+CREATE INDEX IF NOT EXISTS idx_jobs_company_lower ON jobs(lower(company_name), first_seen_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_title_company_lower
+ON jobs(lower(normalized_title), lower(company_name));
+CREATE INDEX IF NOT EXISTS idx_observations_job ON job_observations(job_id);
+CREATE INDEX IF NOT EXISTS idx_observations_platform ON job_observations(source_platform);
+CREATE INDEX IF NOT EXISTS idx_notion_state_page ON notion_sync_state(notion_page_id);
+CREATE INDEX IF NOT EXISTS idx_application_state_status
+ON application_state(lower(application_status), last_user_edit_at);
 """
 
 
@@ -142,6 +156,9 @@ class Database:
         try:
             yield connection
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
@@ -288,13 +305,22 @@ class Database:
             )
 
     def upsert_job(self, job: JobRecord, run_id: str) -> tuple[str, bool]:
-        existing = self._lookup_job_row(job.dedupe_key, job.source_url, job.canonical_url)
-        existing_id = str(existing["id"]) if existing else None
-        is_new = existing_id is None
+        # Read and write share one connection and one transaction: a second
+        # connection would let a concurrent writer insert the same dedupe_key
+        # between the lookup and the INSERT below.
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._lookup_job_row(
+                connection,
+                job.dedupe_key,
+                job.source_url,
+                job.canonical_url,
+            )
+            existing_id = str(existing["id"]) if existing else None
+            is_new = existing_id is None
             if existing_id:
                 assert existing is not None
-                merged_location_text, merged_city, merged_options = combine_locations(
+                merged_location_text, merged_city, merged_options = merge_locations(
                     str(existing["location_text"] or ""),
                     job.location_raw,
                     str(existing["city"] or ""),
@@ -681,28 +707,28 @@ class Database:
 
         return JobHistorySnapshot(status_label="New")
 
+    @staticmethod
     def _lookup_job_row(
-        self,
+        connection: sqlite3.Connection,
         dedupe_key: str,
         source_url: str = "",
         canonical_url: str = "",
     ) -> sqlite3.Row | None:
-        with self.connect() as connection:
-            conditions = ["dedupe_key = ?"]
-            parameters: list[str] = [dedupe_key]
-            for url in dict.fromkeys(value for value in (source_url, canonical_url) if value):
-                conditions.append("(source_url = ? OR canonical_url = ?)")
-                parameters.extend([url, url])
-            query = f"""
-                SELECT id, normalized_title, company_name, country_code,
-                       source_url, canonical_url, location_text, city, raw_payload_json
-                FROM jobs
-                WHERE {" OR ".join(conditions)}
-                ORDER BY CASE WHEN dedupe_key = ? THEN 0 ELSE 1 END
-                LIMIT 1
-            """
-            parameters.append(dedupe_key)
-            return connection.execute(query, parameters).fetchone()
+        conditions = ["dedupe_key = ?"]
+        parameters: list[str] = [dedupe_key]
+        for url in dict.fromkeys(value for value in (source_url, canonical_url) if value):
+            conditions.append("(source_url = ? OR canonical_url = ?)")
+            parameters.extend([url, url])
+        query = f"""
+            SELECT id, normalized_title, company_name, country_code,
+                   source_url, canonical_url, location_text, city, raw_payload_json
+            FROM jobs
+            WHERE {" OR ".join(conditions)}
+            ORDER BY CASE WHEN dedupe_key = ? THEN 0 ELSE 1 END
+            LIMIT 1
+        """
+        parameters.append(dedupe_key)
+        return connection.execute(query, parameters).fetchone()
 
 
 def _json_object(value: object) -> dict[str, Any]:

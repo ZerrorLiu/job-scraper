@@ -20,8 +20,9 @@ class _FakeResponse:
     def __exit__(self, *_exc: object) -> None:
         return None
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int | None = None) -> bytes:
+        # Mirrors http.client.HTTPResponse: the caller may cap the read.
+        return self._body if size is None else self._body[:size]
 
     def geturl(self) -> str:
         return self._url

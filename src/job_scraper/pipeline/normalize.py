@@ -5,277 +5,14 @@ import json
 import re
 import unicodedata
 from datetime import UTC, datetime, timedelta
+from functools import cache
 from urllib.parse import urlsplit, urlunsplit
 
-from job_scraper.config import FiltersConfig
+from job_scraper.domain.countries import COUNTRY_ALIASES, COUNTRY_LOCATION_HINTS
 from job_scraper.domain.locations import merge_locations
 from job_scraper.domain.models import JobRecord, RawJobRecord
 from job_scraper.domain.policies import FilterPolicy
-from job_scraper.pipeline.language_filter import classify_description_language, english_ratio
-
-GERMAN_LOCATION_HINTS = {
-    "aachen",
-    "augsburg",
-    "baden wurttemberg",
-    "bavaria",
-    "berlin",
-    "bonn",
-    "brandenburg",
-    "bremen",
-    "chemnitz",
-    "cologne",
-    "darmstadt",
-    "deutschland",
-    "dortmund",
-    "dresden",
-    "dusseldorf",
-    "erfurt",
-    "essen",
-    "frankfurt",
-    "freiburg",
-    "germany",
-    "gottingen",
-    "hamburg",
-    "hanover",
-    "hannover",
-    "heidelberg",
-    "heilbronn",
-    "hesse",
-    "karlsruhe",
-    "kassel",
-    "kiel",
-    "koblenz",
-    "koln",
-    "leipzig",
-    "leverkusen",
-    "ludwigshafen",
-    "lower saxony",
-    "lubeck",
-    "magdeburg",
-    "mainz",
-    "mannheim",
-    "mecklenburg vorpommern",
-    "munich",
-    "munster",
-    "muenchen",
-    "munchen",
-    "nordrhein westfalen",
-    "north rhine westphalia",
-    "nuremberg",
-    "nuernberg",
-    "offenbach",
-    "osnabruck",
-    "potsdam",
-    "rhineland palatinate",
-    "remote germany",
-    "saarbrucken",
-    "saarland",
-    "saxony",
-    "saxony anhalt",
-    "schleswig holstein",
-    "stuttgart",
-    "thuringia",
-    "ulm",
-    "wiesbaden",
-    "wuppertal",
-    "wurzburg",
-}
-
-COUNTRY_ALIASES = {
-    "DE": {"de", "germany", "deutschland"},
-    "NL": {"nl", "netherlands", "nederland", "niederlande", "holland"},
-    "IE": {"ie", "ireland", "irland"},
-    "DK": {"dk", "denmark", "danmark", "danemark"},
-    "SE": {"se", "sweden", "sverige", "schweden"},
-    "LU": {"lu", "luxembourg", "luxemburg"},
-    "AT": {"at", "austria", "osterreich"},
-    "BE": {"be", "belgium", "belgie", "belgien", "belgique"},
-    "FR": {"fr", "france", "frankreich"},
-    "CH": {"ch", "switzerland", "schweiz", "suisse"},
-    "CZ": {"cz", "czech republic", "czechia", "tschechien"},
-    "PL": {"pl", "poland", "polen"},
-    "SG": {"sg", "singapore", "singapur"},
-    "GB": {"gb", "uk", "united kingdom", "england", "great britain"},
-    "US": {"us", "usa", "united states", "united states of america"},
-    "AE": {"ae", "uae", "united arab emirates", "vereinigte arabische emirate"},
-    "AU": {"au", "australia", "australien"},
-    "IN": {"in", "india", "indien"},
-    "IT": {"it", "italy", "italien"},
-    "HK": {"hk", "hong kong", "hongkong"},
-}
-
-COUNTRY_LOCATION_HINTS = {
-    "DE": GERMAN_LOCATION_HINTS,
-    "NL": {
-        "amsterdam",
-        "arnhem",
-        "breda",
-        "delft",
-        "eindhoven",
-        "groningen",
-        "haarlem",
-        "hague",
-        "holland",
-        "leiden",
-        "maastricht",
-        "netherlands",
-        "nederland",
-        "niederlande",
-        "rotterdam",
-        "the hague",
-        "tilburg",
-        "utrecht",
-    },
-    "IE": {
-        "cork",
-        "dublin",
-        "galway",
-        "ireland",
-        "irland",
-        "limerick",
-        "waterford",
-    },
-    "DK": {
-        "aarhus",
-        "aalborg",
-        "copenhagen",
-        "danemark",
-        "danmark",
-        "denmark",
-        "kobenhavn",
-        "odense",
-    },
-    "SE": {
-        "gothenburg",
-        "goteborg",
-        "lund",
-        "malmo",
-        "stockholm",
-        "sverige",
-        "sweden",
-        "uppsala",
-    },
-    "LU": {
-        "esch sur alzette",
-        "luxembourg",
-        "luxemburg",
-    },
-    "AT": {
-        "austria",
-        "graz",
-        "innsbruck",
-        "linz",
-        "osterreich",
-        "salzburg",
-        "vienna",
-        "wien",
-    },
-    "BE": {
-        "antwerp",
-        "antwerpen",
-        "belgien",
-        "belgique",
-        "belgie",
-        "belgium",
-        "brussels",
-        "bruxelles",
-        "gent",
-        "ghent",
-        "leuven",
-        "liege",
-        "louvain",
-    },
-    "FR": {
-        "france",
-        "frankreich",
-        "lille",
-        "lyon",
-        "metz",
-        "nancy",
-        "paris",
-        "strasbourg",
-    },
-    "CH": {
-        "basel",
-        "bern",
-        "geneva",
-        "genf",
-        "schweiz",
-        "suisse",
-        "switzerland",
-        "zurich",
-        "zürich",
-    },
-    "CZ": {
-        "brno",
-        "czech republic",
-        "czechia",
-        "prague",
-        "praha",
-        "tschechien",
-    },
-    "PL": {
-        "krakow",
-        "kraków",
-        "poland",
-        "polen",
-        "poznan",
-        "poznań",
-        "warsaw",
-        "warszawa",
-        "wroclaw",
-        "wrocław",
-    },
-    "SG": {
-        "singapore",
-        "singapur",
-    },
-    "GB": {
-        "england",
-        "london",
-        "united kingdom",
-        "uk",
-    },
-    "US": {
-        "atlanta",
-        "austin",
-        "chicago",
-        "new york",
-        "saint louis",
-        "st louis",
-        "united states",
-        "usa",
-    },
-    "AE": {
-        "abu dhabi",
-        "dubai",
-        "uae",
-        "united arab emirates",
-    },
-    "AU": {
-        "australia",
-        "australien",
-        "melbourne",
-        "sydney",
-    },
-    "IN": {
-        "gurgaon",
-        "gurugram",
-        "india",
-        "indien",
-    },
-    "IT": {
-        "florence",
-        "italy",
-        "italien",
-        "milan",
-        "rome",
-    },
-    "HK": {
-        "hong kong",
-        "hongkong",
-    },
-}
+from job_scraper.pipeline.language_filter import describe_language
 
 MOJIBAKE_MARKERS = (
     "\u95b3",
@@ -413,12 +150,6 @@ def _normalize_location_key(value: str) -> str:
     return normalize_whitespace(cleaned)
 
 
-def combine_locations(*values: str) -> tuple[str, str, list[str]]:
-    """Compatibility alias for the domain-level location merger."""
-
-    return merge_locations(*values)
-
-
 def infer_remote_type(text: str) -> str:
     lowered = text.lower()
     if "hybrid" in lowered:
@@ -466,7 +197,6 @@ def build_dedupe_key(
     description: str = "",
     source: str = "",
 ) -> str:
-    _ = location_raw
     descriptor = description_signature(description) or source_job_id.strip().lower()
     basis = "|".join(
         [
@@ -543,13 +273,32 @@ def country_to_code(value: str) -> str:
 
 
 def location_matches_country(normalized_location: str, country_code: str) -> bool:
-    for hint in COUNTRY_LOCATION_HINTS.get(country_code, set()):
-        normalized_hint = normalize_location_key(hint)
-        if normalized_hint and re.search(
-            rf"(?<![a-z0-9]){re.escape(normalized_hint)}(?![a-z0-9])", normalized_location
-        ):
-            return True
-    return False
+    pattern = _country_hint_pattern(country_code)
+    return pattern is not None and pattern.search(normalized_location) is not None
+
+
+@cache
+def _country_hint_pattern(country_code: str) -> re.Pattern[str] | None:
+    """One compiled alternation per country, built once and reused.
+
+    The hint sets are constants, so normalizing and escaping each of them on
+    every call -- for every country, for every location segment -- was pure
+    repeated work. On a location that matches nothing this dominated the whole
+    normalization step.
+    """
+    hints = sorted(
+        {
+            normalized
+            for hint in COUNTRY_LOCATION_HINTS.get(country_code, set())
+            if (normalized := normalize_location_key(hint))
+        },
+        key=len,
+        reverse=True,
+    )
+    if not hints:
+        return None
+    alternation = "|".join(re.escape(hint) for hint in hints)
+    return re.compile(rf"(?<![a-z0-9])(?:{alternation})(?![a-z0-9])")
 
 
 def known_location_country(location_raw: str) -> str:
@@ -608,14 +357,6 @@ def was_posted_within_hours(posted_at: datetime | None, now: datetime, max_age_h
     return age <= timedelta(hours=max_age_hours)
 
 
-def normalize_job(raw: RawJobRecord, filters: FiltersConfig) -> JobRecord:
-    """Compatibility wrapper for the V1 configuration model."""
-
-    from job_scraper.pipeline.policy_adapter import policy_from_legacy
-
-    return normalize_candidate(raw, policy_from_legacy(filters))
-
-
 def normalize_candidate(raw: RawJobRecord, policy: FilterPolicy) -> JobRecord:
     title = normalize_whitespace(raw.title)
     description = normalize_whitespace(raw.job_description)
@@ -630,10 +371,9 @@ def normalize_candidate(raw: RawJobRecord, policy: FilterPolicy) -> JobRecord:
         description=description,
         source=raw.source,
     )
-    ratio = english_ratio(description or title)
-    language = classify_description_language(description or title)
+    language, ratio = describe_language(description or title)
     posted_at = parse_relative_posted_at(raw.posted_at_text, raw.scraped_at.astimezone(UTC))
-    merged_location, city, location_options = combine_locations(location)
+    merged_location, city, location_options = merge_locations(location)
     payload = dict(raw.raw_payload)
     if location_options:
         payload["location_options"] = location_options

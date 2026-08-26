@@ -1,20 +1,47 @@
+"""Re-evaluate a stored row against a profile policy for export.
+
+Exports must answer the same question the acquisition pipeline answered --
+"does this job belong to this profile?" -- so this module reconstructs a
+`JobRecord` from the stored row and runs the *same* pipeline steps rather than
+re-implementing them. The previous parallel implementation had already begun to
+drift from `pipeline/steps.py`, which meant a job could pass one and fail the
+other.
+
+Freshness and history are deliberately not applied: an export is cumulative, so
+a row that was fresh when it was acquired stays in the file.
+"""
+
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Protocol
 
-from job_scraper.domain.policies import FilterPolicy
-from job_scraper.pipeline.language_filter import (
-    is_allowed_description_language,
-    matches_requirement_patterns,
+from job_scraper.domain.context import EvaluationContext
+from job_scraper.domain.models import JobRecord
+from job_scraper.domain.policies import FilterPolicy, title_scoped
+from job_scraper.pipeline.engine import CandidatePipeline
+from job_scraper.pipeline.normalize import looks_like_germany
+from job_scraper.pipeline.steps import (
+    CompanyStep,
+    CountryStep,
+    EmploymentScopeStep,
+    ExcludedTermsStep,
+    LanguageStep,
+    RequirementExclusionStep,
+    RoleStep,
 )
-from job_scraper.pipeline.normalize import looks_like_germany, looks_like_target_countries
-from job_scraper.pipeline.role_filter import (
-    company_matches_allowlist,
-    has_excluded_keyword,
-    is_full_time_role,
-    text_matches_target,
+
+EXPORT_PIPELINE = CandidatePipeline(
+    (
+        CountryStep(),
+        CompanyStep(),
+        EmploymentScopeStep(),
+        ExcludedTermsStep(),
+        RoleStep(),
+        RequirementExclusionStep(),
+        LanguageStep(),
+    )
 )
 
 
@@ -33,92 +60,56 @@ def export_row_is_germany(row: ExportRow) -> bool:
 
 
 def export_row_matches_policy(row: ExportRow, policy: FilterPolicy) -> bool:
-    title = str(row["normalized_title"] or "")
-    description = str(row["description_full"] or "")
-    employment_type = str(row["employment_type"] or "")
-    description_language = str(row["description_language"] or "")
+    job = export_row_to_job(row)
+    # A row whose detail page never loaded only has its email card text, so the
+    # role must be evident from the title rather than from surrounding copy.
+    if str(job.raw_payload.get("detail_status") or "") == "email_fallback":
+        policy = title_scoped(policy)
+    decision = EXPORT_PIPELINE.evaluate(
+        job,
+        EvaluationContext(profile_id="export", started_at=_EPOCH, policy=policy),
+    )
+    return decision.accepted
+
+
+def export_row_to_job(row: ExportRow) -> JobRecord:
+    """Rebuild the subset of a JobRecord the policy steps actually read."""
     try:
         english_ratio = float(str(row["english_ratio"] or 0.0))
     except (TypeError, ValueError):
         english_ratio = 0.0
-
-    if not _matches_country(row, policy):
-        return False
-    if policy.allowed_companies and not company_matches_allowlist(
-        str(row["company_name"] or ""),
-        list(policy.allowed_companies),
-    ):
-        return False
-    if policy.full_time_only and not is_full_time_role(
-        title,
-        description,
-        employment_type,
-        allow_part_time=policy.allow_part_time,
-        allow_temporary=policy.allow_temporary,
-    ):
-        return False
-    if has_excluded_keyword(
-        title,
-        description,
-        employment_type,
-        list(policy.excluded_terms),
-    ):
-        return False
-    payload = _payload(row)
-    fallback_only = str(payload.get("detail_status") or "") == "email_fallback"
-    acceptance_scope = "title" if fallback_only else policy.acceptance_scope
-    acceptance_rules = (
-        [replace(rule, match_scope="title") for rule in policy.acceptance_rules]
-        if fallback_only
-        else list(policy.acceptance_rules)
-    )
-    if not text_matches_target(
-        title,
-        description,
-        list(policy.acceptance_terms),
-        acceptance_scope,
-        target_rules=acceptance_rules,
-    ):
-        return False
-    if (
-        policy.excluded_requirement_patterns
-        and description
-        and matches_requirement_patterns(
-            description,
-            policy.excluded_requirement_patterns,
-        )
-    ):
-        return False
-    return is_allowed_description_language(
-        description_language,
-        english_ratio,
-        policy.minimum_english_ratio,
-        require_english=policy.require_english,
-        allowed_languages=policy.allowed_description_languages,
+    return JobRecord(
+        source="",
+        source_job_id="",
+        source_url="",
+        canonical_url="",
+        title=str(row["normalized_title"] or ""),
+        company_name=str(row["company_name"] or ""),
+        location_raw=str(row["location_text"] or ""),
+        country=str(row["country_code"] or ""),
+        city="",
+        region="",
+        remote_type="",
+        employment_type=str(row["employment_type"] or ""),
+        seniority="",
+        posted_at=None,
+        first_seen_at=_EPOCH,
+        scraped_at=_EPOCH,
+        job_description=str(row["description_full"] or ""),
+        description_language=str(row["description_language"] or ""),
+        english_ratio=english_ratio,
+        keyword_hits=[],
+        tech_stack=[],
+        salary_text="",
+        salary_min=None,
+        salary_max=None,
+        salary_currency=None,
+        dedupe_key="",
+        raw_payload=_payload(row),
     )
 
 
-def _matches_country(row: ExportRow, policy: FilterPolicy) -> bool:
-    location_text = str(row["location_text"] or "")
-    payload = _payload(row)
-    raw_country = str(payload.get("location_country") or "").strip()
-    search_location = str(payload.get("search_location") or "").strip()
-    country = str(row["country_code"] or "")
-    country_filter = ",".join(policy.countries)
-    if looks_like_target_countries(
-        location_text,
-        country,
-        country_filter,
-        raw_country=raw_country,
-    ):
-        return True
-    if country in policy.countries and looks_like_target_countries(
-        search_location,
-        "",
-        country_filter,
-    ):
-        return True
-    return not _known_value(country) and not _known_value(raw_country)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _payload(row: ExportRow) -> dict[str, object]:
@@ -130,7 +121,3 @@ def _payload(row: ExportRow) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return dict(payload) if isinstance(payload, dict) else {}
-
-
-def _known_value(value: object) -> bool:
-    return str(value or "").strip().casefold() not in {"", "n/a", "unknown", "none", "null"}

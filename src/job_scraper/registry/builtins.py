@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import cast
 
-from job_scraper.adapters.sinks.csv import CsvSink
+from job_scraper.adapters.sinks.csv import DEFAULT_RETAINED_EXPORTS, CsvSink
 from job_scraper.adapters.sinks.notion_daily import NotionDailySink
 from job_scraper.adapters.sources.brightdata.indeed import BrightDataIndeedSource
 from job_scraper.adapters.sources.direct.linkedin import LinkedInDirectSource
 from job_scraper.adapters.sources.email.imap import ImapEmailChannel
+from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
+from job_scraper.collectors.linkedin import LinkedInProgressEvent
 from job_scraper.config import HttpConfig, SourceConfig
 from job_scraper.domain.policies import FilterPolicy
 from job_scraper.integrations.email_recommendations import EmailIngestConfig
@@ -36,10 +37,23 @@ from job_scraper.storage.db import Database
 
 @dataclass(frozen=True, slots=True)
 class SourceBuildRequest:
+    """Everything a source adapter may be built with.
+
+    These were previously passed as `services: dict[str, object]` and recovered
+    with `.get()` plus a hand-written isinstance check per entry. Declaring them
+    lets the type checker do that work: a misspelled key can no longer silently
+    mean "no rate limiter", and the factories stop paying for `cast` on the way
+    out. The composition root is the right place to know these concrete types.
+    """
+
     http: HttpConfig
     settings: SourceConfig
     company_names: tuple[str, ...] = ()
-    services: dict[str, object] = field(default_factory=dict)
+    request_coalescer: RequestCoalescer | None = None
+    request_gate: RequestGate | None = None
+    snapshot_database: Database | None = None
+    event_logger: Callable[[str], None] | None = None
+    progress_callback: Callable[[LinkedInProgressEvent], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +71,11 @@ class SinkBuildRequest:
     profile_label: str
     timezone_name: str
     csv_destination: Path | None = None
+    retained_exports: int = DEFAULT_RETAINED_EXPORTS
     notion_client: NotionClient | None = None
     notion_table_prefix: str = ""
-    services: dict[str, object] = field(default_factory=dict)
+    notion_binding_store: NotionDatabaseBindingStore | None = None
+    logger: Callable[[str], None] | None = None
 
 
 def create_builtin_registry() -> ComponentRegistry:
@@ -85,7 +101,7 @@ def build_source(
     source_id: str,
     request: SourceBuildRequest,
 ) -> JobSource:
-    return cast(JobSource, registry.sources.create(source_id, request))
+    return registry.sources.create(source_id, request)
 
 
 def build_channel(
@@ -93,15 +109,14 @@ def build_channel(
     channel_id: str,
     request: ChannelBuildRequest,
 ) -> JobChannel:
-    return cast(JobChannel, registry.channels.create(channel_id, request))
+    return registry.channels.create(channel_id, request)
 
 
 def build_pipeline(
     registry: ComponentRegistry,
     step_ids: tuple[str, ...],
 ) -> CandidatePipeline:
-    steps = [registry.steps.create(step_id) for step_id in step_ids]
-    return CandidatePipeline(cast(list, steps))
+    return CandidatePipeline([registry.steps.create(step_id) for step_id in step_ids])
 
 
 def build_sink(
@@ -109,7 +124,7 @@ def build_sink(
     sink_id: str,
     request: SinkBuildRequest,
 ) -> JobSink:
-    return cast(JobSink, registry.sinks.create(sink_id, request))
+    return registry.sinks.create(sink_id, request)
 
 
 def validate_component_ids(
@@ -127,41 +142,27 @@ def validate_component_ids(
 
 
 def _build_linkedin(request: SourceBuildRequest) -> LinkedInDirectSource:
-    request_coalescer = request.services.get("request_coalescer")
-    if request_coalescer is not None and not isinstance(request_coalescer, RequestCoalescer):
-        raise TypeError("linkedin_direct request_coalescer service has the wrong type")
-    request_gate = request.services.get("request_gate")
-    if request_gate is not None and not isinstance(request_gate, RequestGate):
-        raise TypeError("linkedin_direct request_gate service has the wrong type")
-    event_logger = request.services.get("event_logger")
-    if event_logger is not None and not callable(event_logger):
-        raise TypeError("linkedin_direct event_logger service must be callable")
-    progress_callback = request.services.get("progress_callback")
-    if progress_callback is not None and not callable(progress_callback):
-        raise TypeError("linkedin_direct progress_callback service must be callable")
     return LinkedInDirectSource(
         request.http,
         request.settings,
         list(request.company_names),
-        request_coalescer=request_coalescer,
-        request_gate=request_gate,
-        event_logger=cast(Callable[[str], None] | None, event_logger),
-        progress_callback=cast(Callable | None, progress_callback),
+        request_coalescer=request.request_coalescer,
+        request_gate=request.request_gate,
+        event_logger=request.event_logger,
+        progress_callback=request.progress_callback,
     )
 
 
 def _build_indeed(request: SourceBuildRequest) -> BrightDataIndeedSource:
-    snapshot_database = request.services.get("snapshot_database")
-    if not isinstance(snapshot_database, Database):
-        raise TypeError("indeed_brightdata requires a Database snapshot service")
-    event_logger = request.services.get("event_logger")
-    if event_logger is not None and not callable(event_logger):
-        raise TypeError("indeed_brightdata event_logger service must be callable")
+    if request.snapshot_database is None:
+        # Resuming a paid snapshot across runs is not optional for this source:
+        # with nowhere to record it, a crashed run silently re-triggers it.
+        raise ValueError("indeed_brightdata requires a snapshot database")
     return BrightDataIndeedSource(
         request.http,
         request.settings,
-        snapshot_database=snapshot_database,
-        event_logger=cast(Callable[[str], None] | None, event_logger),
+        snapshot_database=request.snapshot_database,
+        event_logger=request.event_logger,
     )
 
 
@@ -176,15 +177,13 @@ def _build_csv_sink(request: SinkBuildRequest) -> CsvSink:
         request.repository,
         request.csv_destination,
         request.policy,
+        retained_exports=request.retained_exports,
     )
 
 
 def _build_notion_sink(request: SinkBuildRequest) -> NotionDailySink:
     if request.notion_client is None:
         raise ValueError("notion_daily sink requires a Notion client")
-    logger = request.services.get("logger")
-    if logger is not None and not callable(logger):
-        raise TypeError("notion_daily logger service must be callable")
     return NotionDailySink(
         request.repository,
         request.notion_client,
@@ -192,7 +191,9 @@ def _build_notion_sink(request: SinkBuildRequest) -> NotionDailySink:
         table_prefix=request.notion_table_prefix,
         track_label=request.profile_label,
         started_at=request.started_at,
-        logger=cast(Callable[[str], None] | None, logger),
+        logger=request.logger,
+        binding_store=request.notion_binding_store,
+        profile_id=request.profile_id,
     )
 
 

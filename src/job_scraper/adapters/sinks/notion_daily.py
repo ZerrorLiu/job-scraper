@@ -14,17 +14,15 @@ from job_scraper.adapters.sinks.notion_payload import (
     notion_page_company_name,
     notion_page_job_title_and_url,
 )
-from job_scraper.domain.models import JobHistorySnapshot, JobRecord
+from job_scraper.adapters.storage.notion_bindings import (
+    NotionDatabaseBinding,
+    NotionDatabaseBindingStore,
+)
+from job_scraper.domain.models import AcceptedJob, JobHistorySnapshot, JobRecord
 from job_scraper.integrations.notion import NotionClient
 from job_scraper.ports.sinks import PublishContext, PublishResult
 
 _NOTION_PUBLISH_LOCK = Lock()
-
-
-class AcceptedJob(Protocol):
-    job: JobRecord
-    job_id: str
-    linked_job_ids: list[str]
 
 
 class IdentifiableJob(Protocol):
@@ -73,6 +71,8 @@ class NotionDailySink:
         started_at: datetime,
         logger: Callable[[str], None] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        binding_store: NotionDatabaseBindingStore | None = None,
+        profile_id: str = "",
     ) -> None:
         self._repository = repository
         self._client = client
@@ -82,6 +82,8 @@ class NotionDailySink:
         self._started_at = started_at
         self._logger = logger or (lambda message: None)
         self._sleeper = sleeper
+        self._binding_store = binding_store
+        self._profile_id = profile_id.strip()
 
     def publish(
         self,
@@ -109,10 +111,12 @@ class NotionDailySink:
         notion_config = getattr(self._client, "config", None)
         if notion_config is not None and not getattr(notion_config, "database_id", ""):
             parent_page_id = str(getattr(notion_config, "parent_page_id", ""))
+        binding = self._load_binding()
         if parent_page_id:
             daily_database = self._client.ensure_daily_database(
                 table_title,
                 legacy_titles=legacy_titles,
+                bound_database_id=binding.database_id if binding is not None else "",
                 parent_page_id=parent_page_id,
                 is_inline=False,
             )
@@ -120,7 +124,9 @@ class NotionDailySink:
             daily_database = self._client.ensure_daily_database(
                 table_title,
                 legacy_titles=legacy_titles,
+                bound_database_id=binding.database_id if binding is not None else "",
             )
+        self._persist_binding_if_needed(binding, daily_database)
         data_source_id = daily_database["data_sources"][0]["id"]
         database_id = str(daily_database.get("id", "")).strip()
         local_date = self._local_date()
@@ -274,6 +280,22 @@ class NotionDailySink:
     def _local_date(self) -> date:
         return self._started_at.astimezone(ZoneInfo(self._timezone_name)).date()
 
+    def _load_binding(self) -> NotionDatabaseBinding | None:
+        if self._binding_store is None or not self._profile_id:
+            return None
+        return self._binding_store.load(self._profile_id)
+
+    def _persist_binding_if_needed(
+        self,
+        existing: NotionDatabaseBinding | None,
+        database: dict,
+    ) -> None:
+        if self._binding_store is None or not self._profile_id:
+            return
+        resolved = NotionDatabaseBinding.from_database(database)
+        if existing is None or existing.database_id != resolved.database_id:
+            self._binding_store.save(self._profile_id, resolved)
+
 
 def _accepted_database_ids(accepted: AcceptedJob) -> list[str]:
     values = [accepted.job_id, *accepted.linked_job_ids]
@@ -348,9 +370,17 @@ def _merge_page_properties(page: dict, incoming: dict) -> dict:
         ]
         values = list(dict.fromkeys([*existing_values, *incoming_values]))
         merged[field_name] = {"multi_select": [{"name": value} for value in values]}
-    existing_status = (current.get("Status", {}) or {}).get("select")
-    if existing_status:
-        merged["Status"] = {"select": {"name": existing_status.get("name", "Not Applied")}}
+    # Status carries a human decision, so an update must never overwrite it.
+    # Read whichever representation the workspace actually uses: the sink
+    # creates `select`, but a workspace that converted the column to Notion's
+    # native `status` type stores it under "status" instead, and reading only
+    # "select" there would silently reset "Applied" back to "Not Applied".
+    current_status = current.get("Status", {}) or {}
+    for status_kind in ("select", "status"):
+        existing_status = current_status.get(status_kind)
+        if isinstance(existing_status, dict) and existing_status.get("name"):
+            merged["Status"] = {status_kind: {"name": str(existing_status["name"])}}
+            break
     return merged
 
 

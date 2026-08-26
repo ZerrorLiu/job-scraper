@@ -68,8 +68,14 @@ class _FakeNotionClient:
     def enabled(self) -> bool:
         return True
 
-    def ensure_daily_database(self, title: str, *, legacy_titles: list[str]) -> dict:
-        del title, legacy_titles
+    def ensure_daily_database(
+        self,
+        title: str,
+        *,
+        legacy_titles: list[str],
+        bound_database_id: str = "",
+    ) -> dict:
+        del title, legacy_titles, bound_database_id
         return {"id": "database-1", "data_sources": [{"id": "data-source-1"}]}
 
     def ensure_job_views(self, database_id: str, data_source_id: str, local_date: object) -> None:

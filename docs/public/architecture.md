@@ -20,13 +20,18 @@ repositories and sinks
 
 ## Layers
 
-- `domain`: typed jobs, identities, policies, and decisions.
+- `domain`: typed jobs, identities, policies, decisions, and the single
+  country/location reference the adapters share.
 - `ports`: stable interfaces for sources, channels, repositories, and sinks.
-- `pipeline`: small policy steps that accept or reject a normalized job.
+- `pipeline`: small policy steps that accept or reject a normalized job. The
+  cumulative CSV export re-runs these same steps against stored rows rather
+  than carrying a second copy of the rules.
 - `application`: acquisition, search planning, aggregation, and profile
   orchestration.
 - `adapters`: LinkedIn, Bright Data, IMAP, SQLite, CSV, and Notion boundaries.
 - `registry`: maps stable component IDs to implementations.
+- `configuration`: loads the private workspace and translates it into domain
+  policies, so `pipeline` and `application` never import the TOML model.
 - `cli`: validates local composition and invokes application use cases.
 
 Dependencies point inward. Domain and ports never depend on a vendor SDK,
@@ -53,6 +58,24 @@ failing batch is bisected until only the failing URL falls back to sparse
 email-card metadata. Successful sibling batches retain their full job
 descriptions and snapshot provenance. The original platform listing URL remains
 authoritative.
+
+## External writes
+
+Requests that create a Notion object are never replayed after a server error
+or a dropped connection, because the first attempt may have succeeded before
+the failure surfaced; only an explicit rate-limit rejection is retried. Reads
+and updates, being idempotent, retry with backoff. Updating an existing row
+preserves whatever status a person set on it, whichever Notion property type
+the workspace uses for that column.
+
+## Schema evolution
+
+The workspace store applies ordered, recorded migrations on `initialize()`.
+`CREATE TABLE IF NOT EXISTS` alone is not sufficient: it silently skips a
+database that already exists, so column and index changes would never reach a
+live workspace. Migrations are idempotent and never drop data; a table the
+current schema no longer defines is reported by `db status` rather than
+removed.
 
 Manual `Not Interested` status is applied after normal candidate filtering. A
 matching repost is suppressed for 30 days using normalized title, company, and

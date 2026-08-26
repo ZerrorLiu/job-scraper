@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
 import json
 import logging
 import os
 import random
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,8 +17,9 @@ from urllib.request import Request, urlopen
 
 from job_scraper.collectors.base import BaseCollector, SearchWindow
 from job_scraper.config import HttpConfig, SourceConfig
+from job_scraper.domain.countries import COUNTRY_LOCATION_HINTS
+from job_scraper.domain.models import RawJobRecord
 from job_scraper.domain.payload_sanitization import sanitize_job_payload
-from job_scraper.models import RawJobRecord
 from job_scraper.storage.db import Database
 
 LOGGER = logging.getLogger(__name__)
@@ -45,40 +45,11 @@ INDEED_MARKETS = {
     "NL": "nl.indeed.com",
     "US": "indeed.com",
 }
+# Indeed only has a storefront for the markets in INDEED_MARKETS, so the
+# location -> country hints are the shared reference narrowed to those markets
+# rather than a fourth hand-maintained copy.
 INDEED_LOCATION_COUNTRY_HINTS = {
-    "austria": "AT",
-    "österreich": "AT",
-    "vienna": "AT",
-    "wien": "AT",
-    "belgium": "BE",
-    "belgique": "BE",
-    "brussels": "BE",
-    "switzerland": "CH",
-    "schweiz": "CH",
-    "zurich": "CH",
-    "zürich": "CH",
-    "germany": "DE",
-    "deutschland": "DE",
-    "berlin": "DE",
-    "munich": "DE",
-    "münchen": "DE",
-    "hamburg": "DE",
-    "frankfurt": "DE",
-    "cologne": "DE",
-    "köln": "DE",
-    "france": "FR",
-    "paris": "FR",
-    "united kingdom": "GB",
-    "great britain": "GB",
-    "london": "GB",
-    "ireland": "IE",
-    "dublin": "IE",
-    "luxembourg": "LU",
-    "netherlands": "NL",
-    "nederland": "NL",
-    "amsterdam": "NL",
-    "united states": "US",
-    "usa": "US",
+    hint: code for code in INDEED_MARKETS for hint in COUNTRY_LOCATION_HINTS.get(code, set())
 }
 
 
@@ -227,60 +198,6 @@ def normalize_upstream_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
 def _is_indeed_platform_url(value: str) -> bool:
     hostname = (urlsplit(value).hostname or "").casefold()
     return hostname == "indeed.com" or hostname.endswith(".indeed.com")
-
-
-async def execute_brightdata_dataset_sync(
-    search_query: str,
-    geographic_zone: str,
-    maximum_depth: int = 2,
-    *,
-    page_size: int = 10,
-    output_path: str | Path | None = None,
-    country: str | None = None,
-    domain: str | None = None,
-    date_posted: str = "",
-    poll_interval_seconds: float = 5.0,
-    timeout_seconds: float = BRIGHTDATA_SNAPSHOT_TIMEOUT_SECONDS,
-    request_timeout_seconds: float = 30.0,
-    event_logger: Callable[[str], None] | None = None,
-) -> list[dict[str, Any]]:
-    """Compatibility wrapper for one Bright Data Indeed discovery input."""
-    if maximum_depth < 1:
-        raise ValueError("maximum_depth must be greater than 0")
-    if page_size < 1:
-        raise ValueError("page_size must be greater than 0")
-    if poll_interval_seconds < 0:
-        raise ValueError("poll_interval_seconds must not be negative")
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be greater than 0")
-
-    query = search_query.strip()
-    zone = geographic_zone.strip()
-    if not query:
-        raise ValueError("search_query must not be empty")
-    if not zone:
-        raise ValueError("geographic_zone must not be empty")
-
-    country_code, indeed_domain = resolve_indeed_market(zone, country=country, domain=domain)
-    result = await execute_brightdata_dataset_batch_sync(
-        [
-            BrightDataSearchInput(
-                search_query=query,
-                geographic_zone=zone,
-                country=country_code,
-                domain=indeed_domain,
-                date_posted=date_posted,
-            )
-        ],
-        limit_per_input=maximum_depth * page_size,
-        limit_multiple_results=maximum_depth * page_size,
-        output_path=output_path,
-        poll_interval_seconds=poll_interval_seconds,
-        timeout_seconds=timeout_seconds,
-        request_timeout_seconds=request_timeout_seconds,
-        event_logger=event_logger,
-    )
-    return result.records
 
 
 async def execute_brightdata_dataset_batch_sync(
@@ -466,6 +383,10 @@ async def _execute_brightdata_snapshots_via_webhook(
     records for only some inputs while others are still in flight; a later
     run picks up whatever becomes ready next.
     """
+    # Failures are isolated per input. Without return_exceptions, one bad
+    # keyword would discard every sibling's records *and* the snapshot ids that
+    # were already submitted and registered, orphaning paid Bright Data work
+    # that no later run would know to collect.
     per_input_results = await asyncio.gather(
         *(
             _execute_one_brightdata_snapshot_via_webhook(
@@ -480,13 +401,26 @@ async def _execute_brightdata_snapshots_via_webhook(
                 event_logger=event_logger,
             )
             for search_input in search_inputs
-        )
+        ),
+        return_exceptions=True,
     )
     all_records: list[dict[str, Any]] = []
     all_snapshot_ids: list[str] = []
-    for records, snapshot_id in per_input_results:
+    failures = 0
+    for search_input, outcome in zip(search_inputs, per_input_results, strict=True):
+        if isinstance(outcome, BaseException):
+            failures += 1
+            _log_cloud_event(
+                f"Webhook snapshot failed | Query {search_input.search_query!r} | {outcome}",
+                event_logger,
+            )
+            continue
+        records, snapshot_id = outcome
         all_records.extend(records)
-        all_snapshot_ids.append(snapshot_id)
+        if snapshot_id:
+            all_snapshot_ids.append(snapshot_id)
+    if failures and not all_snapshot_ids:
+        raise DataSyncError(f"All {failures} Bright Data webhook submissions failed for this run")
     request_hash = hashlib.sha256(json.dumps(sorted(all_snapshot_ids)).encode("utf-8")).hexdigest()
     return BrightDataBatchResult(
         snapshot_id=all_snapshot_ids[0] if all_snapshot_ids else "",
@@ -1097,19 +1031,33 @@ def resolve_indeed_market(
     country_code = str(country or "").strip().upper()
     if not country_code:
         normalized_zone = geographic_zone.strip().casefold()
+        # Longest hint first so "united kingdom" is not shadowed by a shorter
+        # substring match from another market.
         country_code = next(
             (
                 code
-                for hint, code in INDEED_LOCATION_COUNTRY_HINTS.items()
+                for hint, code in sorted(
+                    INDEED_LOCATION_COUNTRY_HINTS.items(),
+                    key=lambda item: len(item[0]),
+                    reverse=True,
+                )
                 if hint in normalized_zone
             ),
-            "DE",
+            "",
+        )
+    if not country_code:
+        # No silent default: guessing a market would quietly search the wrong
+        # country and bill for it. The profile knows its own locations.
+        raise DataSyncError(
+            f"Could not determine an Indeed market for location {geographic_zone!r}; "
+            "set sources.indeed_brightdata.options.country (and optionally .domain) "
+            "for this profile"
         )
     indeed_domain = str(domain or "").strip().lower() or INDEED_MARKETS.get(country_code, "")
     if not indeed_domain:
         raise DataSyncError(
             f"No Indeed domain is configured for country {country_code!r}; "
-            "pass an explicit domain to execute_brightdata_dataset_sync"
+            "set sources.indeed_brightdata.options.domain for this profile"
         )
     return country_code, indeed_domain
 
@@ -1168,17 +1116,15 @@ class IndeedBrightDataCollector(BaseCollector):
         http_config: HttpConfig,
         source_config: SourceConfig,
         *,
-        sync_runner: Callable[..., Any] | None = None,
         batch_sync_runner: Callable[..., Any] | None = None,
         snapshot_database: Database | None = None,
         event_logger: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(http_config, source_config)
-        self.sync_runner = sync_runner
         self.batch_sync_runner = batch_sync_runner or execute_brightdata_dataset_batch_sync
         self.snapshot_database = snapshot_database
         self.event_logger = event_logger
-        self._uses_live_environment = sync_runner is None
+        self._uses_live_environment = batch_sync_runner is None
 
     def validate_runtime(self) -> None:
         if self._uses_live_environment:
@@ -1187,15 +1133,18 @@ class IndeedBrightDataCollector(BaseCollector):
 
     def collect(self, window: SearchWindow) -> Iterable[RawJobRecord]:
         locations = list(self.source_config.locations)
-        if self.sync_runner is not None:
-            yield from self._collect_with_legacy_runner(window, locations)
-            return
-
         date_posted = brightdata_date_posted_filter(window.post_age_hours)
         search_inputs: list[BrightDataSearchInput] = []
+        options = self.source_config.options
+        configured_country = str(options.get("country") or "").strip() or None
+        configured_domain = str(options.get("domain") or "").strip() or None
         for query in self.source_config.search_queries:
             for location in locations:
-                country, domain = resolve_indeed_market(location)
+                country, domain = resolve_indeed_market(
+                    location,
+                    country=configured_country,
+                    domain=configured_domain,
+                )
                 search_inputs.append(
                     BrightDataSearchInput(
                         search_query=query,
@@ -1217,7 +1166,7 @@ class IndeedBrightDataCollector(BaseCollector):
             request_timeout_seconds=self.http_config.timeout_seconds,
             event_logger=self.event_logger,
         )
-        batch = asyncio.run(result) if inspect.isawaitable(result) else result
+        batch = asyncio.run(result) if isinstance(result, Coroutine) else result
         if isinstance(batch, BrightDataBatchResult):
             records = batch.records
             snapshot_ids = batch.snapshot_ids or ([batch.snapshot_id] if batch.snapshot_id else [])
@@ -1247,54 +1196,6 @@ class IndeedBrightDataCollector(BaseCollector):
             if completed and mark_consumed_on_collect and self.snapshot_database is not None:
                 for snapshot_id in snapshot_ids:
                     self.snapshot_database.mark_snapshot_consumed(snapshot_id)
-
-    def _collect_with_legacy_runner(
-        self,
-        window: SearchWindow,
-        locations: Sequence[str],
-    ) -> Iterable[RawJobRecord]:
-        date_posted = brightdata_date_posted_filter(window.post_age_hours)
-        collected_records: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        assert self.sync_runner is not None
-        for query in self.source_config.search_queries:
-            for location in locations:
-                if len(collected_records) >= self.source_config.max_detail_fetches:
-                    break
-                result = self.sync_runner(
-                    query,
-                    location,
-                    maximum_depth=self.source_config.max_listing_pages,
-                    page_size=self.source_config.results_per_input,
-                    output_path=None,
-                    date_posted=date_posted,
-                    request_timeout_seconds=self.http_config.timeout_seconds,
-                )
-                records = asyncio.run(result) if inspect.isawaitable(result) else result
-                for record in records:
-                    if len(collected_records) >= self.source_config.max_detail_fetches:
-                        break
-                    source_job_id = str(record.get("record_id") or "").strip()
-                    if not source_job_id or source_job_id in seen_ids:
-                        continue
-                    seen_ids.add(source_job_id)
-                    enriched = dict(record)
-                    enriched.setdefault("brightdata_query", query)
-                    enriched.setdefault("brightdata_location", location)
-                    collected_records.append(enriched)
-            if len(collected_records) >= self.source_config.max_detail_fetches:
-                break
-        selected_records = _select_brightdata_records(
-            collected_records,
-            maximum_records_per_query=self.source_config.max_detail_fetches,
-        )
-        for record in selected_records:
-            yield _to_raw_job(
-                record,
-                str(record.get("brightdata_query") or "").strip(),
-                str(record.get("brightdata_location") or "").strip(),
-                transport="brightdata_dataset_api",
-            )
 
 
 def _select_brightdata_records(

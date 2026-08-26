@@ -380,6 +380,15 @@ def test_email_dedupe_uses_corrected_metadata_not_card_fallbacks() -> None:
     assert stable_email_dedupe_key(first) == stable_email_dedupe_key(second)
 
 
+# A profile may widen the country scope for one platform. That mapping is
+# configuration (the mailbox's `[platform_country_scope]` table), so tests
+# supply it explicitly instead of relying on a country list baked into the
+# library.
+NEIGHBOURING_SCOPE = {
+    "efinancialcareers": ("DE", "NL", "BE", "FR", "LU", "AT", "CH", "CZ", "PL", "DK")
+}
+
+
 def _location_raw(location: str, *, url: str = EFINANCIAL_JOB_URL) -> RawJobRecord:
     return RawJobRecord(
         source="email",
@@ -397,7 +406,7 @@ def _location_raw(location: str, *, url: str = EFINANCIAL_JOB_URL) -> RawJobReco
 
 def test_efinancial_allows_neighboring_country_location() -> None:
     raw = _location_raw("Amsterdam, Netherlands")
-    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)))
+    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
     decision = CountryStep().evaluate(
@@ -415,7 +424,7 @@ def test_efinancial_allows_neighboring_country_location() -> None:
 
 def test_efinancial_rejects_explicit_singapore_location() -> None:
     raw = _location_raw("Singapore, Singapore")
-    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)))
+    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
     decision = CountryStep().evaluate(
@@ -434,7 +443,7 @@ def test_efinancial_rejects_explicit_singapore_location() -> None:
 def test_location_overrides_stale_default_country_code() -> None:
     raw = _location_raw("Singapore, Singapore")
     raw.raw_payload["location_country"] = "DE"
-    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)))
+    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
     decision = CountryStep().evaluate(
@@ -455,7 +464,7 @@ def test_non_efinancial_source_keeps_germany_only_scope() -> None:
         "Amsterdam, Netherlands",
         url="https://www.linkedin.test/jobs/view/fictional-job",
     )
-    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)))
+    policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
     assert policy.countries == ("DE",)

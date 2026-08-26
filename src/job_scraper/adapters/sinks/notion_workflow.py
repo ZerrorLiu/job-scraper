@@ -10,10 +10,13 @@ from job_scraper.adapters.sinks.notion_payload import (
     notion_page_job_title_and_url,
     notion_page_status,
 )
+from job_scraper.adapters.storage.notion_bindings import (
+    NotionDatabaseBinding,
+    NotionDatabaseBindingStore,
+)
 from job_scraper.application.aggregation import AcceptedJob
 from job_scraper.integrations.notion import (
     NotionClient,
-    normalize_notion_id,
     normalize_status_name,
 )
 from job_scraper.ports.sinks import PublishContext, PublishResult
@@ -30,6 +33,8 @@ def publish_daily(
     started_at: datetime,
     table_prefix: str,
     track_label: str,
+    profile_id: str,
+    binding_store: NotionDatabaseBindingStore | None = None,
     *,
     logger: Callable[[str], None] = lambda message: None,
     sleeper: Callable[[float], None] = time.sleep,
@@ -43,6 +48,8 @@ def publish_daily(
         started_at=started_at,
         logger=logger,
         sleeper=sleeper,
+        binding_store=binding_store,
+        profile_id=profile_id,
     )
     return sink.publish(
         jobs,
@@ -55,10 +62,17 @@ def import_processed_statuses(
     notion: NotionClient,
     *,
     table_title: str = "",
+    binding_store: NotionDatabaseBindingStore | None = None,
+    profile_id: str = "",
     error_logger: Callable[[str], None] = lambda message: None,
 ) -> int:
     try:
-        data_source_ids = configured_data_source_ids(notion, table_title=table_title)
+        data_source_ids = configured_data_source_ids(
+            notion,
+            table_title=table_title,
+            binding_store=binding_store,
+            profile_id=profile_id,
+        )
     except RuntimeError as exc:
         error_logger(f"Notion | Status import skipped | {exc}")
         return 0
@@ -99,41 +113,27 @@ def configured_data_source_ids(
     notion: NotionClient,
     *,
     table_title: str = "",
+    binding_store: NotionDatabaseBindingStore | None = None,
+    profile_id: str = "",
 ) -> list[str]:
     notion_config = getattr(notion, "config", None)
-    if notion_config is not None and getattr(notion_config, "database_id", ""):
+    bound = binding_store.load(profile_id) if binding_store is not None and profile_id else None
+    if binding_store is None and bound is None and getattr(notion_config, "database_id", ""):
         return [notion.resolve_data_source_id()]
-
-    data_source_ids: list[str] = []
-    if notion_config is None:
-        direct_blocks = notion.list_child_blocks(str(notion.ensure_container_page()["id"]))
-    else:
-        parent_page_id = normalize_notion_id(notion.config.parent_page_id)
-        direct_blocks = notion.list_child_blocks(parent_page_id)
-    candidate_blocks = [block for block in direct_blocks if block.get("type") == "child_database"]
-    for page in (block for block in direct_blocks if block.get("type") == "child_page"):
-        candidate_blocks.extend(
-            block
-            for block in notion.list_child_blocks(str(page.get("id", "")))
-            if block.get("type") == "child_database"
-        )
-    for block in candidate_blocks:
-        database_id = str(block.get("id", "")).strip()
-        if database_id:
-            daily_database = notion.request(
-                f"https://api.notion.com/v1/databases/{database_id}", "GET"
-            )
-            current_title = "".join(
-                str(piece.get("plain_text", ""))
-                or str((piece.get("text", {}) or {}).get("content", ""))
-                for piece in daily_database.get("title", [])
-                if isinstance(piece, dict)
-            ).strip()
-            if table_title and current_title != table_title:
-                continue
-            data_sources = daily_database.get("data_sources", [])
-            if data_sources:
-                data_source_id = str(data_sources[0].get("id", "")).strip()
-                if data_source_id:
-                    data_source_ids.append(data_source_id)
-    return data_source_ids
+    parent_page_id = str(getattr(notion_config, "parent_page_id", ""))
+    daily_database = notion.find_daily_database(
+        table_title,
+        bound_database_id=bound.database_id if bound is not None else "",
+        parent_page_id=parent_page_id,
+        is_inline=False,
+    )
+    if daily_database is None:
+        return []
+    resolved = NotionDatabaseBinding.from_database(daily_database)
+    if (
+        binding_store is not None
+        and profile_id
+        and (bound is None or bound.database_id != resolved.database_id)
+    ):
+        binding_store.save(profile_id, resolved)
+    return [resolved.data_source_id]

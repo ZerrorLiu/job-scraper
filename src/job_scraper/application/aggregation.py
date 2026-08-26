@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from job_scraper.domain.identity import canonical_identity
 from job_scraper.domain.locations import merge_locations
-from job_scraper.domain.models import JobRecord
+from job_scraper.domain.models import AcceptedJob, JobRecord
 
-
-@dataclass(slots=True)
-class AcceptedJob:
-    job: JobRecord
-    job_id: str
-    linked_job_ids: list[str] = field(default_factory=list)
+__all__ = [
+    "AcceptedJob",
+    "accepted_database_ids",
+    "add_source_provenance",
+    "merge_accepted_job",
+    "normalize_list",
+    "unique_list",
+]
 
 
 def merge_accepted_job(

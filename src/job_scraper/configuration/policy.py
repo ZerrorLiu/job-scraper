@@ -10,7 +10,12 @@ def policy_from_legacy(
     *,
     max_post_age_hours: int = 24,
 ) -> FilterPolicy:
-    """Translate the V1 TOML model at the compatibility boundary."""
+    """Translate the TOML filter model into a domain FilterPolicy.
+
+    This lives in `configuration/` rather than `pipeline/` because it is the
+    only place that needs to know both shapes; keeping it under `pipeline/`
+    forced every pipeline module to import the config layer.
+    """
 
     rules = tuple(
         TargetRule(

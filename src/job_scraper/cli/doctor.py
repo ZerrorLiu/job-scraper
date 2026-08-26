@@ -10,6 +10,7 @@ from job_scraper.configuration import (
     get_config_root,
     load_profile_definition,
 )
+from job_scraper.configuration.brightdata import brightdata_direct_collection_enabled
 from job_scraper.configuration.composition import apply_profile_to_runtime
 from job_scraper.integrations.email_recommendations import load_email_ingest_config
 
@@ -76,7 +77,23 @@ def _credential_checks(config: AppConfig) -> list[CheckResult]:
     results: list[CheckResult] = []
     notion = config.notion
     indeed = config.sources.get("indeed_brightdata")
-    if indeed is not None and indeed.enabled:
+    if indeed is None or not indeed.enabled:
+        results.append(
+            CheckResult(
+                "brightdata direct",
+                "ok",
+                "disabled by the effective profile source list",
+            )
+        )
+    elif not brightdata_direct_collection_enabled():
+        results.append(
+            CheckResult(
+                "brightdata direct",
+                "ok",
+                "suspended; BRIGHTDATA_DIRECT_COLLECTION_ENABLED is not true",
+            )
+        )
+    else:
         results.append(
             _environment_check(
                 "brightdata",

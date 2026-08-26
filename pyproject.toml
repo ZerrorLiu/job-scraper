@@ -56,13 +56,6 @@ ignore = ["E501"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 include = ["src"]
-exclude = [
-    "src/job_scraper/compatibility",
-]
-ignore = [
-    "src/job_scraper/collectors/data_integration_adapter.py",
-    "src/job_scraper/integrations/email_recommendations.py",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["public_tests"]

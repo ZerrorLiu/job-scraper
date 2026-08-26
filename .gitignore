@@ -38,11 +38,9 @@ exports/
 
 # Personal design history and one-off migration utilities are retained locally.
 /docs/*.md
-/src/job_scraper/jobs/migrate_notion_daily_tables.py
-/src/job_scraper/jobs/migrate_workspace_notion.py
-/src/job_scraper/jobs/organize_notion_hierarchy.py
-/tests/test_migrate_notion_daily_tables.py
-/tests/test_split_notion_tracks.py
+# Finished one-off migrations and other local-only working files, archived out
+# of the package so they are not linted, type-checked, or counted as live code.
+/local/
 # The original regression suite mirrors the owner's private workspace. A
 # neutral public suite lives in public_tests/.
 /tests/

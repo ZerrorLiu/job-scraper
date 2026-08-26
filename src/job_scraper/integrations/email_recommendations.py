@@ -5,25 +5,37 @@ import imaplib
 import json
 import os
 import re
+import tempfile
 import time
 import tomllib
 import unicodedata
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email import policy
-from email.message import Message
+from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+from time import monotonic
+from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from job_scraper.adapters.jobposting_jsonld import (
+    extract_city,
+    extract_country,
+    extract_job_locations,
+)
+from job_scraper.adapters.jobposting_jsonld import (
+    extract_jobposting as extract_json_ld_jobposting,
+)
 from job_scraper.config import HttpConfig
-from job_scraper.models import RawJobRecord
+from job_scraper.domain.models import RawJobRecord
 from job_scraper.pipeline.normalize import normalize_whitespace
 
 DEFAULT_SUBJECT_KEYWORDS: tuple[str, ...] = ()
@@ -254,6 +266,15 @@ class EmailIngestConfig:
     track_config_paths: list[Path]
     username_env: str = ""
     password_env: str = ""
+    # Hosts that only ever serve tracking or unsubscribe redirects for this
+    # mailbox's senders. Kept in the private workspace config: which bulk-mail
+    # infrastructure a user's alerts arrive through is their detail, not a
+    # property of the library.
+    skipped_link_hosts: tuple[str, ...] = ()
+    # Per-platform country widening, e.g. a board that lists a role in one
+    # country while recruiting across a region. Private routing policy, so it
+    # is configured rather than hard-coded.
+    platform_country_scope: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -298,6 +319,12 @@ class JobDetail:
     raw_payload: dict[str, object] = field(default_factory=dict)
 
 
+# How long a processed-message record stays useful. The mailbox is only ever
+# searched back `lookback_days`, so a record older than this can never suppress
+# anything again -- keeping it forever just grows the state file without bound.
+PROCESSED_MESSAGE_RETENTION = timedelta(days=90)
+
+
 @dataclass(slots=True)
 class EmailIngestState:
     path: Path
@@ -331,15 +358,60 @@ class EmailIngestState:
             "email_date": message.received_at.isoformat(),
         }
 
+    def prune(self, *, now: datetime | None = None) -> int:
+        """Drop records that can no longer suppress a message. Returns the count."""
+        cutoff = (now or datetime.now(UTC)) - PROCESSED_MESSAGE_RETENTION
+        keep: dict[str, dict[str, object]] = {}
+        for message_id, record in self.processed_messages.items():
+            stamp = _parse_state_timestamp(record.get("processed_at"))
+            # A record with no usable timestamp predates this field; keep it
+            # rather than risk reprocessing a message we already published.
+            if stamp is None or stamp >= cutoff:
+                keep[message_id] = record
+        removed = len(self.processed_messages) - len(keep)
+        self.processed_messages = keep
+        return removed
+
     def save(self) -> None:
+        """Persist atomically so an interrupted write cannot lose the state.
+
+        Truncating this file makes the next run reprocess every message in the
+        lookback window, so it is written to a sibling temp file and moved into
+        place instead of being overwritten in situ.
+        """
+        self.prune()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "updated_at": datetime.now(UTC).isoformat(),
             "processed_messages": self.processed_messages,
         }
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8"
+        rendered = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
+        descriptor, temp_name = tempfile.mkstemp(
+            dir=self.path.parent,
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
         )
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(rendered)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+
+def _parse_state_timestamp(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 class ImapEmailClient:
@@ -373,7 +445,15 @@ class ImapEmailClient:
                 raise RuntimeError(f"Could not open IMAP folder {self.config.folder!r}")
             cutoff = datetime.now(UTC) - timedelta(days=self.config.lookback_days)
             since = cutoff.strftime("%d-%b-%Y")
-            status, search_data = connection.uid("SEARCH", None, "SINCE", since)
+            # IMAP's UID SEARCH takes an optional charset before the criteria.
+            # None means "no charset", which is what the RFC expects here; the
+            # typeshed stub only models the charset-supplied form.
+            status, search_data = connection.uid(
+                "SEARCH",
+                cast(str, None),
+                "SINCE",
+                since,
+            )
             if status != "OK" or not search_data:
                 return []
             uids = search_data[0].split()
@@ -466,7 +546,26 @@ def load_email_ingest_config(path: str | Path) -> EmailIngestConfig:
         track_config_paths=track_config_paths,
         username_env=username_env,
         password_env=password_env,
+        skipped_link_hosts=tuple(
+            host
+            for value in mailbox.get("skipped_link_hosts", [])
+            if (host := str(value).strip().lower())
+        ),
+        platform_country_scope=load_platform_country_scope(raw.get("platform_country_scope", {})),
     )
+
+
+def load_platform_country_scope(value: object) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, dict):
+        raise ValueError("platform_country_scope must be a TOML table")
+    scope: dict[str, tuple[str, ...]] = {}
+    for platform, countries in value.items():
+        if not isinstance(countries, list):
+            raise ValueError(f"platform_country_scope.{platform} must be a TOML array")
+        codes = tuple(code for entry in countries if (code := str(entry).strip().upper()))
+        if codes:
+            scope[str(platform).strip().casefold()] = codes
+    return scope
 
 
 def load_toml_with_local_overrides(config_path: Path) -> dict:
@@ -552,7 +651,7 @@ def parse_email_date(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def extract_message_bodies(message: Message) -> tuple[str, str]:
+def extract_message_bodies(message: EmailMessage | Message) -> tuple[str, str]:
     text_parts: list[str] = []
     html_parts: list[str] = []
     for part in message.walk() if message.is_multipart() else [message]:
@@ -562,14 +661,23 @@ def extract_message_bodies(message: Message) -> tuple[str, str]:
             continue
         if content_type not in {"text/plain", "text/html"}:
             continue
+        # BytesParser(policy=default) yields EmailMessage parts, which decode
+        # transfer encodings and charsets for us. Fall back to manual decoding
+        # for a part the policy could not handle (a broken charset label, a
+        # truncated body) rather than dropping it.
         try:
-            content = part.get_content()
-        except Exception:
+            content = part.get_content() if isinstance(part, EmailMessage) else None
+        except (LookupError, ValueError):
+            content = None
+        if content is None:
             payload = part.get_payload(decode=True)
             if not isinstance(payload, bytes):
                 continue
             charset = part.get_content_charset() or "utf-8"
-            content = payload.decode(charset, errors="replace")
+            try:
+                content = payload.decode(charset, errors="replace")
+            except LookupError:
+                content = payload.decode("utf-8", errors="replace")
         if content_type == "text/plain":
             text_parts.append(str(content))
         else:
@@ -589,7 +697,10 @@ def message_matches_filters(
     return any(keyword in searchable for keyword in subject_keywords)
 
 
-def extract_job_candidates(message: MailMessage) -> list[EmailJobCandidate]:
+def extract_job_candidates(
+    message: MailMessage,
+    skipped_hosts: Sequence[str] = (),
+) -> list[EmailJobCandidate]:
     full_text = normalize_whitespace(
         "\n".join(
             part for part in [message.subject, message.text, html_to_text(message.html)] if part
@@ -600,7 +711,7 @@ def extract_job_candidates(message: MailMessage) -> list[EmailJobCandidate]:
     seen_urls: set[str] = set()
     for link in links:
         url = clean_url(link.url)
-        if not url or should_skip_url(url):
+        if not url or should_skip_url(url, skipped_hosts):
             continue
         context = normalize_whitespace(link.context or full_text)
         title, company_from_title = infer_title(link.label, context, url, message.subject)
@@ -1087,15 +1198,36 @@ def platform_job_reference(url: str) -> tuple[str, str]:
     return "", ""
 
 
+# A job posting is text; anything larger is either the wrong page or a server
+# dripping bytes to keep the connection open. Capping the read closes the one
+# case a socket timeout cannot: a response that never ends but never stalls.
+MAX_DETAIL_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+class DetailFetchTimeout(RuntimeError):
+    """The total budget for one detail page was exhausted."""
+
+
 def fetch_text(url: str, http_config: HttpConfig) -> tuple[str, str]:
+    """Fetch one detail page under a hard total wall-clock budget.
+
+    Every attempt is bounded three ways -- a socket timeout, a response-size
+    cap, and a shared deadline across retries -- so this returns or raises
+    without needing an external watchdog around it.
+    """
     last_error: Exception | None = None
     max_retries = http_config.max_retries
     timeout_seconds = min(http_config.timeout_seconds, 6)
+    deadline = monotonic() + max(float(http_config.timeout_seconds), timeout_seconds)
     for attempt in range(max_retries + 1):
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise DetailFetchTimeout(f"detail fetch exceeded its budget for {url}")
         request = Request(url, headers={"User-Agent": http_config.user_agent})
         try:
-            with urlopen(request, timeout=timeout_seconds) as response:
-                body = response.read().decode("utf-8", errors="replace")
+            with urlopen(request, timeout=min(timeout_seconds, remaining)) as response:
+                raw = response.read(MAX_DETAIL_RESPONSE_BYTES)
+                body = raw.decode("utf-8", errors="replace")
                 final_url = response.geturl()
             lowered = body.lower()
             if "captcha" in lowered or "unusual traffic" in lowered:
@@ -1105,7 +1237,10 @@ def fetch_text(url: str, http_config: HttpConfig) -> tuple[str, str]:
             last_error = exc
             if attempt >= max_retries:
                 break
-            time.sleep((attempt + 1) * http_config.base_delay_seconds)
+            backoff = (attempt + 1) * http_config.base_delay_seconds
+            if monotonic() + backoff >= deadline:
+                break
+            time.sleep(backoff)
     if last_error:
         raise last_error
     raise RuntimeError("detail fetch failed without an explicit error")
@@ -1152,41 +1287,6 @@ def parse_job_detail_html(html: str, url: str = "") -> JobDetail:
     )
 
 
-def extract_json_ld_jobposting(html: str) -> dict | None:
-    for payload in re.findall(
-        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-        html,
-        re.DOTALL | re.IGNORECASE,
-    ):
-        try:
-            data = json.loads(unescape(payload).strip())
-        except json.JSONDecodeError:
-            continue
-        found = find_jobposting_payload(data)
-        if found:
-            return found
-    return None
-
-
-def find_jobposting_payload(value: object) -> dict | None:
-    if isinstance(value, list):
-        for item in value:
-            found = find_jobposting_payload(item)
-            if found:
-                return found
-        return None
-    if not isinstance(value, dict):
-        return None
-    raw_type = value.get("@type")
-    types = raw_type if isinstance(raw_type, list) else [raw_type]
-    if any(str(item).lower() == "jobposting" for item in types):
-        return value
-    graph = value.get("@graph")
-    if graph is not None:
-        return find_jobposting_payload(graph)
-    return None
-
-
 def detail_from_json_ld(payload: dict) -> JobDetail:
     locations = extract_job_locations(payload)
     organization = (
@@ -1210,95 +1310,6 @@ def detail_from_json_ld(payload: dict) -> JobDetail:
             "location_city": extract_city(payload),
         },
     )
-
-
-def extract_job_locations(payload: dict) -> list[str]:
-    job_locations = payload.get("jobLocation")
-    options: list[str] = []
-    for entry in iter_places(job_locations):
-        location_text = format_place(entry)
-        if location_text:
-            options.append(location_text)
-    if not options:
-        city = extract_city(payload)
-        country = extract_country(payload)
-        parts = [part for part in [city, country_name(country)] if part]
-        if parts:
-            options.append(", ".join(parts))
-    unique: list[str] = []
-    seen: set[str] = set()
-    for value in options:
-        key = value.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(value)
-    return unique
-
-
-def extract_country(payload: dict) -> str:
-    for value in (payload.get("jobLocation"), payload.get("applicantLocationRequirements")):
-        for entry in iter_places(value):
-            address = entry.get("address") if isinstance(entry, dict) else {}
-            country = str((address or {}).get("addressCountry") or "").strip()
-            if country:
-                return country
-    return ""
-
-
-def extract_city(payload: dict) -> str:
-    for entry in iter_places(payload.get("jobLocation")):
-        address = entry.get("address") if isinstance(entry, dict) else {}
-        city = str((address or {}).get("addressLocality") or "").strip()
-        if city:
-            return city
-    return ""
-
-
-def iter_places(value: object) -> list[dict]:
-    if isinstance(value, dict):
-        return [value]
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def format_place(place: dict) -> str:
-    address = place.get("address") if isinstance(place, dict) else {}
-    if not isinstance(address, dict):
-        return ""
-    city = str(address.get("addressLocality") or "").strip()
-    region = str(address.get("addressRegion") or "").strip()
-    country = country_name(str(address.get("addressCountry") or "").strip())
-    parts = [part for part in [city, region, country] if part]
-    return ", ".join(parts)
-
-
-def country_name(value: str) -> str:
-    normalized = value.strip().upper()
-    mapping = {
-        "DE": "Germany",
-        "GB": "United Kingdom",
-        "UK": "United Kingdom",
-        "RO": "Romania",
-        "IN": "India",
-        "PL": "Poland",
-        "NL": "Netherlands",
-        "CZ": "Czech Republic",
-        "IT": "Italy",
-        "CA": "Canada",
-        "PT": "Portugal",
-        "FR": "France",
-        "CH": "Switzerland",
-        "DK": "Denmark",
-        "IE": "Ireland",
-        "AT": "Austria",
-        "BE": "Belgium",
-        "LU": "Luxembourg",
-        "SE": "Sweden",
-        "VN": "Vietnam",
-    }
-    return mapping.get(normalized, value.strip())
 
 
 def extract_meta_content(html: str, key: str) -> str:
@@ -1515,12 +1526,12 @@ def clean_url(value: str) -> str:
     return urlunsplit((split.scheme, split.netloc, split.path, urlencode(filtered_query), ""))
 
 
-def should_skip_url(url: str) -> bool:
+def should_skip_url(url: str, skipped_hosts: Sequence[str] = ()) -> bool:
     lowered = url.lower()
     if not lowered.startswith(("http://", "https://")):
         return True
     host = urlsplit(lowered).netloc
-    if host.endswith("post.spmailtechnolo.com") or host.endswith("emails.efinancialcareers.com"):
+    if any(host == skipped or host.endswith(f".{skipped}") for skipped in skipped_hosts):
         return True
     if (
         "linkedin.com" in lowered

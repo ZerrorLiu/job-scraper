@@ -130,3 +130,17 @@ class ProfileMatch:
     accepted: bool
     reason: str
     evaluated_at: datetime
+
+
+@dataclass(slots=True)
+class AcceptedJob:
+    """A job that passed a profile's pipeline, with every id it is stored under.
+
+    A job can reach one profile through several sources, so publication needs
+    both the merged record and each database id that must be pointed at the
+    published result.
+    """
+
+    job: JobRecord
+    job_id: str
+    linked_job_ids: list[str] = field(default_factory=list)

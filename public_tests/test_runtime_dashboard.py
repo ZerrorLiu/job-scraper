@@ -68,17 +68,23 @@ def test_dashboard_can_show_cloud_state_instead_of_fake_numeric_progress() -> No
     assert "0/8" not in rendered
 
 
-def test_email_ingest_receives_the_shared_dashboard(monkeypatch) -> None:
+def test_email_preparation_receives_the_shared_dashboard(monkeypatch) -> None:
+    """The live email path is `prepare`; it must be handed the run's dashboard."""
+
     received: list[object] = []
 
-    def fake_email(argv: list[str], *, dashboard: LiveRunTable | None = None) -> int:
+    def fake_prepare(argv: list[str], *, dashboard: LiveRunTable | None = None) -> str:
         received.extend([argv, dashboard])
-        return 0
+        return "prepared"
 
-    monkeypatch.setattr(run_all_tracks.ingest_email_recommendations, "main", fake_email)
+    monkeypatch.setattr(
+        run_all_tracks.ingest_email_recommendations,
+        "prepare",
+        fake_prepare,
+    )
     dashboard = LiveRunTable()
 
-    assert run_all_tracks._invoke_email_ingest(["--skip-notion"], dashboard) == 0
+    assert run_all_tracks._invoke_email_prepare(["--skip-notion"], dashboard) == "prepared"
     assert received == [["--skip-notion"], dashboard]
 
 

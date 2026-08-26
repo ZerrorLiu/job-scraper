@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from functools import lru_cache
+
+from job_scraper.domain.policies import TargetRule
 
 STUDENT_OR_INTERNSHIP_PATTERNS = (
     r"\bworking student\b",
@@ -57,10 +60,37 @@ def text_matches_keywords(
 ) -> bool:
     if not keywords:
         return True
-    title_text = normalize_text(title)
-    combined_text = normalize_text(" ".join(part for part in [title, description] if part))
-    haystack = combined_text if match_scope == "combined" else title_text
-    return any(keyword_matches_text(keyword, haystack) for keyword in keywords)
+    haystack = _Haystacks(title, description).for_scope(match_scope)
+    return any_keyword_matches(keywords, haystack)
+
+
+class _Haystacks:
+    """The two searchable forms of one candidate, normalized at most once each.
+
+    A profile can carry many acceptance rules -- eight in one real track -- and
+    each one asks for either the title or the title-plus-description. Building
+    that string per rule meant lowercasing and re-splitting the entire job
+    description once per rule, which is the dominant cost of evaluating a
+    candidate for any profile that scopes its rules to "combined".
+    """
+
+    __slots__ = ("_combined", "_description", "_title", "_title_text")
+
+    def __init__(self, title: str, description: str) -> None:
+        self._title = title
+        self._description = description
+        self._title_text: str | None = None
+        self._combined: str | None = None
+
+    def for_scope(self, match_scope: str) -> str:
+        if match_scope == "combined":
+            if self._combined is None:
+                joined = " ".join(part for part in (self._title, self._description) if part)
+                self._combined = normalize_text(joined)
+            return self._combined
+        if self._title_text is None:
+            self._title_text = normalize_text(self._title)
+        return self._title_text
 
 
 def text_matches_target(
@@ -68,87 +98,92 @@ def text_matches_target(
     description: str,
     keywords: list[str],
     match_scope: str,
-    target_rules: Sequence[object] | None = None,
+    target_rules: Sequence[TargetRule] | None = None,
 ) -> bool:
     if target_rules:
-        return any(text_matches_target_rule(title, description, rule) for rule in target_rules)
+        haystacks = _Haystacks(title, description)
+        return any(_rule_matches(haystacks, rule) for rule in target_rules)
     return text_matches_keywords(title, description, keywords, match_scope)
 
 
-def text_matches_target_rule(title: str, description: str, rule: object) -> bool:
-    scope = target_rule_match_scope(rule)
-    keyword_groups = target_rule_keyword_groups(rule)
-    if keyword_groups:
-        haystack = rule_haystack(title, description, scope)
-        return all(
-            any(keyword_matches_text(keyword, haystack) for keyword in group)
-            for group in keyword_groups
-        )
-    keywords = target_rule_keywords(rule)
-    minimum_matches = target_rule_minimum_keyword_matches(rule)
-    haystack = rule_haystack(title, description, scope)
-    matches = sum(keyword_matches_text(keyword, haystack) for keyword in keywords)
-    return matches >= minimum_matches
+def text_matches_target_rule(title: str, description: str, rule: TargetRule) -> bool:
+    return _rule_matches(_Haystacks(title, description), rule)
 
 
-def target_rule_keywords(rule: object) -> list[str]:
-    raw_keywords = (
-        rule.get("keywords", []) if isinstance(rule, dict) else getattr(rule, "keywords", [])
-    )
-    return [str(value).strip().lower() for value in raw_keywords if str(value).strip()]
-
-
-def target_rule_keyword_groups(rule: object) -> list[list[str]]:
-    raw_groups = (
-        rule.get("keyword_groups", [])
-        if isinstance(rule, dict)
-        else getattr(rule, "keyword_groups", [])
-    )
-    groups: list[list[str]] = []
-    for raw_group in raw_groups:
-        if isinstance(raw_group, (str, bytes)) or not isinstance(raw_group, Sequence):
-            continue
-        group = [str(value).strip().lower() for value in raw_group if str(value).strip()]
-        if group:
-            groups.append(group)
-    return groups
-
-
-def target_rule_match_scope(rule: object) -> str:
-    raw_scope = (
-        rule.get("match_scope", "title")
-        if isinstance(rule, dict)
-        else getattr(rule, "match_scope", "title")
-    )
-    scope = str(raw_scope).strip().lower()
-    return scope or "title"
-
-
-def target_rule_minimum_keyword_matches(rule: object) -> int:
-    raw_value = (
-        rule.get("minimum_keyword_matches", 1)
-        if isinstance(rule, dict)
-        else getattr(rule, "minimum_keyword_matches", 1)
-    )
-    try:
-        return max(1, int(raw_value))
-    except (TypeError, ValueError):
-        return 1
+def _rule_matches(haystacks: _Haystacks, rule: TargetRule) -> bool:
+    haystack = haystacks.for_scope(rule.match_scope or "title")
+    if rule.keyword_groups:
+        # Every group must contribute a hit: the groups are AND-ed so a rule can
+        # require, say, a domain term *and* a role term rather than either one.
+        return all(any_keyword_matches(group, haystack) for group in rule.keyword_groups)
+    minimum = max(1, rule.minimum_keyword_matches)
+    if minimum == 1:
+        return any_keyword_matches(rule.keywords, haystack)
+    return count_matching_keywords(rule.keywords, haystack) >= minimum
 
 
 def rule_haystack(title: str, description: str, match_scope: str) -> str:
-    title_text = normalize_text(title)
-    combined_text = normalize_text(" ".join(part for part in [title, description] if part))
-    return combined_text if match_scope == "combined" else title_text
+    return _Haystacks(title, description).for_scope(match_scope)
 
 
 def keyword_matches_text(keyword: str, haystack: str) -> bool:
-    normalized_keyword = normalize_text(keyword)
+    pattern = _keyword_pattern(normalize_text(keyword))
+    return pattern is not None and pattern.search(haystack) is not None
+
+
+def any_keyword_matches(keywords: Sequence[str], haystack: str) -> bool:
+    """True when any keyword occurs, in one pass instead of one pass each.
+
+    Searching a long description once per configured keyword was the single
+    largest cost in evaluating a candidate: one real profile carries 46 rule
+    keywords, so a description was scanned up to 46 times to answer one
+    question. A single alternation answers it in one scan, with identical
+    word-boundary semantics.
+    """
+    pattern = _keyword_group_pattern(tuple(keywords))
+    return pattern is not None and pattern.search(haystack) is not None
+
+
+def count_matching_keywords(keywords: Sequence[str], haystack: str) -> int:
+    """How many distinct keywords occur, for rules with a minimum-match count.
+
+    Still one scan: the alternation captures every hit, and distinct keywords
+    are recovered from the matched text.
+    """
+    pattern = _keyword_group_pattern(tuple(keywords))
+    if pattern is None:
+        return 0
+    found = {match.casefold() for match in pattern.findall(haystack)}
+    if not found:
+        return 0
+    return sum(1 for keyword in {normalize_text(k) for k in keywords} if keyword in found)
+
+
+@lru_cache(maxsize=1024)
+def _keyword_group_pattern(keywords: tuple[str, ...]) -> re.Pattern[str] | None:
+    normalized = sorted(
+        {text for keyword in keywords if (text := normalize_text(keyword))},
+        key=len,
+        reverse=True,
+    )
+    if not normalized:
+        return None
+    alternation = "|".join(re.escape(text).replace(r"\ ", r"\s+") for text in normalized)
+    return re.compile(rf"(?<![a-z0-9])(?:{alternation})(?![a-z0-9])")
+
+
+@lru_cache(maxsize=4096)
+def _keyword_pattern(normalized_keyword: str) -> re.Pattern[str] | None:
+    """Compile once per distinct keyword.
+
+    Configured keyword lists are long and reused for every candidate, so
+    rebuilding the pattern string on each call thrashed the interpreter's own
+    small regex cache.
+    """
     if not normalized_keyword:
-        return False
+        return None
     escaped = re.escape(normalized_keyword).replace(r"\ ", r"\s+")
-    pattern = rf"(?<![a-z0-9]){escaped}(?![a-z0-9])"
-    return re.search(pattern, haystack) is not None
+    return re.compile(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])")
 
 
 def normalize_text(value: str) -> str:
@@ -160,5 +195,4 @@ def company_matches_allowlist(
 ) -> bool:
     if not allowed_company_names:
         return True
-    normalized_company = normalize_text(company_name)
-    return any(keyword_matches_text(name, normalized_company) for name in allowed_company_names)
+    return any_keyword_matches(allowed_company_names, normalize_text(company_name))

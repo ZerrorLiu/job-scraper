@@ -1,76 +1,36 @@
 from __future__ import annotations
 
 import argparse
-import inspect
-import json
 import sys
-import time
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 from job_scraper.adapters.sinks.csv import CsvSink
-from job_scraper.adapters.sinks.notion_payload import (
-    build_children as _build_children,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    build_daily_properties as _build_daily_properties,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    build_job_title as _build_job_title,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    location_options as _location_options,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    notion_language_name as _notion_language_name,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    notion_page_company_name as _notion_page_company_name,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    notion_page_job_title_and_url as _notion_page_job_title_and_url,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    notion_page_status as _notion_page_status,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    render_location as _render_location,
-)
-from job_scraper.adapters.sinks.notion_payload import (
-    rich_text_property as _rich_text_property,
-)
+from job_scraper.adapters.sinks.notion_payload import na_value
 from job_scraper.adapters.sinks.notion_workflow import (
-    configured_data_source_ids,
     import_processed_statuses,
-    publish_daily,
 )
+from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.adapters.storage.sqlite_v2 import WorkspaceDatabase
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
-from job_scraper.application.aggregation import (
-    AcceptedJob,
-    merge_accepted_job,
-)
-from job_scraper.application.aggregation import (
-    accepted_database_ids as _accepted_database_ids,
-)
-from job_scraper.application.aggregation import (
-    add_source_provenance as _add_source_provenance,
-)
-from job_scraper.application.aggregation import (
-    normalize_list as _normalize_list,
-)
-from job_scraper.application.aggregation import (
-    unique_list as _unique_list,
-)
+from job_scraper.application.aggregation import AcceptedJob
 from job_scraper.application.process_candidate import ProcessJobCandidate
+from job_scraper.application.run_plan import (
+    DEFAULT_SINK_IDS,
+    RunPlan,
+    acquisition_produced_nothing,
+    effective_post_age_hours,
+    resolve_export_destination,
+    resolve_profile_id,
+    run_exit_code,
+    select_sink_ids,
+)
 from job_scraper.application.run_profile import CandidateEvent, RunProfileSource
 from job_scraper.cli.console import (
     LiveRunTable,
@@ -86,24 +46,15 @@ from job_scraper.collectors.base import SearchWindow
 from job_scraper.collectors.linkedin import LinkedInProgressEvent
 from job_scraper.config import AppConfig, FiltersConfig, load_config
 from job_scraper.configuration import find_profile_definition
+from job_scraper.configuration.brightdata import brightdata_direct_collection_enabled
 from job_scraper.configuration.composition import apply_profile_to_runtime
-from job_scraper.domain.identity import canonical_identity
-from job_scraper.integrations.notion import NotionClient, normalize_status_name
-from job_scraper.models import JobRecord, RawJobRecord
-from job_scraper.pipeline.context import EvaluationContext
-from job_scraper.pipeline.export_filter import (
-    ExportRow,
-    export_row_matches_policy,
-)
-from job_scraper.pipeline.export_filter import (
-    export_row_is_germany as _export_row_is_germany,
-)
+from job_scraper.configuration.models import ProfileDefinition
+from job_scraper.configuration.policy import policy_from_legacy
+from job_scraper.domain.models import RawJobRecord
+from job_scraper.integrations.notion import NotionClient
 from job_scraper.pipeline.normalize import (
-    looks_like_target_countries,
     normalize_candidate,
-    parse_country_codes,
 )
-from job_scraper.pipeline.policy_adapter import policy_from_legacy
 from job_scraper.pipeline.steps import default_pipeline
 from job_scraper.ports.sinks import PublishContext
 from job_scraper.ports.sources import JobSource, SourceCapabilities
@@ -204,12 +155,20 @@ def main(
 ) -> int:
     load_dotenv()
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    if args.enable_indeed and not brightdata_direct_collection_enabled():
+        print(
+            "Bright Data direct collection is suspended; set "
+            "BRIGHTDATA_DIRECT_COLLECTION_ENABLED=true only after approval.",
+            file=sys.stderr,
+        )
+        return 2
     config = load_config(args.config)
     profile = find_profile_definition(args.config)
     if profile is not None:
         apply_profile_to_runtime(profile, config)
     if args.enable_indeed:
         enable_indeed_source(config)
+    _disable_brightdata_when_suspended(config)
     if args.search_queries:
         override_search_queries(config, args.search_queries)
     track_label = display_track_label(config.project.track_label)
@@ -228,20 +187,29 @@ def main(
         print(f"Initialized database at {config.project.database_path}")
         return 0
 
-    sources = _invoke_build_collectors(config, runtime, track_label)
+    sources = build_collectors(config, runtime=runtime, track_label=track_label)
     try:
         validate_collector_runtimes(sources)
     except RuntimeError as exc:
         log_error(f"Runtime preflight failed | {exc}")
         return 2
 
+    profile_id = resolve_profile_id(
+        profile.profile_id if profile is not None else None,
+        track_label,
+    )
     notion = NotionClient(config.notion)
+    notion_binding_store = NotionDatabaseBindingStore(
+        config.project.database_path.parent / "notion_database_bindings.json"
+    )
 
     if notion.enabled() and not args.skip_notion:
         synced_statuses = sync_processed_statuses_from_notion(
             database,
             notion,
             table_title=track_table_title(config.notion.daily_table_prefix, track_label),
+            binding_store=notion_binding_store,
+            profile_id=profile_id,
         )
         log_line(f"Notion | Imported processed statuses {synced_statuses}")
 
@@ -328,7 +296,7 @@ def main(
             )
         result = source_runner.execute(
             _BufferedSource(execution),
-            profile_id=profile.profile_id if profile is not None else track_label,
+            profile_id=profile_id,
             started_at=window.started_at,
             overlap_hours=window.overlap_hours,
             max_post_age_hours=execution.max_post_age_hours,
@@ -370,53 +338,40 @@ def main(
             f"Filtered {stats.jobs_filtered} | Main filters: {format_reasons(Counter(result.reject_counts))}"
         )
 
-    if collection_failed and not accepted_jobs:
+    if acquisition_produced_nothing(
+        collection_failed=collection_failed,
+        accepted_count=len(accepted_jobs),
+    ):
         log_error(f"Run failed | Track: {track_label} | No jobs reached downstream synchronization")
         return 1
 
-    export_destination = resolve_export_destination(
-        explicit_destination=args.export_csv,
-        skip_export=args.skip_export,
-        timezone_name=config.project.timezone,
-        export_dir=config.project.export_dir,
-        started_at=window.started_at,
-        file_prefix=config.project.export_filename_prefix,
-    )
-    sink_ids = list(profile.sinks if profile is not None else ("csv", "notion_daily"))
-    if args.skip_export or export_destination is None:
-        sink_ids = [sink_id for sink_id in sink_ids if sink_id != "csv"]
-    if args.skip_notion:
-        sink_ids = [sink_id for sink_id in sink_ids if sink_id != "notion_daily"]
-    sink_policy = policy_from_legacy(
-        config.filters,
-        max_post_age_hours=config.project.recent_post_age_hours,
-    )
+    plan = build_run_plan(args, config, profile, started_at=window.started_at)
+    export_destination = plan.export_destination
     publish_context = PublishContext(
-        run_id=f"profile:{profile.profile_id if profile is not None else track_label}",
-        profile_id=profile.profile_id if profile is not None else track_label,
+        run_id=f"profile:{plan.profile_id}",
+        profile_id=plan.profile_id,
     )
     publish_had_errors = False
-    for sink_id in sink_ids:
+    for sink_id in plan.sink_ids:
         sink = build_sink(
             registry,
             sink_id,
             SinkBuildRequest(
                 repository=database,
-                policy=sink_policy,
+                policy=plan.sink_policy,
                 started_at=window.started_at,
                 profile_id=publish_context.profile_id,
                 profile_label=track_label,
                 timezone_name=config.project.timezone,
                 csv_destination=export_destination,
+                retained_exports=config.project.retained_exports,
                 notion_client=notion,
                 notion_table_prefix=config.notion.daily_table_prefix,
-                services={"logger": log_line},
+                notion_binding_store=notion_binding_store,
+                logger=log_line,
             ),
         )
-        result = sink.publish(
-            cast(Sequence, list(accepted_jobs.values())),
-            publish_context,
-        )
+        result = sink.publish(list(accepted_jobs.values()), publish_context)
         if sink_id == "csv":
             if result.published:
                 log_line(f"Export | Wrote {result.published} rows to {export_destination}")
@@ -432,7 +387,48 @@ def main(
                 log_line(f"{sink_id} | Failed | {error}")
 
     log_line(f"Run finished | Track: {track_label} | Accepted total: {len(accepted_jobs)}")
-    return 1 if collection_failed or publish_had_errors else 0
+    return run_exit_code(
+        collection_failed=collection_failed,
+        publish_had_errors=publish_had_errors,
+        accepted_count=len(accepted_jobs),
+    )
+
+
+def build_run_plan(
+    args: argparse.Namespace,
+    config: AppConfig,
+    profile: ProfileDefinition | None,
+    *,
+    started_at: datetime,
+) -> RunPlan:
+    """Decide what this run will do, before it does anything."""
+    track_label = display_track_label(config.project.track_label)
+    export_destination = resolve_export_destination(
+        explicit_destination=args.export_csv,
+        skip_export=args.skip_export,
+        timezone_name=config.project.timezone,
+        export_dir=config.project.export_dir,
+        started_at=started_at,
+        file_prefix=config.project.export_filename_prefix,
+    )
+    return RunPlan(
+        profile_id=resolve_profile_id(
+            profile.profile_id if profile is not None else None,
+            track_label,
+        ),
+        track_label=track_label,
+        sink_ids=select_sink_ids(
+            profile.sinks if profile is not None else DEFAULT_SINK_IDS,
+            skip_export=args.skip_export,
+            skip_notion=args.skip_notion,
+            has_export_destination=export_destination is not None,
+        ),
+        export_destination=export_destination,
+        sink_policy=policy_from_legacy(
+            config.filters,
+            max_post_age_hours=config.project.recent_post_age_hours,
+        ),
+    )
 
 
 def _initialize_workspace_database(
@@ -467,41 +463,19 @@ def build_collectors(
                     http=config.http,
                     settings=settings,
                     company_names=tuple(config.filters.company_names),
-                    services={
-                        "request_coalescer": runtime.request_coalescer,
-                        "request_gate": runtime.linkedin_request_gate,
-                        "snapshot_database": Database(config.project.database_path),
-                        "event_logger": (
-                            lambda message: _update_indeed_progress(
-                                runtime.dashboard,
-                                track_label,
-                                message,
-                            )
-                        ),
-                        "progress_callback": (
-                            lambda event: _update_linkedin_progress(
-                                runtime.dashboard,
-                                track_label,
-                                event,
-                            )
-                        ),
-                    },
+                    request_coalescer=runtime.request_coalescer,
+                    request_gate=runtime.linkedin_request_gate,
+                    snapshot_database=Database(config.project.database_path),
+                    event_logger=lambda message: _update_indeed_progress(
+                        runtime.dashboard, track_label, message
+                    ),
+                    progress_callback=lambda event: _update_linkedin_progress(
+                        runtime.dashboard, track_label, event
+                    ),
                 ),
             )
         )
     return collectors
-
-
-def _invoke_build_collectors(
-    config: AppConfig,
-    runtime: RuntimeServices,
-    track_label: str,
-) -> list[JobSource]:
-    """Keep simple adapter test doubles compatible with the extended composition API."""
-
-    if "runtime" in inspect.signature(build_collectors).parameters:
-        return build_collectors(config, runtime=runtime, track_label=track_label)
-    return build_collectors(config)
 
 
 def enable_indeed_source(config: AppConfig) -> None:
@@ -521,6 +495,15 @@ def enable_indeed_source(config: AppConfig) -> None:
         source.locations = _first_search_matrix(config, "locations")
     if not source.search_queries:
         raise ValueError("Indeed cannot be enabled because the track has no search queries")
+
+
+def _disable_brightdata_when_suspended(config: AppConfig) -> None:
+    """Keep an accidentally selected paid source from issuing live requests."""
+    if brightdata_direct_collection_enabled():
+        return
+    source = config.sources.get("indeed_brightdata")
+    if source is not None:
+        source.enabled = False
 
 
 def override_search_queries(config: AppConfig, queries: list[str]) -> None:
@@ -560,98 +543,6 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def effective_post_age_hours(
-    configured_hours: int, override_days: int | None, ignore_post_age: bool
-) -> int:
-    if ignore_post_age:
-        return 0
-    if override_days is not None:
-        return override_days * 24
-    return configured_hours
-
-
-def resolve_export_destination(
-    explicit_destination: str | None,
-    skip_export: bool,
-    timezone_name: str,
-    export_dir: Path,
-    started_at: datetime,
-    file_prefix: str,
-) -> Path | None:
-    if skip_export:
-        return None
-    if explicit_destination:
-        return Path(explicit_destination)
-    return build_daily_export_path(
-        export_dir=export_dir,
-        timezone_name=timezone_name,
-        started_at=started_at,
-        file_prefix=file_prefix,
-    )
-
-
-def build_daily_export_path(
-    export_dir: Path, timezone_name: str, started_at: datetime, file_prefix: str = "jobs"
-) -> Path:
-    local_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-    normalized_prefix = " ".join((file_prefix or "jobs").split()).strip().replace(" ", "_")
-    return export_dir / f"{normalized_prefix}_{local_date}.csv"
-
-
-def build_daily_table_title(
-    timezone_name: str, started_at: datetime, table_prefix: str = ""
-) -> str:
-    local_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-    normalized_prefix = " ".join((table_prefix or "").split()).strip()
-    return f"{normalized_prefix} {local_date}".strip()
-
-
-def rejection_reason(
-    job: JobRecord,
-    started_at: datetime,
-    filters: FiltersConfig,
-    max_post_age_hours: int = 24,
-) -> str | None:
-    policy = policy_from_legacy(
-        filters,
-        max_post_age_hours=max_post_age_hours,
-    )
-    decision = default_pipeline().evaluate(
-        job,
-        EvaluationContext(
-            profile_id="legacy",
-            started_at=started_at,
-            policy=policy,
-        ),
-    )
-    return None if decision.reason is None else decision.reason.value
-
-
-def job_matches_target_countries(job: JobRecord, filters: FiltersConfig) -> bool:
-    if looks_like_target_countries(
-        job.location_raw,
-        job.country,
-        filters.country,
-        raw_country=job.raw_payload.get("location_country"),
-    ):
-        return True
-    return search_location_matches_target_country(
-        job.raw_payload.get("search_location"), job.country, filters
-    )
-
-
-def search_location_matches_target_country(
-    search_location: object, country: str, filters: FiltersConfig
-) -> bool:
-    if not country or country not in parse_country_codes(filters.country):
-        return False
-    return looks_like_target_countries(str(search_location or ""), "", filters.country)
-
-
-def country_rejection_reason(filters: FiltersConfig) -> str:
-    return "not_target_country"
-
-
 def export_csv(database: Database, destination: Path, filters: FiltersConfig) -> None:
     sink = CsvSink(database, destination, policy_from_legacy(filters))
     result = sink.publish(
@@ -664,127 +555,27 @@ def export_csv(database: Database, destination: Path, filters: FiltersConfig) ->
     log_line(f"Export | Wrote {result.published} rows to {destination}")
 
 
-def sync_daily_notion(
-    database: Database,
-    jobs: list[AcceptedJob],
-    notion: NotionClient,
-    timezone_name: str,
-    started_at: datetime,
-    table_prefix: str,
-    track_label: str,
-) -> None:
-    publish_daily(
-        database,
-        jobs,
-        notion,
-        timezone_name,
-        started_at,
-        table_prefix,
-        track_label,
-        logger=log_line,
-        sleeper=time.sleep,
-    )
-
-
 def sync_processed_statuses_from_notion(
     database: Database,
     notion: NotionClient,
     *,
     table_title: str = "",
+    binding_store: NotionDatabaseBindingStore | None = None,
+    profile_id: str = "",
 ) -> int:
     return import_processed_statuses(
         database,
         notion,
         table_title=table_title,
+        binding_store=binding_store,
+        profile_id=profile_id,
         error_logger=log_error,
     )
-
-
-def configured_notion_data_source_ids(notion: NotionClient) -> list[str]:
-    return configured_data_source_ids(notion)
 
 
 def track_table_title(table_prefix: str, track_label: str) -> str:
     prefix = " ".join((table_prefix or track_label).split()).strip()
     return f"{prefix} Jobs"
-
-
-def build_daily_properties(
-    job: JobRecord,
-    property_types: dict[str, str] | None = None,
-    *,
-    found_date: date | None = None,
-) -> dict:
-    return _build_daily_properties(job, property_types, found_date=found_date)
-
-
-def build_job_title(job: JobRecord) -> dict:
-    return _build_job_title(job)
-
-
-def build_children(job: JobRecord) -> list[dict]:
-    return _build_children(job)
-
-
-def rich_text_property(value: str) -> dict:
-    return _rich_text_property(value)
-
-
-def notion_language_name(value: str) -> str:
-    return _notion_language_name(value)
-
-
-def notion_page_status(page: dict) -> str:
-    return _notion_page_status(page)
-
-
-def notion_page_job_title_and_url(page: dict) -> tuple[str, str]:
-    return _notion_page_job_title_and_url(page)
-
-
-def notion_page_company_name(page: dict) -> str:
-    return _notion_page_company_name(page)
-
-
-def is_processed_application_status(value: str) -> bool:
-    return normalize_status_name(value) in PROCESSED_APPLICATION_STATUSES
-
-
-def na_value(value: str | None) -> str:
-    cleaned = " ".join((value or "").split())
-    return cleaned if cleaned else "N/A"
-
-
-def render_location(job: JobRecord) -> str:
-    return _render_location(job)
-
-
-def location_options(job: JobRecord) -> list[str]:
-    return _location_options(job)
-
-
-def merge_daily_job(accepted_jobs: dict[str, AcceptedJob], job: JobRecord, job_id: str) -> bool:
-    return merge_accepted_job(accepted_jobs, job, job_id)
-
-
-def daily_job_identity(job: JobRecord) -> str:
-    return canonical_identity(job)
-
-
-def add_source_provenance(target: JobRecord, incoming: JobRecord) -> None:
-    _add_source_provenance(target, incoming)
-
-
-def accepted_database_ids(accepted: AcceptedJob) -> list[str]:
-    return _accepted_database_ids(accepted)
-
-
-def normalize_list(values: object) -> list[str]:
-    return _normalize_list(values)
-
-
-def unique_list(values: list[str]) -> list[str]:
-    return _unique_list(values)
 
 
 def _log_candidate_event(
@@ -943,41 +734,6 @@ def determine_post_age_hours(
     if database.has_source_observations(source_name):
         return recent_post_age_hours
     return bootstrap_post_age_hours
-
-
-def uses_first_seen_freshness(job: JobRecord) -> bool:
-    freshness_basis = " ".join(
-        str(job.raw_payload.get("freshness_basis", "")).strip().lower().split()
-    )
-    return freshness_basis == "first_seen"
-
-
-def export_row_is_germany(row: ExportRow) -> bool:
-    return _export_row_is_germany(row)
-
-
-def export_row_matches_country(row: ExportRow, filters: FiltersConfig) -> bool:
-    location_text = str(row["location_text"] or "")
-    raw_payload_text = str(row["raw_payload_json"] or "")
-    raw_country = ""
-    search_location = ""
-    if raw_payload_text:
-        try:
-            payload = json.loads(raw_payload_text)
-        except json.JSONDecodeError:
-            payload = {}
-        raw_country = str(payload.get("location_country") or "").strip()
-        search_location = str(payload.get("search_location") or "").strip()
-    country = str(row["country_code"] or "")
-    if looks_like_target_countries(
-        location_text, country, filters.country, raw_country=raw_country
-    ):
-        return True
-    return search_location_matches_target_country(search_location, country, filters)
-
-
-def export_row_matches_track(row: ExportRow, filters: FiltersConfig) -> bool:
-    return export_row_matches_policy(row, policy_from_legacy(filters))
 
 
 if __name__ == "__main__":

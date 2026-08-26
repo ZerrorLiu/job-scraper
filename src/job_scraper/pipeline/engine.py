@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from job_scraper.domain.context import EvaluationContext
 from job_scraper.domain.decisions import Decision
 from job_scraper.domain.models import JobRecord
-from job_scraper.pipeline.context import EvaluationContext
 from job_scraper.ports.processors import PipelineStep
 
 

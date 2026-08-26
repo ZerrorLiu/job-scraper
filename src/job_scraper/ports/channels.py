@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Protocol
-
-from job_scraper.domain.models import RawJobRecord
 
 
 class JobChannel(Protocol):
+    """A non-search candidate stream a profile can declare.
+
+    Unlike a Source, a Channel is not polled by the profile runner: the channel
+    id is a declaration that a dedicated job owns that stream (today, the
+    recommendation-mailbox ingest). The contract is therefore identity plus
+    preflight, not iteration.
+    """
+
     channel_id: str
 
     def validate_runtime(self) -> None: ...
-
-    def read(self) -> Iterable[RawJobRecord]: ...

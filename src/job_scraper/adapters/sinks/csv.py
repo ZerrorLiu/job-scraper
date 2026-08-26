@@ -7,10 +7,17 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, cast
 
-from job_scraper.domain.models import JobRecord
+from job_scraper.domain.models import AcceptedJob
 from job_scraper.domain.policies import FilterPolicy
 from job_scraper.pipeline.export_filter import ExportRow, export_row_matches_policy
 from job_scraper.ports.sinks import PublishContext, PublishResult
+
+# Each run rewrites the full cumulative history into a date-stamped file, so the
+# directory grows by roughly one whole export per run and never shrinks.
+# Retention is available but off by default: enabling it deletes files a user
+# already has, which is their call to make, not a silent upgrade side effect.
+# Set `[project] retained_exports` to opt in.
+DEFAULT_RETAINED_EXPORTS = 0
 
 
 class CumulativeJobReader(Protocol):
@@ -30,16 +37,21 @@ class CsvSink:
         reader: CumulativeJobReader,
         destination: Path,
         policy: FilterPolicy,
+        *,
+        retained_exports: int = DEFAULT_RETAINED_EXPORTS,
     ) -> None:
         self._reader = reader
         self._destination = destination
         self._policy = policy
+        self._retained_exports = retained_exports
 
     def publish(
         self,
-        jobs: Sequence[JobRecord],
+        jobs: Sequence[AcceptedJob],
         context: PublishContext,
     ) -> PublishResult:
+        # This sink is cumulative: its content is the whole stored history
+        # re-filtered, not just the jobs this run accepted.
         del jobs, context
         languages = ["English"] if self._policy.require_english else None
         rows = self._reader.export_jobs(languages=languages)
@@ -69,4 +81,35 @@ class CsvSink:
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
+        self._prune_previous_exports()
         return PublishResult(sink_id=self.sink_id, published=len(rows))
+
+    def _prune_previous_exports(self) -> None:
+        """Keep only the newest `retained_exports` files of this export series.
+
+        Scoped to the sibling files this sink itself writes -- the destination's
+        own `<prefix>_<date>.csv` shape -- so it can never remove another
+        profile's exports or an unrelated file a user put in the directory.
+        """
+        if self._retained_exports <= 0:
+            return
+        stem = self._destination.stem
+        prefix = stem.rsplit("_", 1)[0] if "_" in stem else stem
+        siblings = sorted(
+            (
+                path
+                for path in self._destination.parent.glob(f"{prefix}_*.csv")
+                if path.is_file() and _is_dated_export(path, prefix)
+            ),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        for stale in siblings[self._retained_exports :]:
+            if stale != self._destination:
+                stale.unlink(missing_ok=True)
+
+
+def _is_dated_export(path: Path, prefix: str) -> bool:
+    suffix = path.stem[len(prefix) + 1 :]
+    parts = suffix.split("-")
+    return len(parts) == 3 and all(part.isdigit() for part in parts)

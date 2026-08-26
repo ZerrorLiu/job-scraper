@@ -1,10 +1,33 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
-from job_scraper.configuration.models import ProfileDefinition
+
+class SearchProfile(Protocol):
+    """The slice of a profile the planner needs.
+
+    Structural rather than concrete so the application layer does not have to
+    import the configuration layer that happens to load these values today.
+    """
+
+    @property
+    def profile_id(self) -> str: ...
+
+    @property
+    def enabled(self) -> bool: ...
+
+    @property
+    def base_queries(self) -> tuple[str, ...]: ...
+
+    @property
+    def early_career_modifiers(self) -> tuple[str, ...]: ...
+
+    @property
+    def watchlists(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +64,7 @@ class _MutableIntent:
 
 
 def build_search_plan(
-    profiles: list[ProfileDefinition] | tuple[ProfileDefinition, ...],
+    profiles: Sequence[SearchProfile],
     watchlists: dict[str, WatchlistDefinition] | None = None,
     *,
     include_disabled: bool = False,
@@ -79,7 +102,7 @@ def build_search_plan(
     )
 
 
-def expand_profile_queries(profile: ProfileDefinition) -> tuple[str, ...]:
+def expand_profile_queries(profile: SearchProfile) -> tuple[str, ...]:
     queries: list[str] = []
     for base_query in profile.base_queries:
         queries.append(base_query)

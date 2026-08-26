@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import inspect
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -10,13 +9,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
+from job_scraper.application.run_plan import build_daily_export_path
 from job_scraper.cli.console import LiveRunTable, display_track_label
 from job_scraper.config import load_config
-from job_scraper.configuration import available_profiles, load_profile_definition
+from job_scraper.configuration import (
+    available_profiles,
+    get_config_root,
+    load_profile_definition,
+)
 from job_scraper.jobs import ingest_email_recommendations, run_daily
 from job_scraper.storage.db import Database
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -25,7 +27,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--config-dir",
-        default=str(PROJECT_ROOT / "config"),
+        # Resolved through the shared helper so the documented
+        # JOB_SCRAPER_CONFIG_DIR is actually honoured. Hard-coding the repo's
+        # own ./config here made the env var silently ineffective for anyone
+        # invoking this module directly.
+        default=str(get_config_root()),
         help="Private configuration root. Defaults to JOB_SCRAPER_CONFIG_DIR or ./config.",
     )
     config_group = parser.add_mutually_exclusive_group()
@@ -252,16 +258,6 @@ def _invoke_email_prepare(
     return ingest_email_recommendations.prepare(argv, dashboard=dashboard)
 
 
-def _invoke_email_ingest(
-    argv: list[str],
-    dashboard: LiveRunTable | None,
-) -> int:
-    parameters = inspect.signature(ingest_email_recommendations.main).parameters
-    if "dashboard" in parameters:
-        return ingest_email_recommendations.main(argv, dashboard=dashboard)
-    return ingest_email_recommendations.main(argv)
-
-
 def configured_email_lookback_days(config_paths: list[Path]) -> int:
     """Use one conservative mailbox window for all selected profiles."""
     configured_hours: list[int] = []
@@ -279,11 +275,7 @@ def configured_email_lookback_days(config_paths: list[Path]) -> int:
 
 
 def _invoke_run_daily(argv: list[str], runtime: run_daily.RuntimeServices) -> int:
-    """Call the modern entry point while keeping compatibility test doubles simple."""
-
-    if "runtime" in inspect.signature(run_daily.main).parameters:
-        return run_daily.main(argv, runtime=runtime)
-    return run_daily.main(argv)
+    return run_daily.main(argv, runtime=runtime)
 
 
 def refresh_exports(config_paths: list[Path]) -> bool:
@@ -296,7 +288,7 @@ def refresh_exports(config_paths: list[Path]) -> bool:
             continue
         try:
             config = load_config(config_path)
-            destination = run_daily.build_daily_export_path(
+            destination = build_daily_export_path(
                 export_dir=config.project.export_dir,
                 timezone_name=config.project.timezone,
                 started_at=started_at,

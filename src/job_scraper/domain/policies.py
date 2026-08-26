@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,3 +35,18 @@ class FilterPolicy:
     allowed_description_languages: tuple[str, ...] = ()
     minimum_english_ratio: float = 0.85
     freshness: FreshnessPolicy = field(default_factory=FreshnessPolicy)
+
+
+def title_scoped(policy: FilterPolicy) -> FilterPolicy:
+    """Require role evidence in the title alone.
+
+    Used wherever a full job description is unavailable, so a keyword that only
+    appears in surrounding boilerplate cannot stand in for the actual role.
+    """
+    return replace(
+        policy,
+        acceptance_scope="title",
+        acceptance_rules=tuple(
+            replace(rule, match_scope="title") for rule in policy.acceptance_rules
+        ),
+    )

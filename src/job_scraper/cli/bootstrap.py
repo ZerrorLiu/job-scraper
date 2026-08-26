@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# See pipeline.steps.DEFAULT_STEPS for why this order is what it is.
 DEFAULT_PIPELINE = (
     "country",
     "freshness",

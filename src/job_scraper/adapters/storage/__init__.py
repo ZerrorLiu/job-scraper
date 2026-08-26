@@ -1,4 +1,12 @@
-from job_scraper.adapters.storage.sqlite_v1 import SQLiteV1Repository
+from job_scraper.adapters.storage.notion_bindings import (
+    NotionDatabaseBinding,
+    NotionDatabaseBindingStore,
+)
 from job_scraper.adapters.storage.sqlite_v2 import MigrationReport, WorkspaceDatabase
 
-__all__ = ["MigrationReport", "SQLiteV1Repository", "WorkspaceDatabase"]
+__all__ = [
+    "MigrationReport",
+    "NotionDatabaseBinding",
+    "NotionDatabaseBindingStore",
+    "WorkspaceDatabase",
+]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 
 ENGLISH_HINTS = {
     "about",
@@ -87,43 +88,54 @@ def tokenize_words(text: str) -> list[str]:
 MINIMUM_LANGUAGE_HINT_HITS = 3
 
 
+def language_hint_counts(text: str) -> tuple[int, int]:
+    """Count English and German hint words in one pass over the tokens."""
+    english_hits = 0
+    german_hits = 0
+    for token in tokenize_words(text):
+        if token in ENGLISH_HINTS:
+            english_hits += 1
+        elif token in GERMAN_HINTS:
+            german_hits += 1
+    return english_hits, german_hits
+
+
+def _ratios(english_hits: int, german_hits: int) -> tuple[float, float]:
+    total = english_hits + german_hits
+    if total < MINIMUM_LANGUAGE_HINT_HITS:
+        return 0.0, 0.0
+    return round(english_hits / total, 4), round(german_hits / total, 4)
+
+
 def english_ratio(text: str) -> float:
-    tokens = tokenize_words(text)
-    if not tokens:
-        return 0.0
-    english_hits = sum(1 for token in tokens if token in ENGLISH_HINTS)
-    german_hits = sum(1 for token in tokens if token in GERMAN_HINTS)
-    if english_hits + german_hits < MINIMUM_LANGUAGE_HINT_HITS:
-        return 0.0
-    score = english_hits / max(english_hits + german_hits, 1)
-    return round(score, 4)
+    return _ratios(*language_hint_counts(text))[0]
 
 
 def german_ratio(text: str) -> float:
-    tokens = tokenize_words(text)
-    if not tokens:
-        return 0.0
-    english_hits = sum(1 for token in tokens if token in ENGLISH_HINTS)
-    german_hits = sum(1 for token in tokens if token in GERMAN_HINTS)
-    if english_hits + german_hits < MINIMUM_LANGUAGE_HINT_HITS:
-        return 0.0
-    score = german_hits / max(english_hits + german_hits, 1)
-    return round(score, 4)
+    return _ratios(*language_hint_counts(text))[1]
+
+
+def describe_language(text: str) -> tuple[str, float]:
+    """Return the language label and English ratio from a single tokenization.
+
+    Callers need both together, and scanning the whole description once per
+    value meant a long posting was tokenized four times over.
+    """
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return "Unknown", 0.0
+    en, de = _ratios(*language_hint_counts(cleaned))
+    if en >= 0.75 and de <= 0.25:
+        return "English", en
+    if de >= 0.6 and de > en:
+        return "German", en
+    if en == 0 and de == 0:
+        return "Unknown", en
+    return "Mixed", en
 
 
 def classify_description_language(text: str) -> str:
-    cleaned = " ".join(text.split())
-    if not cleaned:
-        return "Unknown"
-    en = english_ratio(cleaned)
-    de = german_ratio(cleaned)
-    if en >= 0.75 and de <= 0.25:
-        return "English"
-    if de >= 0.6 and de > en:
-        return "German"
-    if en == 0 and de == 0:
-        return "Unknown"
-    return "Mixed"
+    return describe_language(text)[0]
 
 
 def is_english_job(language: str, ratio: float, threshold: float) -> bool:
@@ -153,19 +165,44 @@ def is_allowed_description_language(
 
 
 def matches_requirement_patterns(text: str, patterns: tuple[str, ...]) -> bool:
-    lowered = normalize_language_text(text)
-    for pattern in patterns:
-        normalized_pattern = normalize_language_text(pattern)
-        if not normalized_pattern:
-            continue
-        escaped = re.escape(normalized_pattern).replace(r"\ ", r"\s+")
-        regex = rf"(?<![a-z0-9]){escaped}(?![a-z0-9])"
-        if re.search(regex, lowered) is not None:
-            return True
-    return False
+    """True when any excluded requirement phrase appears in the text.
+
+    One alternation over one normalized copy of the text, rather than
+    re-normalizing each phrase and scanning the whole description once per
+    phrase. The phrases come from configuration and do not change between
+    candidates, so the compiled form is cached against them.
+    """
+    regex = _requirement_pattern(patterns)
+    if regex is None:
+        return False
+    return regex.search(normalize_language_text(text)) is not None
+
+
+@lru_cache(maxsize=256)
+def _requirement_pattern(patterns: tuple[str, ...]) -> re.Pattern[str] | None:
+    normalized = sorted(
+        {text for pattern in patterns if (text := normalize_language_text(pattern))},
+        key=len,
+        reverse=True,
+    )
+    if not normalized:
+        return None
+    alternation = "|".join(re.escape(text).replace(r"\ ", r"\s+") for text in normalized)
+    return re.compile(rf"(?<![a-z0-9])(?:{alternation})(?![a-z0-9])")
 
 
 def normalize_language_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", text.lower())
+    """Casefold, strip diacritics, and collapse whitespace.
+
+    Job descriptions are overwhelmingly ASCII, and for ASCII the NFKD pass and
+    the combining-mark filter are both no-ops -- but the filter still walks the
+    string one character at a time in Python, which made this the second
+    largest cost in evaluating a candidate. Skipping both for text that has no
+    non-ASCII character leaves the result identical.
+    """
+    lowered = text.lower()
+    if lowered.isascii():
+        return " ".join(lowered.split())
+    normalized = unicodedata.normalize("NFKD", lowered)
     without_marks = "".join(char for char in normalized if not unicodedata.combining(char))
     return " ".join(without_marks.split())
