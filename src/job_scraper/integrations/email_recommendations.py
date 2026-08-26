@@ -1312,16 +1312,34 @@ def detail_from_json_ld(payload: dict) -> JobDetail:
     )
 
 
+# Scanning for a key and its content in one pattern needs two unanchored `[^>]+`
+# runs plus a DOTALL `.*?`, so a page where the pair never matches makes the
+# engine retry every split of every `<meta` -- one real posting burned ten CPU
+# minutes inside a single `re.search` and starved the whole process, because
+# CPython cannot even deliver a signal while one C-level match is running.
+# Cutting the tag out first bounds every quantifier to that one tag.
+META_TAG_PATTERN = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+META_ATTRIBUTE_PATTERN = re.compile(
+    r"""([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""",
+    re.IGNORECASE,
+)
+
+
 def extract_meta_content(html: str, key: str) -> str:
-    escaped_key = re.escape(key)
-    patterns = [
-        rf'<meta[^>]+(?:property|name)=["\']{escaped_key}["\'][^>]+content=["\'](?P<content>.*?)["\']',
-        rf'<meta[^>]+content=["\'](?P<content>.*?)["\'][^>]+(?:property|name)=["\']{escaped_key}["\']',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return normalize_whitespace(unescape(match.group("content")))
+    wanted = key.casefold()
+    for tag in META_TAG_PATTERN.finditer(html):
+        attributes: dict[str, str] = {}
+        for attribute in META_ATTRIBUTE_PATTERN.finditer(tag.group(0)):
+            name = attribute.group(1).casefold()
+            double, single, bare = attribute.group(2, 3, 4)
+            value = double if double is not None else single if single is not None else bare
+            attributes[name] = value or ""
+        labels = (attributes.get("property", "").casefold(), attributes.get("name", "").casefold())
+        if wanted not in labels:
+            continue
+        content = attributes.get("content", "")
+        if content:
+            return normalize_whitespace(unescape(content))
     return ""
 
 
