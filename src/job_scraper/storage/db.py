@@ -12,6 +12,7 @@ from typing import Any
 from job_scraper.domain.locations import merge_locations
 from job_scraper.domain.models import JobHistorySnapshot, JobRecord, RunStats
 from job_scraper.domain.payload_sanitization import sanitize_job_payload
+from job_scraper.domain.screening_feed import Publication, ScreeningFeedRecord
 from job_scraper.pipeline.normalize import (
     normalize_title_for_dedupe,
     serialize_payload,
@@ -481,6 +482,59 @@ class Database:
                 item["raw_payload_json"] = serialize_payload(sanitize_job_payload(payload))
                 exported.append(item)
             return exported
+
+    def read_screening_feed(
+        self,
+        *,
+        profile_id: str,
+        since: datetime,
+        until_exclusive: datetime,
+    ) -> list[ScreeningFeedRecord]:
+        """Jobs first seen in a window, with publication and application state.
+
+        Both joins are LEFT joins on purpose. A job with no publication row is
+        real -- it was acquired but the sink has not run, or the sink is
+        disabled -- and a caller that wants only published jobs says so through
+        `select_screenable` rather than silently receiving a shorter list here.
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    j.id, j.normalized_title, j.company_name, j.city,
+                    j.description_language, j.canonical_url, j.source_url,
+                    j.description_full, j.first_seen_at,
+                    n.notion_page_id, n.notion_data_source_id,
+                    a.application_status
+                FROM jobs j
+                LEFT JOIN notion_sync_state n ON n.job_id = j.id
+                LEFT JOIN application_state a ON a.job_id = j.id
+                WHERE j.first_seen_at >= ? AND j.first_seen_at < ?
+                ORDER BY j.first_seen_at ASC, j.id ASC
+                """,
+                (since.isoformat(), until_exclusive.isoformat()),
+            ).fetchall()
+
+        return [
+            ScreeningFeedRecord(
+                job_id=str(row["id"]),
+                profile_id=profile_id,
+                title=row["normalized_title"] or "",
+                company=row["company_name"] or "",
+                location=row["city"] or "",
+                language=row["description_language"] or "",
+                url=row["canonical_url"] or row["source_url"] or "",
+                description=row["description_full"] or "",
+                first_seen_at=row["first_seen_at"] or "",
+                application_status=row["application_status"] or "new",
+                publication=Publication(
+                    sink_id="notion_daily" if row["notion_page_id"] else "",
+                    external_id=row["notion_page_id"] or "",
+                    container_id=row["notion_data_source_id"] or "",
+                ),
+            )
+            for row in rows
+        ]
 
     def has_jobs(self) -> bool:
         with self.connect() as connection:

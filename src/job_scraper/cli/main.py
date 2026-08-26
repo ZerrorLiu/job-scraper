@@ -21,6 +21,7 @@ from job_scraper.cli.database import (
     show_status,
 )
 from job_scraper.cli.doctor import has_errors, run_doctor
+from job_scraper.cli.feed import emit_screening_feed
 from job_scraper.config import load_config
 from job_scraper.configuration import (
     available_profiles,
@@ -28,6 +29,7 @@ from job_scraper.configuration import (
     load_profile_definition,
 )
 from job_scraper.configuration.composition import apply_profile_to_runtime
+from job_scraper.domain.screening_feed import SETTLED_STATUSES
 from job_scraper.jobs import (
     ingest_email_recommendations,
     run_all_tracks,
@@ -90,6 +92,42 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities.add_argument("--json", action="store_true")
     plan = subparsers.add_parser("plan", help="Preview the deduplicated search plan.")
     plan.add_argument("--show-queries", action="store_true")
+
+    feed = subparsers.add_parser(
+        "feed",
+        help="Emit acquired jobs, their publication, and their application status as JSON "
+        "for a downstream screener.",
+    )
+    feed.add_argument(
+        "--profile",
+        action="append",
+        dest="profiles",
+        help="Read only this profile. Repeatable. By default every enabled profile is read.",
+    )
+    feed.add_argument(
+        "--since-days",
+        type=int,
+        default=1,
+        help="How many days back the window starts, counted in the profile's timezone "
+        "(default: 1).",
+    )
+    feed.add_argument(
+        "--published-only",
+        action="store_true",
+        help="Drop jobs no sink has published yet. A screener that writes its result back "
+        "to the published object needs this.",
+    )
+    feed.add_argument(
+        "--include-settled",
+        action="store_true",
+        help=f"Keep jobs whose application status is one of {', '.join(SETTLED_STATUSES)}; "
+        "they are dropped by default.",
+    )
+    feed.add_argument(
+        "--output",
+        type=Path,
+        help="Write the document here instead of stdout.",
+    )
 
     config_parser = subparsers.add_parser("config", help="Configuration commands.")
     config_subparsers = config_parser.add_subparsers(
@@ -223,6 +261,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "plan":
         return _show_search_plan(
             show_queries=args.show_queries,
+        )
+    if args.command == "feed":
+        return emit_screening_feed(
+            args.profiles,
+            since_days=args.since_days,
+            published_only=args.published_only,
+            include_settled=args.include_settled,
+            output=args.output,
         )
     if args.command == "config":
         return _validate_config(args.profile, all_profiles=args.all)
