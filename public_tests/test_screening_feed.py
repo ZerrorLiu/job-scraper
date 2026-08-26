@@ -5,10 +5,12 @@ breaks one of them is a contract change, not an implementation detail, and
 needs `SCHEMA_VERSION` to move with it.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+
+import pytest
 
 from job_scraper.application.screening_feed import build_feed_document, select_screenable
-from job_scraper.cli.feed import resolve_window
+from job_scraper.cli.feed import resolve_date_window, resolve_window
 from job_scraper.domain.screening_feed import (
     SCHEMA_VERSION,
     SETTLED_STATUSES,
@@ -149,3 +151,23 @@ def test_since_days_zero_is_treated_as_today_only():
     now = datetime(2026, 8, 26, 20, 30, tzinfo=UTC)
 
     assert resolve_window("Europe/Berlin", 0, now) == resolve_window("Europe/Berlin", 1, now)
+
+
+def test_explicit_dates_cover_whole_local_days_inclusive_of_until():
+    """An operator reading "the 24th through the 26th" means all three days."""
+    since, until = resolve_date_window("Europe/Berlin", date(2026, 8, 24), date(2026, 8, 26))
+
+    assert since == datetime(2026, 8, 23, 22, 0, tzinfo=UTC)
+    assert until == datetime(2026, 8, 26, 22, 0, tzinfo=UTC)
+
+
+def test_a_single_explicit_date_is_that_one_day():
+    since, until = resolve_date_window("Europe/Berlin", date(2026, 8, 24), None)
+
+    assert since == datetime(2026, 8, 23, 22, 0, tzinfo=UTC)
+    assert until == datetime(2026, 8, 24, 22, 0, tzinfo=UTC)
+
+
+def test_a_reversed_explicit_range_is_rejected():
+    with pytest.raises(ValueError, match="before"):
+        resolve_date_window("Europe/Berlin", date(2026, 8, 26), date(2026, 8, 24))

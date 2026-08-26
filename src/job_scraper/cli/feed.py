@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -53,6 +53,24 @@ def resolve_window(timezone_name: str, since_days: int, now: datetime) -> tuple[
     return since_local.astimezone(UTC), until_local.astimezone(UTC)
 
 
+def resolve_date_window(
+    timezone_name: str, since_date: date, until_date: date | None
+) -> tuple[datetime, datetime]:
+    """The window an explicit `--since-date`/`--until-date` request means.
+
+    `until_date` is inclusive, matching how an operator reads "from the 24th to
+    the 26th", so the half-open end is the start of the following day. Omitting
+    it means that single day.
+    """
+    zone = ZoneInfo(timezone_name)
+    end_date = until_date or since_date
+    if end_date < since_date:
+        raise ValueError(f"--until-date {end_date} is before --since-date {since_date}")
+    since_local = datetime.combine(since_date, time.min, zone)
+    until_local = datetime.combine(end_date + timedelta(days=1), time.min, zone)
+    return since_local.astimezone(UTC), until_local.astimezone(UTC)
+
+
 def emit_screening_feed(
     profile_ids: list[str] | None,
     *,
@@ -60,6 +78,8 @@ def emit_screening_feed(
     published_only: bool,
     include_settled: bool,
     output: Path | None,
+    since_date: date | None = None,
+    until_date: date | None = None,
     now: datetime | None = None,
 ) -> int:
     generated_at = now or datetime.now(UTC)
@@ -79,7 +99,10 @@ def emit_screening_feed(
     window: tuple[datetime, datetime] | None = None
     for definition in definitions:
         config = load_config(definition.runtime_config)
-        since, until = resolve_window(config.project.timezone, since_days, generated_at)
+        if since_date is not None:
+            since, until = resolve_date_window(config.project.timezone, since_date, until_date)
+        else:
+            since, until = resolve_window(config.project.timezone, since_days, generated_at)
         # Profiles may in principle carry different timezones. The document
         # reports one window, so the widest span any profile asked for is the
         # honest answer rather than whichever profile happened to sort last.

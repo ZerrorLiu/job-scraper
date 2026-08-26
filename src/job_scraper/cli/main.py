@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -122,6 +123,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=f"Keep jobs whose application status is one of {', '.join(SETTLED_STATUSES)}; "
         "they are dropped by default.",
+    )
+    feed.add_argument(
+        "--since-date",
+        type=date.fromisoformat,
+        help="Start the window on this local date (YYYY-MM-DD) instead of counting back "
+        "--since-days.",
+    )
+    feed.add_argument(
+        "--until-date",
+        type=date.fromisoformat,
+        help="End the window on this local date, inclusive. Requires --since-date; "
+        "defaults to --since-date itself.",
     )
     feed.add_argument(
         "--output",
@@ -263,13 +276,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             show_queries=args.show_queries,
         )
     if args.command == "feed":
-        return emit_screening_feed(
-            args.profiles,
-            since_days=args.since_days,
-            published_only=args.published_only,
-            include_settled=args.include_settled,
-            output=args.output,
-        )
+        if args.until_date and not args.since_date:
+            print("ERROR --until-date requires --since-date", file=sys.stderr)
+            return 2
+        try:
+            return emit_screening_feed(
+                args.profiles,
+                since_days=args.since_days,
+                published_only=args.published_only,
+                include_settled=args.include_settled,
+                output=args.output,
+                since_date=args.since_date,
+                until_date=args.until_date,
+            )
+        except ValueError as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
     if args.command == "config":
         return _validate_config(args.profile, all_profiles=args.all)
     if args.command == "run":
