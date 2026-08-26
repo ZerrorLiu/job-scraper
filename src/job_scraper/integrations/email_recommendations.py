@@ -1603,7 +1603,7 @@ def split_title_company(value: str, location_hint: str = "") -> tuple[str, str]:
     for separator in (" - ", " | "):
         if separator not in cleaned:
             continue
-        left, right = [part.strip() for part in cleaned.split(separator, 1)]
+        left, right = (part.strip() for part in cleaned.split(separator, 1))
         if looks_like_role(left) and right and not looks_like_location(right):
             return cleanup_title(left), cleanup_company(right)
         if looks_like_role(left) and location_hint:

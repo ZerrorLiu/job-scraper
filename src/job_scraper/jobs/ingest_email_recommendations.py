@@ -971,7 +971,7 @@ def email_source_platforms(raw: RawJobRecord) -> tuple[str, ...]:
     platforms = raw.raw_payload.get("source_platforms", [])
     values = (
         [str(platform).strip().casefold() for platform in platforms]
-        if isinstance(platforms, (list, tuple, set))
+        if isinstance(platforms, list | tuple | set)
         else []
     )
     if is_efinancialcareers_url(raw.source_url):

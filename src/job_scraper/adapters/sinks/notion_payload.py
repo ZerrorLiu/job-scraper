@@ -114,7 +114,7 @@ def notion_page_status(page: dict) -> str:
 
 def notion_source_names(job: JobRecord) -> list[str]:
     raw_sources = job.raw_payload.get("acquisition_sources")
-    if isinstance(raw_sources, (list, tuple)):
+    if isinstance(raw_sources, list | tuple):
         values = [str(value).strip().lower() for value in raw_sources if str(value).strip()]
     else:
         values = []
