@@ -546,3 +546,81 @@ def test_deprecated_run_flags_are_a_closed_set() -> None:
         f"New hidden flag on `run`: {sorted(hidden - DEPRECATED_RUN_FLAGS)}. Deprecated "
         "surface is closed; see docs/public/specs/2026-08-27-deferred-cli-consolidation.md."
     )
+
+
+def _documented_table_column(document: Path, heading: str) -> set[str]:
+    """First-column backticked names of the markdown table under `heading`."""
+    import re
+
+    text = document.read_text(encoding="utf-8")
+    section = text.split(heading, 1)[1]
+    names: set[str] = set()
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            if names:
+                break
+            continue
+        cell = line.split("|")[1].strip()
+        match = re.fullmatch(r"`([^`]+)`", cell)
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def test_documented_notion_properties_match_what_the_sink_writes() -> None:
+    from job_scraper.adapters.sinks.notion_payload import build_daily_properties
+
+    job = JobRecord(
+        source="linkedin",
+        source_job_id="fictional-9",
+        source_url="https://www.linkedin.com/jobs/view/fictional-9",
+        canonical_url="https://www.linkedin.com/jobs/view/fictional-9",
+        title="Fictional Engineer",
+        company_name="Example GmbH",
+        location_raw="Berlin",
+        country="DE",
+        city="Berlin",
+        region="Berlin",
+        remote_type="onsite",
+        employment_type="full-time",
+        seniority="unknown",
+        posted_at=datetime(2026, 1, 1, tzinfo=UTC),
+        first_seen_at=datetime(2026, 1, 1, tzinfo=UTC),
+        scraped_at=datetime(2026, 1, 1, tzinfo=UTC),
+        job_description="A complete fictional job description.",
+        description_language="English",
+        english_ratio=1.0,
+        keyword_hits=[],
+        tech_stack=[],
+        salary_text="",
+        salary_min=None,
+        salary_max=None,
+        salary_currency=None,
+        dedupe_key="fictional-9",
+    )
+
+    written = set(build_daily_properties(job, found_date=datetime(2026, 1, 1, tzinfo=UTC).date()))
+    documented = _documented_table_column(
+        REPOSITORY_ROOT / "docs" / "public" / "configuration.md",
+        "### Properties",
+    )
+
+    assert written == documented, (
+        f"The Notion sink writes {sorted(written)} but configuration.md documents "
+        f"{sorted(documented)}. A deployment reads that table to set the workspace up."
+    )
+
+
+def test_documented_feed_record_matches_the_published_contract() -> None:
+    import dataclasses
+
+    from job_scraper.domain.screening_feed import ScreeningFeedRecord
+
+    published = {field.name for field in dataclasses.fields(ScreeningFeedRecord)}
+    design = (REPOSITORY_ROOT / "docs" / "public" / "profile-design.md").read_text(encoding="utf-8")
+    undocumented = sorted(name for name in published if f"`{name}`" not in design)
+
+    assert undocumented == [], (
+        f"Feed fields absent from profile-design.md: {undocumented}. A downstream "
+        "screener is written against that description."
+    )

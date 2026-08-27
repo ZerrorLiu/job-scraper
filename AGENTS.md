@@ -149,9 +149,10 @@ split by audience, and a change belongs in exactly one place:
 
 | Kind of information | Home |
 |---|---|
-| How to install and configure an installation | `docs/public/agent-deployment.md` |
+| The procedure for installing and configuring an installation | `docs/public/agent-deployment.md` |
+| How to decide what goes into a profile, and which components to offer | `docs/public/profile-design.md` |
 | Everyday commands for an existing installation | `docs/public/operations.md` |
-| What a configuration key or environment variable does | `docs/public/configuration.md` |
+| What a configuration key does, and the shape a sink writes | `docs/public/configuration.md` |
 | Layers, concurrency, external writes, schema evolution | `docs/public/architecture.md` |
 | How to add a source, step, or sink | `docs/public/extension-guide.md` |
 | Why a behavior is the way it is | `docs/public/specs/<date>-<slug>.md` |

@@ -6,9 +6,10 @@ Two audiences, kept separate. Find your row first.
 
 | Document | Use it when |
 |---|---|
-| [Agent deployment runbook](agent-deployment.md) | Taking a new user from a fresh clone to a working installation. Self-contained, including credential acquisition. |
+| [Agent deployment runbook](agent-deployment.md) | Taking a new user from a fresh clone to a working installation. The procedure, self-contained, including credential acquisition. |
+| [Designing a profile](profile-design.md) | Deciding what goes *into* the configuration: queries, the five keyword fields, destinations, which optional components to offer, and what is safe to re-run. |
 | [Operations](operations.md) | The installation exists and you need the everyday commands. |
-| [Configuration reference](configuration.md) | Looking up what a specific key, file, or environment variable does. |
+| [Configuration reference](configuration.md) | Looking up what a specific key, file, or environment variable does, and the exact shape the Notion sink writes. |
 
 ## Changing the code
 

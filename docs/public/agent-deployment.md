@@ -59,6 +59,12 @@ Collect these before generating anything. Ask in this order and stop as soon as
 the user has enough for one working profile — additional profiles can be added
 later, and `init` refuses to overwrite an existing one.
 
+Ask about the user's search, not about the configuration. They do not know what
+a match scope is, which keyword field filters and which only annotates, or what
+a Notion table prefix will do six weeks from now. Those are the agent's
+decisions. [Designing a profile](profile-design.md) is the method for making
+them; read it before the interview, not after.
+
 1. **Profiles.** How many independent search directions, and a label for each.
    One profile is one search matrix with one filtering policy and one output
    set. Separate profiles when the filtering policy genuinely differs, not
@@ -77,6 +83,16 @@ later, and `init` refuses to overwrite an existing one.
    see 3.1.
 7. **Recommendation email.** Only if the user already receives job
    recommendation mail and wants it ingested — see 3.2.
+8. **Downstream screening.** Ask whether anything will later consume these
+   results automatically. If so, keep `notion_daily` enabled and read the
+   screening-interface section of
+   [Designing a profile](profile-design.md#the-downstream-screening-interface);
+   the decision affects what must be published now, not later.
+
+The optional components, what each one costs, and which are interface-only are
+tabulated in
+[Designing a profile](profile-design.md#optional-and-reserved-components).
+Offer a paid or unbuilt component honestly or not at all.
 
 Ask for a credential only when its integration has been chosen. Never ask the
 user to paste a credential into chat when they can write it into `.env`
@@ -163,7 +179,10 @@ blank unless the user has one; the synchronous path is the default.
 
 Run `init` once per profile. It writes only into the ignored private workspace
 and refuses to overwrite an existing profile, so a mistake is corrected by an
-explicit edit plus re-validation rather than by re-running it.
+explicit edit plus re-validation rather than by re-running it. Which steps are
+safe to repeat, and what re-deploying onto another machine actually requires,
+are tabulated in
+[Designing a profile](profile-design.md#idempotency-and-re-deployment).
 
 ```bash
 uv run job-scraper init \

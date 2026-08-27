@@ -96,8 +96,38 @@ retained_exports = 14   # keep two weeks of this track's dated exports
 
 ## Mailbox configuration
 
-`email.toml` describes the recommendation mailbox. Beyond the connection and
-filter settings, two tables keep private routing detail out of the library:
+`email.toml` describes the recommendation mailbox. `init --email` writes it
+once, with the IMAP host supplied and the rest at defaults:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mailbox.host` | from `--imap-host` | IMAP server |
+| `mailbox.port` | `993` | IMAP port |
+| `mailbox.use_ssl` | `true` | TLS |
+| `mailbox.folder` | `"INBOX"` | Folder or label to read |
+| `mailbox.username_env` | `JOB_EMAIL_USERNAME` | Which variable holds the username |
+| `mailbox.password_env` | `JOB_EMAIL_APP_PASSWORD` | Which variable holds the app password |
+| `mailbox.lookback_days` | `7` | IMAP `SINCE` window |
+| `mailbox.max_messages` | `50` | Cap per run |
+| `mailbox.subject_keywords` | `[]` | Empty means every message in the folder is considered |
+| `mailbox.sender_allowlist` | `[]` | Empty means any sender |
+| `mailbox.state_path` | `data/email_ingest_state.json` | Processed-message state |
+| `tracks.config_paths` | `[]` | Which profiles the mail is routed to |
+
+The credentials themselves stay in the environment; `username_env` and
+`password_env` name the variables, they do not hold values.
+
+`tracks.config_paths` being empty is correct for the normal path: a
+`job-scraper run` passes the enabled profiles' runtime configs to the mailbox
+job itself, so the file does not repeat them. It matters only when invoking
+`job-scraper ingest-email` directly, which reads this file alone — set it, or
+pass `--track-config`, or the run has nothing to route into.
+
+Narrow `subject_keywords` and `sender_allowlist` once the user's actual
+recommendation senders are known. Left empty, ingestion evaluates every message
+in the folder, which is slower and produces more false matches.
+
+Two further tables keep private routing detail out of the library:
 
 - `mailbox.skipped_link_hosts`: bulk-mail infrastructure hosts that only ever
   serve tracking or unsubscribe redirects, never a job page.
@@ -163,6 +193,61 @@ uv run job-scraper run
 has not applied yet, and any table the current schema no longer defines --
 which is how a workspace that outlived a removed feature makes itself visible
 instead of drifting silently.
+
+## Notion workspace structure
+
+The sink owns the shape of what it writes. A deployment chooses two names; the
+rest is fixed and is what a downstream screener and the user both rely on.
+
+```text
+<NOTION_PARENT_PAGE_ID>            the page the integration was granted
+  └── container_title              a child page, created if absent
+        └── "<daily_table_prefix> Jobs"   one table per profile
+```
+
+`container_title` defaults to `Job Discovery`. `daily_table_prefix` defaults to
+the profile label, and the table title is always the prefix followed by
+` Jobs`. An earlier generation of this sink created one table per day named
+`<prefix> <YYYY-MM-DD>`; those titles are still recognized when resolving an
+existing table, but new tables are never created that way.
+
+### Properties
+
+Each job is one row. The sink writes exactly these properties:
+
+| Property | Type written | Content |
+|---|---|---|
+| `Job` | title | Job title, hyperlinked to the source posting |
+| `Company` | rich text | Employer, or `N/A` |
+| `Location` | rich text | City, or `N/A` |
+| `Status` | select or status | Application state; see below |
+| `Date` | date | The local date the job was found |
+| `Source` | multi-select, select, or rich text | Originating platform |
+| `Language` | select or rich text | Detected description language |
+
+Where a column already exists, the sink matches the property type the workspace
+uses rather than imposing its own, which is why several rows above list more
+than one type. A table created by the sink gets the first type listed, with
+`Job` frozen as the first column.
+
+The page body of each row carries a `Summary` heading with the originating
+query or email subject, the posting date, the location, and the language.
+
+### Status vocabulary
+
+`Status` is the one column a person is expected to edit, and the value flows
+back: a job marked applied or not-interested is excluded from later candidate
+processing, and a matching repost is suppressed for 30 days.
+
+| Written by the sink | Read back as | Also accepted when reading |
+|---|---|---|
+| `Not Applied` | new | `New`, `N/A`, `NA`, empty, `没投` |
+| `Applied` | applied | `Interview`, `Offer`, `Rejected`, `投了` |
+| `Not Interested` | not interested | `Not Fit`, `不考虑` |
+
+An unrecognized value is treated as new, so a workspace that adds its own
+status names never loses a job — but it also never suppresses one. Keep custom
+values within the accepted sets above if they must round-trip.
 
 ## Notion database bindings
 
