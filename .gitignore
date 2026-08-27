@@ -1,8 +1,39 @@
+# --- Private runtime workspace -------------------------------------------
 # The complete runtime workspace is private. Agents create it locally from the
 # public configuration reference; no profile, query, location, watchlist, or
 # integration layout is committed.
 /config/
 .env
+data/
+exports/
+logs/
+output/
+outputs/
+tmp/
+*.db-wal
+*.db-shm
+
+# --- Credentials ----------------------------------------------------------
+session_credentials.json
+synchronized_dataset.json
+my_cookies.json
+*cookies*.json
+
+# --- Local-only material --------------------------------------------------
+# Everything finished, superseded, or one-off lives under /local/, archived out
+# of the package so it is not linted, type-checked, or counted as live code.
+# See local/README.md. Only /docs/public/ is the current public contract, so
+# any stray root-level docs Markdown is local by definition.
+/local/
+/docs/*.md
+.vibe/archive/
+
+# Personal career strategy output and analysis derived from private job data.
+/career-strategy-analysis/
+/job-market-analysis/
+/最终求职结论.md
+
+# --- Tooling and build artifacts (regenerable; delete, never archive) ------
 .venv/
 .venv*/
 .agents/
@@ -18,29 +49,3 @@ __pycache__/
 *.egg-info/
 .DS_Store
 Thumbs.db
-session_credentials.json
-synchronized_dataset.json
-my_cookies.json
-*cookies*.json
-data/
-*.db-wal
-*.db-shm
-logs/
-output/
-outputs/
-tmp/
-exports/
-.vibe/archive/
-# Personal career strategy output and analysis derived from private job data.
-/career-strategy-analysis/
-/job-market-analysis/
-/最终求职结论.md
-
-# Personal design history and one-off migration utilities are retained locally.
-/docs/*.md
-# Finished one-off migrations and other local-only working files, archived out
-# of the package so they are not linted, type-checked, or counted as live code.
-/local/
-# The original regression suite mirrors the owner's private workspace. A
-# neutral public suite lives in public_tests/.
-/tests/

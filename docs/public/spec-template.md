@@ -15,6 +15,14 @@ State the user or maintainer problem and the observable result.
 - In scope:
 - Out of scope:
 
+## What this change replaces
+
+Name the existing file, module, document, test, or flag this change supersedes,
+and confirm it is removed here rather than left beside its replacement. If
+nothing is superseded, say where you looked for an existing home and why adding
+a new one is correct. If something must stay for compatibility, state the
+condition that ends it.
+
 ## Acceptance criteria
 
 - [ ]

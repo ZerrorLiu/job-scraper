@@ -417,3 +417,107 @@ def test_agent_bootstrap_refuses_to_overwrite_private_configuration(tmp_path: Pa
 
     with pytest.raises(FileExistsError, match="Refusing to overwrite"):
         initialize_profile(request)
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+ALLOWED_ROOT_MARKDOWN = {"README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md"}
+PARALLEL_VERSION_SUFFIXES = ("_v2", "_new", "_improved", "_final", "_old", "_copy")
+
+
+def _normalized_document_name(path: Path) -> str:
+    return path.stem.lower().replace("-", "").replace("_", "")
+
+
+def _tracked_files() -> list[str]:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        pytest.skip("git is unavailable")
+    return [entry for entry in result.stdout.split("\0") if entry]
+
+
+def test_root_markdown_stays_limited_to_the_standard_files() -> None:
+    """A working note at the repository root is how documentation starts to sprawl."""
+    committed = {entry for entry in _tracked_files() if entry.endswith(".md") and "/" not in entry}
+
+    assert committed == ALLOWED_ROOT_MARKDOWN, (
+        f"Unexpected root Markdown: {sorted(committed - ALLOWED_ROOT_MARKDOWN)}. Public "
+        "documentation belongs in docs/public/; local working notes belong in local/."
+    )
+
+
+def test_documentation_tree_holds_only_the_current_public_contract() -> None:
+    stray = [path.name for path in (REPOSITORY_ROOT / "docs").glob("*.md")]
+
+    assert stray == [], (
+        f"Superseded notes found beside the public contract: {sorted(stray)}. "
+        "docs/ contains only public/; archive the rest under local/."
+    )
+
+
+def test_no_two_documents_differ_only_by_separator_or_case() -> None:
+    documents = sorted((REPOSITORY_ROOT / "docs" / "public").rglob("*.md"))
+    seen: dict[str, Path] = {}
+    collisions: list[tuple[Path, Path]] = []
+
+    for document in documents:
+        key = _normalized_document_name(document)
+        if key in seen:
+            collisions.append((seen[key], document))
+        seen[key] = document
+
+    assert collisions == [], f"Near-duplicate document names: {collisions}"
+
+
+def test_no_module_coexists_with_the_version_it_replaces() -> None:
+    modules = {path.stem for path in (REPOSITORY_ROOT / "src").rglob("*.py")}
+    coexisting = [
+        module
+        for module in sorted(modules)
+        for suffix in PARALLEL_VERSION_SUFFIXES
+        if module.endswith(suffix) and module[: -len(suffix)] in modules
+    ]
+
+    assert coexisting == [], (
+        f"A parallel version is living beside what it replaces: {coexisting}. "
+        "Migrate and delete rather than accumulating."
+    )
+
+
+def test_public_documentation_links_resolve_for_someone_who_cloned() -> None:
+    """A link to an ignored path resolves on the author's disk and nowhere else."""
+    import re
+
+    tracked = set(_tracked_files())
+    documents = [
+        *(REPOSITORY_ROOT / name for name in sorted(ALLOWED_ROOT_MARKDOWN)),
+        *sorted((REPOSITORY_ROOT / "docs" / "public").rglob("*.md")),
+    ]
+    broken: list[str] = []
+
+    for document in documents:
+        if not document.exists():
+            continue
+        for match in re.finditer(r"\[[^\]]*\]\(([^)]+)\)", document.read_text(encoding="utf-8")):
+            target = match.group(1)
+            if target.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+            target = target.split("#")[0]
+            if not target:
+                continue
+            resolved = (document.parent / target).resolve().relative_to(REPOSITORY_ROOT).as_posix()
+            is_directory = any(entry.startswith(f"{resolved}/") for entry in tracked)
+            if resolved not in tracked and not is_directory:
+                broken.append(f"{document.name} -> {target}")
+
+    assert broken == [], (
+        f"Documentation links that are not in the repository: {broken}. A link must "
+        "point at a committed path, not at an ignored or local-only one."
+    )

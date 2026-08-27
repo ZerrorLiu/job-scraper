@@ -54,6 +54,77 @@ The built-in production acquisition adapters are `linkedin_direct`,
 `indeed_brightdata`, and `email_imap`. Fixture collectors are test-only.
 Historical source values may remain readable for data compatibility.
 
+## Extend before you add
+
+This repository is developed in many short sessions by agents that do not share
+memory. The failure mode is not bad code; it is accumulation — a second
+document covering what one already covered, a parallel module beside the one
+that needed editing, a `_v2` name that outlives its migration. Every such
+addition is cheap to make and expensive forever after, because the next agent
+must now read both and cannot tell which is authoritative.
+
+So: **the default action is to change an existing thing. Creating a new one is
+the exception, and it must be justified.**
+
+### The survey
+
+Before creating any new file, module, class, CLI command, configuration key,
+environment variable, or document, find where the concern already lives:
+
+```bash
+rg -n "<the concept, and its likely synonyms>" src public_tests docs
+ls docs/public/ && ls src/job_scraper/*/          # what homes already exist
+uv run job-scraper capabilities --json            # registered component IDs
+git log --oneline -15                             # what recently moved
+```
+
+Then answer, in the handoff:
+
+- which existing file, module, or document is the closest home;
+- why extending it is not the right change.
+
+"I did not find one" is only an acceptable answer after the searches above.
+Not finding an existing home because you searched for your own new name rather
+than the concept is the most common way this rule is broken.
+
+### Rules
+
+- **One home per concern.** The tables in [Documentation](#documentation) and
+  in [`docs/public/README.md`](docs/public/README.md) are binding for
+  documentation. For code, the boundary is the Port: a new behavior is a new
+  adapter or step behind an existing Port far more often than it is a new
+  subsystem.
+- **Replace, do not accumulate.** When a change supersedes existing behavior,
+  documentation, or tests, remove what it supersedes in the same change. A
+  superseded thing left in place is not neutral; it is a false signal.
+- **No parallel versions.** No `_v2`, `_new`, `_improved`, `_final` module,
+  document, or function coexisting with what it replaces. Migrate and delete,
+  or do not start. When a migration genuinely needs two live paths, the spec
+  states the removal condition and the change that removes it.
+- **No near-duplicate names.** A name differing only by separator, case, or a
+  synonym — `extension_guide.md` beside `extension-guide.md` — is treated as a
+  collision, not as two files. Search before naming.
+- **Deprecation ends.** Anything kept for compatibility carries, in its spec, a
+  stated condition for removal. Hidden or suppressed CLI surface is deprecated
+  surface: it is listed in the spec that introduced the deprecation, not left
+  undocumented.
+- **Reuse the vocabulary.** Before introducing a term for a concept, check what
+  the domain already calls it. Two names for one thing costs more than an
+  imperfect name.
+
+### Deleting versus archiving
+
+- **Delete outright:** anything regenerable — `build/`, `__pycache__/`,
+  `.pytest_cache/`, `.coverage`, `*.egg-info/`, empty directories.
+- **Delete outright:** anything tracked in Git that a change supersedes. Git
+  history is the archive; a commit is how it stays recoverable.
+- **Archive under `local/`:** superseded material that was never in version
+  control, where deletion would be irreversible. `local/` is ignored and exists
+  only in an installation, not in this repository. Give it a `README.md`
+  stating what each archived item is and what replaced it.
+- **Never** archive by leaving something in place and adding a comment saying
+  it is unused.
+
 ## Extension workflow
 
 1. Choose the relevant Port: Source, Channel, PipelineStep, Repository, or Sink.

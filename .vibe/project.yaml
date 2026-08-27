@@ -3,13 +3,11 @@ version: 1
 # This file records executable local checks; repository guidance remains authoritative.
 
 commands:
-  setup:
+  setup: uv sync --extra dev
   format: uv run ruff format --check .
   test: uv run pytest
   lint: uv run ruff check .
   typecheck: uv run pyright
-  build:
-  dev:
 
 verification:
   browser: off

@@ -9,8 +9,8 @@ The triggerable project-local skill is
 ## The lifecycle
 
 ```text
-Discuss outcome -> write or update spec -> implement -> verify -> independent
-user-path review -> handoff with follow-ups
+Discuss outcome -> write or update spec -> survey what exists -> implement ->
+verify -> independent user-path review -> handoff with follow-ups
 ```
 
 ### 1. Discuss outcome
@@ -37,7 +37,33 @@ The spec answers *why* and *what*. It is concise, reviewable, and public-safe;
 it never stores credentials, personal search choices, live payloads, or
 external workspace identifiers.
 
-### 3. Implement with the project skill
+### 3. Survey what already exists
+
+`AGENTS.md` requires extending an existing thing rather than adding a parallel
+one. This is where that check happens, and it happens *before* the first line
+is written, because it is what decides the shape of the change.
+
+Locate the concern's existing home:
+
+```bash
+rg -n "<the concept, and its likely synonyms>" src public_tests docs
+ls docs/public/ && ls src/job_scraper/*/
+uv run job-scraper capabilities --json
+```
+
+Then decide, and carry the answer into the handoff:
+
+| Finding | Change |
+|---|---|
+| An existing module or document covers this | Edit it. Do not add a sibling. |
+| An existing Port covers the behavior | Add an adapter or step behind it, register the ID |
+| Something covers it but is wrong or stale | Fix or remove it in this change, not alongside it |
+| Nothing covers it | Say where you searched, then add one thing in its documented home |
+
+If the change supersedes anything — a document, a module, a test, a CLI flag —
+list it now. Removing it is part of this change, not a follow-up.
+
+### 4. Implement with the project skill
 
 Use this repeatable development procedure:
 
@@ -52,7 +78,7 @@ For extensions, follow the existing Port -> adapter or pure step -> registry ->
 private runtime configuration -> contract test sequence. Do not introduce
 import-time side effects or concrete adapters in application orchestration.
 
-### 4. Verify
+### 5. Verify
 
 Run focused tests while implementing, then run the repository quality gates:
 
@@ -71,7 +97,7 @@ If `uv` is unavailable, stop executable Python verification and report the gate
 as blocked. Do not substitute system Python or direct virtual-environment
 executables, and never report an unavailable gate as passed.
 
-### 5. Simulate the user path
+### 6. Simulate the user path
 
 For a non-trivial CLI, configuration, public extension/API, or architecture
 change, ask an independent subagent to perform the intended user task using
@@ -83,7 +109,7 @@ Treat this as evaluation, not approval: the implementing agent remains
 responsible for validating the result. A mechanical behavior-preserving change
 can skip the simulation; document why in the handoff.
 
-### 6. Handoff and improve
+### 7. Handoff and improve
 
 Lead with the result. Report the spec and documentation updated, code and tests
 changed, commands run and outcomes, user-path findings, and clearly separated
@@ -102,10 +128,12 @@ defaults.
 | CLI/configuration/API/extension change | Required | Required |
 | Domain, pipeline, or architecture change | Required | Required |
 | Internal behavior-preserving refactor | Optional, state why | No |
+| Anything that adds a file, module, command, or config key | Required; must name what was surveyed | Per the row above |
 
 ## Responsibilities
 
-- **Spec:** captures the change outcome and acceptance criteria.
+- **Spec:** captures the change outcome and acceptance criteria, including what
+  this change removes and any removal condition it defers.
 - **Skill:** the implementation and verification procedure in this document.
 - **Harness:** `AGENTS.md`, repository tooling, privacy rules, tests, and the
   lifecycle above.
