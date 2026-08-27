@@ -428,11 +428,12 @@ def _normalized_document_name(path: Path) -> str:
     return path.stem.lower().replace("-", "").replace("_", "")
 
 
-def _tracked_files() -> list[str]:
+def _repository_files() -> list[str]:
+    """Paths a clone would get: tracked, plus new files that are not ignored."""
     import subprocess
 
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=REPOSITORY_ROOT,
         capture_output=True,
         text=True,
@@ -445,7 +446,9 @@ def _tracked_files() -> list[str]:
 
 def test_root_markdown_stays_limited_to_the_standard_files() -> None:
     """A working note at the repository root is how documentation starts to sprawl."""
-    committed = {entry for entry in _tracked_files() if entry.endswith(".md") and "/" not in entry}
+    committed = {
+        entry for entry in _repository_files() if entry.endswith(".md") and "/" not in entry
+    }
 
     assert committed == ALLOWED_ROOT_MARKDOWN, (
         f"Unexpected root Markdown: {sorted(committed - ALLOWED_ROOT_MARKDOWN)}. Public "
@@ -495,7 +498,7 @@ def test_public_documentation_links_resolve_for_someone_who_cloned() -> None:
     """A link to an ignored path resolves on the author's disk and nowhere else."""
     import re
 
-    tracked = set(_tracked_files())
+    tracked = set(_repository_files())
     documents = [
         *(REPOSITORY_ROOT / name for name in sorted(ALLOWED_ROOT_MARKDOWN)),
         *sorted((REPOSITORY_ROOT / "docs" / "public").rglob("*.md")),
@@ -520,4 +523,26 @@ def test_public_documentation_links_resolve_for_someone_who_cloned() -> None:
     assert broken == [], (
         f"Documentation links that are not in the repository: {broken}. A link must "
         "point at a committed path, not at an ignored or local-only one."
+    )
+
+
+DEPRECATED_RUN_FLAGS = {"--all", "--init-db", "--enable-indeed"}
+
+
+def test_deprecated_run_flags_are_a_closed_set() -> None:
+    """Hidden compatibility flags may leave this set, but nothing may join it."""
+    parser = cli.build_parser()
+    subparsers = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    hidden = {
+        option
+        for action in subparsers.choices["run"]._actions
+        if action.help == argparse.SUPPRESS
+        for option in action.option_strings
+    }
+
+    assert hidden <= DEPRECATED_RUN_FLAGS, (
+        f"New hidden flag on `run`: {sorted(hidden - DEPRECATED_RUN_FLAGS)}. Deprecated "
+        "surface is closed; see docs/public/specs/2026-08-27-deferred-cli-consolidation.md."
     )

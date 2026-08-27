@@ -164,6 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         help="Run only this profile. By default all enabled profiles run.",
     )
+    # Deprecated pre-CLI flags, kept working and hidden from --help. Each one's
+    # removal condition is recorded in
+    # docs/public/specs/2026-08-27-deferred-cli-consolidation.md; the set is
+    # closed by test_deprecated_run_flags_are_a_closed_set. Do not add a fourth.
     run.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--init-db", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--enable-indeed", action="store_true", help=argparse.SUPPRESS)

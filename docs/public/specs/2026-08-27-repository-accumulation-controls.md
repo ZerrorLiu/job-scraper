@@ -113,11 +113,7 @@ files.
 
 ## Follow-ups
 
-- `--enable-indeed` is hidden with `argparse.SUPPRESS` but still accepted by
-  `run`, `run_daily`, and `run_all_tracks`. It is guarded by
-  `BRIGHTDATA_DIRECT_COLLECTION_ENABLED` and asserted by
-  `test_brightdata_suspension`. Removing it is a behavior change; it needs its
-  own spec stating the removal condition.
-- `jobs/run_daily.py` and `jobs/run_all_tracks.py` remain as pre-CLI entry
-  points that `cli/main.py` wraps. Folding them into the CLI would remove a
-  duplicated argument surface, and is likewise its own change.
+The deprecated pre-CLI surface this change left in place — the hidden `run`
+flags and the `jobs/run_daily.py` / `jobs/run_all_tracks.py` entry modules — is
+recorded with its removal conditions in
+[deferred CLI consolidation](2026-08-27-deferred-cli-consolidation.md).
