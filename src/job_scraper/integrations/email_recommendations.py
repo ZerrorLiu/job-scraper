@@ -1695,6 +1695,8 @@ def infer_company(context: str, title: str, sender: str) -> str:
             "notifications",
             "linkedin",
             "indeed",
+            "jobalert",
+            "jobagent",
         }:
             return domain.title()
     _ = title

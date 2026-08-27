@@ -67,6 +67,15 @@ def test_infer_company_skips_a_salary_figure_capture() -> None:
     assert company == "Unknown"
 
 
+def test_infer_company_does_not_leak_a_digest_mailers_alert_subdomain() -> None:
+    # donotreply@jobalert.indeed.com and info@jobagent.stepstone.de: the
+    # sender-domain fallback's first label is the mailer's own alert-feature
+    # subdomain, not a company, in the same family as the existing
+    # indeed/linkedin entries in this blocklist.
+    assert infer_company("", "AI Engineer", "donotreply@jobalert.indeed.com") == "Unknown"
+    assert infer_company("", "AI Engineer", "info@jobagent.stepstone.de") == "Unknown"
+
+
 def test_linkedin_card_with_a_gender_marker_where_the_company_belongs_yields_no_company() -> None:
     company, _location = infer_linkedin_card_metadata(
         "Backend Engineer",
