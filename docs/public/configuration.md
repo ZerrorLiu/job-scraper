@@ -350,8 +350,11 @@ query or email subject, the posting date, the location, and the language.
 ### Status vocabulary
 
 `Status` is the one column a person is expected to edit, and the value flows
-back: a job marked applied or not-interested is excluded from later candidate
-processing, and a matching repost is suppressed for 30 days.
+back. Only a job marked not-interested is excluded from later candidate
+processing, and a matching repost is suppressed for 30 days. `Applied` stays
+available to downstream status views but does not exclude an otherwise
+matching candidate. Changing `Not Interested` back to `Not Applied` clears the
+local exclusion on the next status import.
 
 | Written by the sink | Read back as | Also accepted when reading |
 |---|---|---|

@@ -110,6 +110,32 @@ def test_notion_import_preserves_page_edit_time(tmp_path) -> None:
     assert row["last_user_edit_at"] == "2026-07-22T12:34:56+00:00"
 
 
+def test_notion_not_applied_status_clears_not_interested_exclusion(tmp_path) -> None:
+    database = Database(tmp_path / "jobs.db")
+    database.initialize()
+    seen_at = datetime(2026, 7, 20, 10, 0, tzinfo=UTC)
+    job = make_job("job", seen_at, "Berlin")
+    run = database.create_run("linkedin", seen_at)
+    job_id, _ = database.upsert_job(job, run.run_id)
+    database.set_application_status(job_id, "not_interested", edited_at=seen_at)
+    database.upsert_notion_state(job_id, "page-1", "source-1", "hash-1", "synced")
+
+    notion = SimpleNamespace(
+        config=SimpleNamespace(database_id="database-1"),
+        resolve_data_source_id=lambda: "source-1",
+        list_data_source_pages=lambda _data_source_id: [
+            {
+                "id": "page-1",
+                "last_edited_time": "2026-07-23T12:34:56.000Z",
+                "properties": {"Status": {"select": {"name": "Not Applied"}}},
+            }
+        ],
+    )
+
+    assert import_processed_statuses(database, notion) == 1
+    assert database.get_application_status(job_id) == "new"
+
+
 def make_job(
     source_job_id: str,
     seen_at: datetime,

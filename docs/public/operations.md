@@ -112,12 +112,60 @@ email profile, and keeps normal database and Notion deduplication. Add
 `--skip-status-import` when current Notion job decisions do not need to be
 imported before the repair.
 
+## Browser-assisted Indeed detail repair
+
+When an authorised local browser can render an Indeed listing but direct HTTP
+or Bright Data cannot, emit a local-only queue from email recommendations:
+
+```bash
+uv run job-scraper ingest-email --browser-queue local/indeed-browser-queue.jsonl
+```
+
+If the existing mailbox subject filters do not select the relevant historic
+recommendations, add an explicit sender substring and a bounded larger mailbox
+window. This affects only queue export, not a normal email run:
+
+```bash
+uv run job-scraper ingest-email --browser-queue local/indeed-browser-queue.jsonl --browser-sender indeed --max-messages 200 --lookback-days 90
+```
+
+This queue contains only unique Indeed `viewjob` URLs and their local email
+card context. It does not publish jobs, change mailbox state, control a
+browser, or enable Bright Data. Lease exactly one task before using the local
+interactive browser:
+
+```bash
+uv run job-scraper ingest-email --browser-claim local/indeed-browser-queue.jsonl
+```
+
+The command prints that row as JSON and refuses a second lease until the row
+is resolved. The interactive agent updates the claimed row in the same file
+with `status: "complete"`, a full `title`, `company_name`, `location_raw`, and
+`description`. A `blocked` or `unavailable` row must carry an `error` and is
+retained as the local recovery record instead of being retried automatically.
+
+Import completed rows through the normal email pipeline:
+
+```bash
+uv run job-scraper ingest-email --browser-results local/indeed-browser-queue.jsonl
+```
+
+The importer accepts one canonical URL per task, rejects login/blocking pages
+and incomplete descriptions, applies normal database and publication
+deduplication, and checkpoints an accepted row as `imported`. Add
+`--skip-notion` to make the import local-only. Do not place these JSONL files
+in the repository: they contain private mailbox context.
+
 ## Manual decisions are authoritative
 
-Jobs marked `Applied` or `Not Interested` in Notion are normalized locally and
-excluded from later candidate processing. A matching repost is suppressed for
-30 days using normalized title, company, and location history; unrelated roles
-from the same company are unaffected.
+Jobs marked `Not Interested` in Notion are normalized locally and excluded
+from later candidate processing. A matching repost is suppressed for 30 days
+using normalized title, company, and location history; unrelated roles from
+the same company are unaffected. `Applied` remains recorded for downstream
+status and audit, but does not suppress an otherwise matching candidate.
+Changing a Notion status back to `Not Applied` clears the local exclusion on
+the next status import. Re-eligible does not mean the Notion sink creates a
+duplicate page: publication retains its own page-level idempotency.
 
 ## Exports
 

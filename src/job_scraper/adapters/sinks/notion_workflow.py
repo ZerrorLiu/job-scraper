@@ -22,7 +22,7 @@ from job_scraper.integrations.notion import (
 from job_scraper.ports.sinks import PublishContext, PublishResult
 from job_scraper.storage.db import Database
 
-PROCESSED_APPLICATION_STATUSES = frozenset({"applied", "not_interested"})
+IMPORTED_APPLICATION_STATUSES = frozenset({"new", "applied", "not_interested"})
 
 
 def publish_daily(
@@ -85,16 +85,19 @@ def import_processed_statuses(
             continue
         for page in pages:
             status = notion_page_status(page)
-            if normalize_status_name(status) not in PROCESSED_APPLICATION_STATUSES:
+            normalized_status = normalize_status_name(status)
+            if normalized_status not in IMPORTED_APPLICATION_STATUSES:
                 continue
             job_id = database.find_job_id_by_notion_page_id(str(page.get("id", "")))
             if not job_id:
                 title, job_url = notion_page_job_title_and_url(page)
                 company_name = notion_page_company_name(page)
                 job_id = database.match_job_id_for_notion_page(title, company_name, job_url)
-            if not job_id or database.get_application_status(job_id) == status:
+            if not job_id or database.get_application_status(job_id) == normalized_status:
                 continue
-            database.set_application_status(job_id, status, edited_at=_page_edited_at(page))
+            database.set_application_status(
+                job_id, normalized_status, edited_at=_page_edited_at(page)
+            )
             imported += 1
     return imported
 

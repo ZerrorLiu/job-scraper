@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -20,7 +21,6 @@ from job_scraper.adapters.storage.sqlite_v2 import StoredJobDetail, WorkspaceDat
 from job_scraper.application.aggregation import AcceptedJob, merge_accepted_job
 from job_scraper.application.process_candidate import (
     CandidateProcessingContext,
-    HistoryMode,
     ProcessJobCandidate,
 )
 from job_scraper.cli.console import (
@@ -42,6 +42,13 @@ from job_scraper.configuration import find_profile_definition
 from job_scraper.configuration.policy import policy_from_legacy
 from job_scraper.domain.models import JobRecord, RawJobRecord, RunStats
 from job_scraper.domain.policies import FilterPolicy, title_scoped
+from job_scraper.integrations.browser_details import (
+    BrowserDetailContractError,
+    BrowserDetailResult,
+    BrowserDetailTask,
+    queue_status,
+    task_from_mapping,
+)
 from job_scraper.integrations.email_recommendations import (
     EmailIngestConfig,
     EmailIngestState,
@@ -150,6 +157,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Skip the initial Notion-to-local manual job-decision import, but still write accepted jobs to Notion.",
     )
+    browser_mode = parser.add_mutually_exclusive_group()
+    browser_mode.add_argument(
+        "--browser-queue",
+        type=Path,
+        help="Write or refresh a local, single-lane Indeed browser-detail queue without publishing jobs.",
+    )
+    browser_mode.add_argument(
+        "--browser-claim",
+        type=Path,
+        help="Lease one pending item from a local browser-detail queue and print it as JSON.",
+    )
+    browser_mode.add_argument(
+        "--browser-results",
+        type=Path,
+        help="Import complete rows from a local browser-detail queue through the email pipeline.",
+    )
+    parser.add_argument(
+        "--browser-sender",
+        action="append",
+        dest="browser_senders",
+        help="Restrict browser queue email selection to this sender substring and ignore subject keywords. Repeatable.",
+    )
     return parser.parse_args(argv)
 
 
@@ -158,12 +187,258 @@ def main(
     *,
     dashboard: LiveRunTable | None = None,
 ) -> int:
+    command_args = argv or sys.argv[1:]
+    args = parse_args(command_args)
+    if args.browser_senders and args.browser_queue is None:
+        log_error("Email | --browser-sender requires --browser-queue")
+        return 2
+    if args.browser_queue is not None:
+        return emit_browser_detail_queue(args)
+    if args.browser_claim is not None:
+        return claim_browser_detail_task(args.browser_claim)
+    if args.browser_results is not None:
+        return import_browser_detail_results(args)
     try:
-        preparation = prepare(argv or sys.argv[1:], dashboard=dashboard)
+        preparation = prepare(command_args, dashboard=dashboard)
     except Exception as exc:  # pragma: no cover
         log_error(f"Email | Failed | {exc}")
         return 1
     return finish(preparation, dashboard=dashboard)
+
+
+def emit_browser_detail_queue(args: argparse.Namespace) -> int:
+    """Emit local browser work without starting runs, detail fetches, or publishing."""
+
+    email_config = load_email_ingest_config(args.config)
+    email_config = apply_overrides(email_config, args.max_messages, args.lookback_days, args.folder)
+    if args.browser_senders:
+        email_config.sender_allowlist = list(dict.fromkeys(args.browser_senders))
+        email_config.subject_keywords = []
+    if not email_config.host:
+        raise ValueError("Missing IMAP host in email ingest config")
+    if not email_config.username or not email_config.password:
+        raise ValueError(
+            "Missing mailbox credentials. Set "
+            f"{email_config.username_env or 'username'} and {email_config.password_env or 'password'}."
+        )
+    state = EmailIngestState.load(email_config.state_path)
+    messages = ImapEmailClient(email_config).fetch_recent_messages()
+    pending_messages = [
+        message
+        for message in messages
+        if args.reprocess or not state.is_processed(message.message_id)
+    ]
+    tasks = collect_candidate_tasks(pending_messages, [], email_config.skipped_link_hosts)
+    current = _read_browser_queue(args.browser_queue)
+    queue = merge_browser_detail_queue((candidate for _message, candidate in tasks), current)
+    _validate_single_browser_lease(queue)
+    _write_browser_queue(args.browser_queue, queue)
+    state_counts = Counter(str(row["status"]) for row in queue)
+    log_line(
+        f"Email | Browser detail queue | {len(queue)} Indeed URLs | "
+        f"Pending {state_counts['pending']} | In progress {state_counts['in_progress']} | "
+        f"Complete {state_counts['complete']} | Imported {state_counts['imported']}"
+    )
+    return 0
+
+
+def merge_browser_detail_queue(
+    candidates: Iterable[EmailJobCandidate],
+    current: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Keep one durable task per canonical Indeed job while preserving its checkpoint."""
+
+    prior_by_id: dict[str, dict[str, object]] = {}
+    for row in current:
+        task_id = task_from_mapping(row).task_id
+        previous = prior_by_id.get(task_id)
+        if previous is None or browser_queue_state_rank(row) > browser_queue_state_rank(previous):
+            prior_by_id[task_id] = dict(row)
+    queue: list[dict[str, object]] = []
+    seen_task_ids: set[str] = set()
+    for candidate in candidates:
+        source_id, source_job_id = platform_job_reference(candidate.url)
+        if source_id != "indeed" or not source_job_id:
+            continue
+        task = BrowserDetailTask.from_candidate(candidate)
+        if task.task_id in seen_task_ids:
+            continue
+        seen_task_ids.add(task.task_id)
+        queue.append(prior_by_id.get(task.task_id, task.to_dict()))
+    return queue
+
+
+def browser_queue_state_rank(row: Mapping[str, object]) -> int:
+    return {
+        "pending": 0,
+        "blocked": 1,
+        "unavailable": 1,
+        "in_progress": 2,
+        "complete": 3,
+        "imported": 4,
+    }.get(str(row.get("status") or ""), -1)
+
+
+def claim_browser_detail_task(path: Path) -> int:
+    """Lease exactly one queue item; browser navigation remains outside this package."""
+
+    queue = _read_browser_queue(path)
+    _validate_single_browser_lease(queue)
+    if any(str(row["status"]) == "in_progress" for row in queue):
+        log_line("Email | Browser detail queue | A task is already in progress")
+        return 2
+    for row in queue:
+        if str(row["status"]) != "pending":
+            continue
+        row["status"] = "in_progress"
+        row["lease_started_at"] = datetime.now(UTC).isoformat()
+        _write_browser_queue(path, queue)
+        # Windows console encodings can be narrower than UTF-8 while email
+        # context is arbitrary Unicode.  The queue file remains UTF-8; CLI
+        # handoff is escaped JSON so a successful lease never looks failed.
+        print(json.dumps(row, ensure_ascii=True, sort_keys=True))
+        return 0
+    log_line("Email | Browser detail queue | No pending task")
+    return 0
+
+
+def import_browser_detail_results(args: argparse.Namespace) -> int:
+    """Import complete browser rows without contacting IMAP or a browser provider."""
+
+    queue = _read_browser_queue(args.browser_results)
+    completed: list[tuple[int, BrowserDetailResult]] = []
+    seen_task_ids: set[str] = set()
+    for index, row in enumerate(queue):
+        task = task_from_mapping(row)
+        if task.task_id in seen_task_ids:
+            raise BrowserDetailContractError(
+                f"Browser queue contains duplicate task_id {task.task_id}"
+            )
+        seen_task_ids.add(task.task_id)
+        status = queue_status(row)
+        if status == "complete":
+            completed.append((index, BrowserDetailResult.from_mapping(row)))
+    if not completed:
+        log_line("Email | Browser detail import | No complete queue rows")
+        return 0
+
+    email_config = load_email_ingest_config(args.config)
+    if args.track_configs:
+        email_config.track_config_paths = [
+            Path(value).resolve() for value in dict.fromkeys(args.track_configs)
+        ]
+    started_at = datetime.now(UTC)
+    runtimes = initialize_tracks(
+        email_config,
+        started_at,
+        skip_notion=args.skip_notion,
+        skip_status_import=args.skip_status_import,
+    )
+    if not runtimes:
+        raise ValueError("No enabled email tracks are available for browser detail import")
+    try:
+        for _index, result in completed:
+            raw = raw_from_browser_detail(result, started_at)
+            for runtime in runtimes:
+                process_raw_job(raw, runtime, started_at)
+        for runtime in runtimes:
+            runtime.run.finished_at = datetime.now(UTC)
+            runtime.database.finish_run(runtime.run, "completed")
+        _publish_browser_imports(runtimes, started_at, skip_notion=args.skip_notion)
+    except Exception as exc:
+        _mark_email_runs_failed(runtimes, exc, dashboard=None)
+        raise
+
+    for index, _result in completed:
+        queue[index]["status"] = "imported"
+        queue[index].pop("lease_started_at", None)
+    _write_browser_queue(args.browser_results, queue)
+    log_line(f"Email | Browser detail import | Imported {len(completed)} complete queue rows")
+    return 0
+
+
+def raw_from_browser_detail(result: BrowserDetailResult, scraped_at: datetime) -> RawJobRecord:
+    raw = email_candidate_to_raw_job(result.task.to_candidate(), scraped_at=scraped_at)
+    raw.title = result.title
+    raw.company_name = result.company_name
+    raw.location_raw = result.location_raw
+    raw.job_description = result.description
+    raw.canonical_url = result.task.url
+    raw.raw_payload.update(
+        {
+            "detail_status": "ok",
+            "detail_source": "authorised_browser",
+            "description_source": "authorised_browser",
+            "title_source": "authorised_browser",
+            "browser_detail_task_id": result.task.task_id,
+            "matched_source_id": "indeed",
+            "matched_source_job_id": platform_job_reference(result.task.url)[1],
+        }
+    )
+    return raw
+
+
+def _publish_browser_imports(
+    runtimes: Sequence[TrackRuntime],
+    started_at: datetime,
+    *,
+    skip_notion: bool,
+) -> None:
+    if skip_notion:
+        return
+    for runtime in runtimes:
+        if "notion_daily" not in runtime.enabled_sinks or not runtime.notion.enabled():
+            continue
+        result = publish_daily(
+            runtime.database,
+            list(runtime.accepted_jobs.values()),
+            runtime.notion,
+            runtime.config.project.timezone,
+            started_at,
+            table_prefix=runtime.config.notion.daily_table_prefix,
+            track_label=runtime.track_label,
+            profile_id=runtime.profile_id,
+            binding_store=runtime.notion_binding_store,
+            logger=log_line,
+        )
+        if result.errors:
+            for error in result.errors:
+                log_error(f"Email | Track {runtime.track_label} | Notion | Failed | {error}")
+
+
+def _read_browser_queue(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise BrowserDetailContractError(
+                f"Browser queue {path} line {line_number} is not JSON"
+            ) from exc
+        if not isinstance(value, dict):
+            raise BrowserDetailContractError(
+                f"Browser queue {path} line {line_number} must be a JSON object"
+            )
+        task_from_mapping(value)
+        queue_status(value)
+        rows.append(value)
+    return rows
+
+
+def _write_browser_queue(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
+    path.write_text(content, encoding="utf-8")
+
+
+def _validate_single_browser_lease(rows: Sequence[Mapping[str, object]]) -> None:
+    leases = sum(1 for row in rows if str(row.get("status") or "") == "in_progress")
+    if leases > 1:
+        raise BrowserDetailContractError("Browser detail queue permits only one in_progress task")
 
 
 def prepare(
@@ -903,7 +1178,6 @@ def process_raw_job(
             run_id=stats.run_id,
             started_at=started_at,
             policy=policy,
-            history_mode=HistoryMode.PREVIOUSLY_PUBLISHED,
         ),
     )
     reason = None if result.decision.reason is None else result.decision.reason.value

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
 
 from job_scraper.domain.context import EvaluationContext
 from job_scraper.domain.decisions import Decision, RejectionReason
@@ -12,19 +11,12 @@ from job_scraper.ports.processors import CandidateEvaluator, JobNormalizer
 from job_scraper.ports.repositories import CandidateDecisionRecorder, JobRepository
 
 
-class HistoryMode(StrEnum):
-    STANDARD = "standard"
-    FIRST_SEEN = "first_seen"
-    PREVIOUSLY_PUBLISHED = "previously_published"
-
-
 @dataclass(frozen=True, slots=True)
 class CandidateProcessingContext:
     profile_id: str
     run_id: str
     started_at: datetime
     policy: FilterPolicy
-    history_mode: HistoryMode = HistoryMode.STANDARD
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +37,7 @@ class ProcessJobCandidate:
         normalizer: JobNormalizer,
         *,
         decision_recorder: CandidateDecisionRecorder | None = None,
-        processed_statuses: frozenset[str] = frozenset({"applied", "not_interested"}),
+        processed_statuses: frozenset[str] = frozenset({"not_interested"}),
     ) -> None:
         self._repository = repository
         self._pipeline = pipeline
@@ -105,19 +97,6 @@ class ProcessJobCandidate:
                 is_new=is_new,
             )
 
-        if self._should_reject_seen(job, job_id, is_new, context):
-            rejected = Decision.reject(
-                RejectionReason.ALREADY_SEEN,
-                step="history",
-            )
-            self._record(job, rejected, context, legacy_job_id=job_id)
-            return CandidateProcessingResult(
-                job=job,
-                decision=rejected,
-                job_id=job_id,
-                is_new=is_new,
-            )
-
         self._record(job, Decision.accept(), context, legacy_job_id=job_id)
         return CandidateProcessingResult(
             job=job,
@@ -125,31 +104,6 @@ class ProcessJobCandidate:
             job_id=job_id,
             is_new=is_new,
         )
-
-    def _should_reject_seen(
-        self,
-        job: JobRecord,
-        job_id: str,
-        is_new: bool,
-        context: CandidateProcessingContext,
-    ) -> bool:
-        mode = context.history_mode
-        uses_first_seen = (
-            str(job.raw_payload.get("freshness_basis", "")).strip().lower() == "first_seen"
-        )
-        if mode == HistoryMode.STANDARD and not uses_first_seen:
-            return False
-        if is_new and mode in {HistoryMode.STANDARD, HistoryMode.FIRST_SEEN}:
-            return False
-
-        history = self._repository.get_job_history(
-            job_id,
-            job.company_name,
-            context.started_at,
-        )
-        if mode == HistoryMode.PREVIOUSLY_PUBLISHED:
-            return history.exact_seen_before and bool(history.previous_notion_page_id)
-        return history.exact_seen_before
 
     def _record(
         self,

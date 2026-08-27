@@ -30,16 +30,16 @@ Data detail providers and cannot call an interactive Codex browser session.
 
 ## Acceptance criteria
 
-- [ ] Phase 1 can emit unique, eligible Indeed email URLs without publishing
+- [x] Phase 1 can emit unique, eligible Indeed email URLs without publishing
   jobs or mutating browser state.
-- [ ] One browser result at a time is validated before it can enter the
+- [x] One browser result at a time is validated before it can enter the
   existing `RawJobRecord` to pipeline to repository flow.
-- [ ] A missing description, login page, blocking page, or malformed result is
+- [x] A missing description, login page, blocking page, or malformed result is
   recorded as a non-retry-storm terminal or deferred state and never treated as
   a complete description.
-- [ ] Queue state is resumable and idempotent; an already imported listing is
+- [x] Queue state is resumable and idempotent; an already imported listing is
   not re-imported as a duplicate.
-- [ ] All tests are offline and use fictional URLs and browser-result payloads.
+- [x] All tests are offline and use fictional URLs and browser-result payloads.
 - [ ] Phase 2 remains disabled until a separately documented browser search
   validation establishes a safe, observable contract.
 
@@ -50,6 +50,15 @@ contract. An interactive local Agent owns browser navigation and must use a
 single browser lane with explicit rate limiting. This keeps Codex-specific
 browser control, profile state, and authentication outside the repository and
 out of private configuration committed to source control.
+
+The queue itself is a private JSONL checkpoint. `pending` items may be leased
+one at a time as `in_progress`; a second lease is refused until the first row
+is resolved. A browser Agent replaces that row with `complete` and structured
+detail, or with `blocked`/`unavailable` plus an error. Successful import marks
+the row `imported`. The queue has no HTML, screenshots, cookies, account data,
+or browser-profile fields. Its task identity is the canonical Indeed URL and
+`jk` value, so a refreshed email queue preserves prior terminal and imported
+rows instead of creating another work item.
 
 Browser work may be interrupted by login, CAPTCHA, site blocking, browser
 disconnection, or user control. Those outcomes are recorded without bypass or

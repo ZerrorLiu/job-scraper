@@ -68,8 +68,6 @@ from job_scraper.registry.builtins import (
 )
 from job_scraper.storage.db import Database
 
-PROCESSED_APPLICATION_STATUSES = {"applied", "not_interested"}
-
 
 @dataclass(frozen=True, slots=True)
 class RuntimeServices:
