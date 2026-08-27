@@ -229,6 +229,15 @@ requirement. Confirm against one real board token before enabling
 - A public board API with no per-employer token, added as one more provider
   once the provider table exists. It is a row, not a source, which is the point
   of the table.
-- Board-token discovery stays manual. If the configured list outgrows what a
-  person will maintain by hand, revisit it as a workspace tool — still not as a
-  source.
+- Board-token discovery stays manual *by choice*, not by necessity. Board
+  tokens can in fact be enumerated in bulk and for free from a public web-scale
+  crawl index, which accepts a subdomain wildcard and returns every crawled URL
+  under a host — measured, one crawl yielded thousands of tokens across the
+  supported providers. What the measurement also showed is that having the
+  list does not help: the boards it enumerates carry the wrong populations for
+  the roles a track like this one selects. The reason not to automate discovery
+  is therefore yield, not feasibility.
+  [`2026-08-27-token-free-board-sources.md`](2026-08-27-token-free-board-sources.md)
+  carries both measurements and adds the sources that need no per-employer
+  configuration. This source remains the cleanest way to *read* an employer
+  already configured.

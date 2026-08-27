@@ -51,7 +51,10 @@ pipeline -> ports / domain
   database creation, or file mutation during import.
 
 The built-in production acquisition adapters are `linkedin_direct`,
-`indeed_brightdata`, and `email_imap`. Fixture collectors are test-only.
+`indeed_brightdata`, `arbeitsagentur_direct`, `ats_direct`, `workable_direct`,
+`arbeitnow_direct`, `berlinstartupjobs_direct`, and the `email_imap` channel.
+`public_tests/test_public_contract.py` pins that list, so adding one is a
+deliberate act rather than a side effect. Fixture collectors are test-only.
 Historical source values may remain readable for data compatibility.
 
 ## Extend before you add

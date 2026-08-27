@@ -260,6 +260,58 @@ and capped, so a posting first published weeks ago may only now reach the pages
 a profile reads — a narrow window discards it on the first day it was ever
 visible.
 
+## Token-free board controls (`workable_direct`, `arbeitnow_direct`, `berlinstartupjobs_direct`)
+
+Three sources that read public boards needing no per-employer configuration —
+the complement to `ats_direct`, which reads one employer at a time and can only
+read employers someone has already listed. See
+[`specs/2026-08-27-token-free-board-sources.md`](specs/2026-08-27-token-free-board-sources.md).
+
+```toml
+[sources.workable_direct]
+enabled = true
+max_listing_pages = 12         # 20 postings per page, followed by an opaque cursor
+
+[sources.arbeitnow_direct]
+enabled = true
+max_listing_pages = 8          # whole-board feed; no query matrix
+
+[sources.berlinstartupjobs_direct]
+enabled = true
+max_listing_pages = 2          # 100 postings per page; the board is small
+```
+
+`workable_direct` uses the profile's `search_queries` and `locations` like
+`linkedin_direct`, and takes an English location name (`"Germany"`, not
+`"Deutschland"` — the opposite of `arbeitsagentur_direct`). It needs no detail
+request: the listing already carries the description, requirements, and
+benefits sections, which are joined into one description.
+
+`arbeitnow_direct` and `berlinstartupjobs_direct` ignore `search_queries` and
+`locations` entirely — they page a whole board and let the pipeline filter.
+`max_listing_pages` is the only bound on how much they read.
+
+Three behaviors are shared and worth knowing before tuning `max_listing_pages`:
+
+| Behavior | Why |
+|---|---|
+| A rate-limit response ends that source's paging and keeps what it already collected | one of these boards refuses a sub-second page loop; `base_delay_seconds` is what prevents it, and retrying a rate limit only spends the budget faster |
+| A posting whose employer cannot be determined is dropped, with an event | a blank company would reach every sink; `berlinstartupjobs_direct` reads the employer out of the posting title, and a title without the `//` separator has none |
+| Postings are not filtered by language or freshness here | both are pipeline decisions; `workable_direct` records the board's own language tag in the raw payload as corroboration only |
+
+These surfaces carry the same staffing and crowd-work re-listers the search
+surfaces do — on one sample a crowd-work platform was the second most frequent
+company. Set the publisher denylist below before enabling them.
+
+Two properties of `arbeitnow_direct` are worth expecting rather than treating
+as defects. Its employer names arrive lowercased and unspaced, as the feed
+sends them (`jetbrains`, not `JetBrains`) — the denylist casefolds, so matching
+is unaffected, but a publication sink shows them as received rather than
+prettified, because inventing a display name would be a guess. And a minority
+of its postings carry no location at all; those are passed through empty and
+rejected by the `country` step, rather than being given a default that would
+make an unplaceable posting look placed.
+
 ## Publisher denylist (`excluded_company_names`)
 
 `[filters] excluded_company_names` rejects a job whose `company_name` is a

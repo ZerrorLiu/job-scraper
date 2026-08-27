@@ -40,10 +40,13 @@ def test_public_registry_exposes_only_supported_production_inputs() -> None:
     registry = create_builtin_registry()
 
     assert registry.sources.available() == (
+        "arbeitnow_direct",
         "arbeitsagentur_direct",
         "ats_direct",
+        "berlinstartupjobs_direct",
         "indeed_brightdata",
         "linkedin_direct",
+        "workable_direct",
     )
     assert registry.channels.available() == ("email_imap",)
 

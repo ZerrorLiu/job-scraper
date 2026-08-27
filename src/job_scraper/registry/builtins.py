@@ -8,9 +8,12 @@ from pathlib import Path
 from job_scraper.adapters.sinks.csv import DEFAULT_RETAINED_EXPORTS, CsvSink
 from job_scraper.adapters.sinks.notion_daily import NotionDailySink
 from job_scraper.adapters.sources.brightdata.indeed import BrightDataIndeedSource
+from job_scraper.adapters.sources.direct.arbeitnow import ArbeitnowDirectSource
 from job_scraper.adapters.sources.direct.arbeitsagentur import ArbeitsagenturDirectSource
 from job_scraper.adapters.sources.direct.ats import AtsDirectSource
+from job_scraper.adapters.sources.direct.berlinstartupjobs import BerlinStartupJobsDirectSource
 from job_scraper.adapters.sources.direct.linkedin import LinkedInDirectSource
+from job_scraper.adapters.sources.direct.workable import WorkableDirectSource
 from job_scraper.adapters.sources.email.imap import ImapEmailChannel
 from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.application.acquisition import RequestCoalescer, RequestGate
@@ -86,6 +89,9 @@ def create_builtin_registry() -> ComponentRegistry:
     registry.register_source("indeed_brightdata", _build_indeed)
     registry.register_source("ats_direct", _build_ats_direct)
     registry.register_source("arbeitsagentur_direct", _build_arbeitsagentur)
+    registry.register_source("workable_direct", _build_workable)
+    registry.register_source("arbeitnow_direct", _build_arbeitnow)
+    registry.register_source("berlinstartupjobs_direct", _build_berlinstartupjobs)
     registry.register_channel("email_imap", _build_email)
     registry.register_step("country", CountryStep)
     registry.register_step("freshness", FreshnessStep)
@@ -176,6 +182,20 @@ def _build_ats_direct(request: SourceBuildRequest) -> AtsDirectSource:
 
 def _build_arbeitsagentur(request: SourceBuildRequest) -> ArbeitsagenturDirectSource:
     return ArbeitsagenturDirectSource(
+        request.http, request.settings, event_logger=request.event_logger
+    )
+
+
+def _build_workable(request: SourceBuildRequest) -> WorkableDirectSource:
+    return WorkableDirectSource(request.http, request.settings, event_logger=request.event_logger)
+
+
+def _build_arbeitnow(request: SourceBuildRequest) -> ArbeitnowDirectSource:
+    return ArbeitnowDirectSource(request.http, request.settings, event_logger=request.event_logger)
+
+
+def _build_berlinstartupjobs(request: SourceBuildRequest) -> BerlinStartupJobsDirectSource:
+    return BerlinStartupJobsDirectSource(
         request.http, request.settings, event_logger=request.event_logger
     )
 
