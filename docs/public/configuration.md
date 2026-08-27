@@ -168,6 +168,120 @@ special `run_brightdata_notion_e2e` command is also blocked by the direct flag.
 Separately set the email flag to `true` only if email detail enrichment is also
 desired.
 
+## Employer applicant-tracking board controls (`ats_direct`)
+
+Reads employer applicant-tracking boards directly instead of a search or
+aggregation surface. It ignores `search_queries`/`locations` entirely — its
+unit of work is a board token, not a query matrix — so cost scales with the
+configured employer count. See
+[`specs/2026-08-27-employer-direct-source-coverage.md`](specs/2026-08-27-employer-direct-source-coverage.md).
+
+```toml
+[sources.ats_direct]
+enabled = true
+
+[[sources.ats_direct.options.boards]]
+provider = "personio"
+token = "examplecorp"          # the board's Personio subdomain
+company_name = "Example Corp"  # optional; falls back to a title-cased token
+
+[[sources.ats_direct.options.boards]]
+provider = "jsonld"
+token = "https://careers.example.test/backend-engineer"  # a single posting page
+company_name = "Careers Page GmbH"
+```
+
+An unknown `provider` id fails at load time, before any request. A token
+that is unreachable, returns an error, or returns a payload the provider's
+parser does not recognize fails that token only; the rest of the run is
+unaffected. Provider support is a table of provider id → request → parser in
+`collectors/ats.py`; adding a provider adds one row and one parser function.
+
+**Finding a `personio` token.** A board token is the company's subdomain in
+`https://{token}.jobs.personio.de/`. This is workspace configuration, found
+by a person, not discovered automatically — the reasoning is under
+[Design and constraints](specs/2026-08-27-employer-direct-source-coverage.md#design-and-constraints)
+in the source spec. Two ways to find one for a target employer:
+
+- Search `site:jobs.personio.de "<company name>"`; the subdomain in any
+  result is the token.
+- Open the employer's own careers/"Karriere" link — many redirect straight
+  to their Personio board — and read the token off the resulting URL.
+
+Confirm a token before adding it by opening `https://{token}.jobs.personio.de/xml`
+directly; a valid board returns XML, not an error page.
+
+**Finding a `jsonld` token.** The token is the posting page URL itself — no
+discovery beyond finding the page. Confirm it by viewing the page source for
+a `<script type="application/ld+json">` block containing `"@type":
+"JobPosting"`.
+
+## Public employment agency controls (`arbeitsagentur_direct`)
+
+Reads Germany's public statutory employment-service job search API — public,
+unmetered, and unauthenticated. Uses the profile's `search_queries` and
+`locations` like `linkedin_direct`. See
+[`specs/2026-08-27-public-employment-agency-source.md`](specs/2026-08-27-public-employment-agency-source.md).
+
+```toml
+[sources.arbeitsagentur_direct]
+enabled = true
+max_listing_pages = 4          # 25 postings per page
+
+[sources.arbeitsagentur_direct.options]
+exclude_private_intermediary = false  # a posting placed by a staffing agency, not the employer
+exclude_temporary_employment = false  # a posting for temporary-employment agency work
+# search_path / detail_path override the pinned default endpoint versions;
+# set them only after confirming the provider has moved a path again.
+```
+
+Both exclusion flags default to `false` (nothing is excluded silently) and are
+applied as search parameters, not by inspecting each posting — the matching
+per-posting flags are optional in the payload, so a posting that omits one
+cannot be told from one that sets it false.
+
+A `403` from either endpoint fails loudly, names the endpoint, and is not
+retried — the provider has moved the endpoint version before while leaving the
+fixed public client identifier valid, so a `403` here has meant a retired path,
+not a rejected credential.
+
+Three things about this surface differ from every other source, and each one
+fails silently if copied from another profile:
+
+| Key | What this surface needs | What happens otherwise |
+|---|---|---|
+| `locations` | the German place name, e.g. `"Deutschland"` | `"Germany"` resolves to nothing and the run returns zero postings without an error |
+| `recent_post_age_hours` / `bootstrap_post_age_hours` | wide — weeks to months | a posting stays listed for months and the date recorded is *first* publication, so a 24h window finds only what was reported today |
+| `require_english` | `false` when the profile admits non-English descriptions | the CSV export queries English rows only, so German postings are acquired and then dropped on the way out |
+
+Freshness on this surface is not a feed window. "Old" does not mean "filled":
+an employer reports a vacancy and it stays listed. Pagination is also ranked
+and capped, so a posting first published weeks ago may only now reach the pages
+a profile reads — a narrow window discards it on the first day it was ever
+visible.
+
+## Publisher denylist (`excluded_company_names`)
+
+`[filters] excluded_company_names` rejects a job whose `company_name` is a
+publisher, staffing agency, or crowd-work platform rather than an employer —
+exact match after casefolding and whitespace normalization, so a denylist
+entry never matches a publisher's name occurring as a substring of a longer
+employer name. It is evaluated by `CompanyStep` for every source, under
+`RejectionReason.COMPANY_IS_PUBLISHER`, distinct from `COMPANY_NOT_ALLOWED`.
+Empty by default; nothing is rejected until it is set.
+
+```toml
+[filters]
+excluded_company_names = ["eFinancialCareers", "Emails", "Unknown"]
+```
+
+The example above is the email channel's old hardcoded publisher set —
+`efinancialcareers` a job-board publisher, `Emails` a sender-domain
+extraction artifact, `Unknown` the generic-extraction sentinel for a card
+with no recoverable company name — now a workspace choice instead of code.
+See
+[`specs/2026-08-27-employer-direct-source-coverage.md`](specs/2026-08-27-employer-direct-source-coverage.md).
+
 ## Secrets
 
 Copy `.env.example` to `.env` and fill only enabled integrations. Supported

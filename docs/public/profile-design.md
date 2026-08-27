@@ -69,6 +69,33 @@ user's intent is clear: `target_keywords` should be the *narrowest* set that
 still admits everything they want to see, and `include_keywords` can be much
 broader because a false positive there only adds an annotation.
 
+### Two keyword lists, two opposite matching rules
+
+`target_keywords` and `excluded_requirement_patterns` sit next to each other in
+the same file and look like the same kind of list. They match by opposite
+rules, and each rule fails in the opposite direction:
+
+| Field | Matching | Fails when you write |
+|---|---|---|
+| `target_keywords`, `exclude_keywords`, `target_rules` | **word boundary** (`(?<![a-z0-9])…(?![a-z0-9])`) | a stem — it matches nothing inside a longer word |
+| `excluded_requirement_patterns` | **whole substring**, on a normalized copy | a bare noun — it matches only that exact run of characters, so a qualifier in front defeats it |
+
+This matters most in a compounding language. German glues its nouns together,
+so on a German-language surface a stem in `target_keywords` is inert:
+`assistenz` does not match `Teamassistenz`, `recruit` does not match
+`Recruiter`, `buchhalt` does not match `Buchhalter`. In one measured profile
+this silently rejected an entire query's results — a query returning only
+compounds accepted 0% until the whole words were written out.
+
+The same profile's `excluded_requirement_patterns` failed the other way:
+`deutschkenntnisse` did not match `sehr gute Deutschkenntnisse`, so the most
+common German phrasing of a language requirement passed straight through.
+Writing the phrasings rather than the vocabulary raised the rejection rate from
+35% to 59% on the same sample.
+
+Derive both lists from real rejected titles and descriptions rather than
+guessing them — the compounds that matter are not the ones that come to mind.
+
 `target_match_scope` is `"title"` or `"combined"` (title plus description).
 `init` writes `"combined"`. Prefer `"title"` when the user's signal is a role
 name, and `"combined"` when it is a technology that may only appear in the body.
@@ -96,12 +123,44 @@ cross product.
   country, which is derived from the posting, not from the search location.
 - `require_english`, `allowed_description_languages`, and
   `minimum_english_ratio` are the language policy. Set them only when the user
-  actually cannot work in the local language; they reject real jobs.
+  actually cannot work in the local language; they reject real jobs. They are
+  one interacting contract with exactly two modes, not three independent
+  knobs:
+  - **`allowed_description_languages` non-empty.** The verdict is decided by
+    label membership alone — a description passes iff its detected language
+    label (`English`, `German`, `Mixed`, or `Unknown`) is in the list.
+    `minimum_english_ratio` cannot affect the verdict in this mode and
+    `load_config` refuses to load a profile that sets both, so you don't have
+    to reason about the interaction: pick this mode and the ratio key is
+    simply absent from the profile.
+  - **`allowed_description_languages` empty.** `minimum_english_ratio` gates
+    the verdict through `require_english`: a description passes only if it is
+    labelled `English` at or above the configured ratio (or if
+    `require_english = false`, everything passes).
+
+  An earlier version of this contract let a non-empty list fall through to
+  the ratio check for descriptions labelled `English`, which rejected a
+  *more*-English description while a *less*-English one admitted through
+  another label in the same list passed — see
+  [`specs/2026-08-27-description-language-policy-defect.md`](specs/2026-08-27-description-language-policy-defect.md)
+  for the measurement that found it. The two-mode split above is the fix.
+- These keys judge what language a posting is *written in*.
+  `excluded_requirement_patterns` is what judges the language an employer
+  *demands*, and for a candidate reading a foreign-language market that is the
+  one that matters. Patterns match as whole substrings against a normalized
+  copy of the description, so a pattern naming a bare noun does not match that
+  noun behind an intensifier — write the phrasings, not the vocabulary.
 - `full_time_only`, `allow_part_time`, `allow_temporary` shape employment
   scope. `init` writes the permissive combination. Student and internship
   postings are always rejected by the role step regardless of these values.
 - `company_names` is an allowlist, empty by default. A non-empty list means
   *only* those employers pass.
+- `excluded_company_names` is a denylist, empty by default, checked before
+  the allowlist: a company matching it is rejected under
+  `RejectionReason.COMPANY_IS_PUBLISHER` even if it also matches
+  `company_names`. It exists for a `company_name` that names a publisher,
+  staffing agency, or crowd-work platform rather than an employer — see
+  [`specs/2026-08-27-employer-direct-source-coverage.md`](specs/2026-08-27-employer-direct-source-coverage.md).
 
 ## Destinations
 
