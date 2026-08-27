@@ -38,6 +38,13 @@ def build_daily_properties(
         properties["Source"] = rich_text_property(", ".join(source_names))
     if found_date is not None:
         properties["Date"] = {"date": {"start": found_date.isoformat()}}
+    # Opt-in: only tables whose schema already has "Posted At" (added by a
+    # one-off per-table migration, not the shared daily-table schema) get it
+    # written. Writing an unknown property name to a table without it is a
+    # Notion API validation error, so this must stay conditional rather than
+    # unconditional like the fields above.
+    if "Posted At" in property_types and job.posted_at is not None:
+        properties["Posted At"] = {"date": {"start": job.posted_at.date().isoformat()}}
     return properties
 
 
