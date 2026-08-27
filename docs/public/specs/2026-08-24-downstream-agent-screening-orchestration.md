@@ -81,6 +81,7 @@ cross-job cleanup collisions.
 
 ## Follow-ups
 
-Only add a public post-run extension point if multiple independent downstream
-consumers later require one. A single private resume workflow does not justify
-expanding the public component model.
+Superseded as the forward-looking architecture decision by
+[`2026-08-28-first-class-agent-screening.md`](2026-08-28-first-class-agent-screening.md).
+This specification remains the record of the previous one-way downstream
+orchestration and its completed acceptance criteria.
