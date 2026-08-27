@@ -35,6 +35,7 @@ def policy_from_legacy(
         acceptance_scope=filters.target_match_scope,
         acceptance_rules=rules,
         allowed_companies=tuple(filters.company_names),
+        excluded_company_names=tuple(filters.excluded_company_names),
         full_time_only=filters.full_time_only,
         allow_part_time=filters.allow_part_time,
         allow_temporary=filters.allow_temporary,

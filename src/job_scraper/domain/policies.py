@@ -27,6 +27,7 @@ class FilterPolicy:
     acceptance_scope: str = "title"
     acceptance_rules: tuple[TargetRule, ...] = ()
     allowed_companies: tuple[str, ...] = ()
+    excluded_company_names: tuple[str, ...] = ()
     full_time_only: bool = True
     allow_part_time: bool = False
     allow_temporary: bool = False

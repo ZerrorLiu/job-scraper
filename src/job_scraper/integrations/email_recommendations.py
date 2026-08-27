@@ -723,8 +723,6 @@ def extract_job_candidates(
                 title, context, url_location
             )
             company = card_company or company_from_title or infer_company(context, title, "")
-            if is_publisher_company(company):
-                company = ""
             company = company or url_company
             # The surrounding recommendation cards may contain unrelated
             # locations. Prefer the selected job URL and detail page only.
@@ -818,11 +816,6 @@ def is_efinancialcareers_url(url: str) -> bool:
     host = (urlsplit(url).hostname or "").casefold()
     roots = ("efinancialcareers.com", "efinancialcareers.de", "efinancialcareers.test")
     return any(host == root or host.endswith(f".{root}") for root in roots)
-
-
-def is_publisher_company(value: str) -> bool:
-    normalized = normalize_whitespace(value).casefold()
-    return normalized in {"efinancialcareers", "emails", "unknown"}
 
 
 def efinancial_url_metadata(url: str) -> tuple[str, str, str]:
@@ -1019,7 +1012,7 @@ def _split_linkedin_card_suffix(value: str) -> tuple[str, str]:
 
 def _valid_linkedin_company(value: str) -> str:
     company = cleanup_company(value)
-    if not company or is_publisher_company(company) or looks_like_location(company):
+    if not company or looks_like_location(company) or looks_like_malformed_company(company):
         return ""
     return company
 
@@ -1664,7 +1657,7 @@ def infer_company(context: str, title: str, sender: str) -> str:
         )
         if after_title:
             company = cleanup_company(after_title.group("company"))
-            if company:
+            if company and not looks_like_malformed_company(company):
                 return company
     patterns = [
         r"\bCompany\s*:\s*(?P<company>[A-Za-z0-9][\w .,&+'/-]{1,80})",
@@ -1674,18 +1667,23 @@ def infer_company(context: str, title: str, sender: str) -> str:
         match = re.search(pattern, context or "", flags=re.IGNORECASE)
         if match:
             company = cleanup_company(match.group("company"))
-            if company and company.lower() not in {
-                "germany",
-                "berlin",
-                "munich",
-                "netherlands",
-                "ireland",
-                "denmark",
-                "sweden",
-                "luxembourg",
-                "austria",
-                "belgium",
-            }:
+            if (
+                company
+                and company.lower()
+                not in {
+                    "germany",
+                    "berlin",
+                    "munich",
+                    "netherlands",
+                    "ireland",
+                    "denmark",
+                    "sweden",
+                    "luxembourg",
+                    "austria",
+                    "belgium",
+                }
+                and not looks_like_malformed_company(company)
+            ):
                 return company
     sender_domain = re.search(r"@([A-Za-z0-9.-]+)", sender or "")
     if sender_domain:
@@ -1708,6 +1706,42 @@ def cleanup_company(value: str) -> str:
     cleaned = re.split(r"\s+(?:in|is|has|and)\s+", cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
     cleaned = re.split(r"\s*[|•]\s*", cleaned, maxsplit=1)[0]
     return cleaned.strip(" -,:")
+
+
+_SALARY_FIGURE_PATTERN = re.compile(r"[€$£]|\b\d[\d.,]*\s*(?:k|eur|usd|gbp)\b", re.IGNORECASE)
+_GENDER_MARKER_PATTERN = re.compile(r"\([mwdMWD/\s]{3,9}\)")
+_CALL_TO_ACTION_PATTERNS = (
+    r"\bjetzt bewerben\b",
+    r"\bapply now\b",
+    r"\blearn more\b",
+    r"\bsee more\b",
+    r"\bmehr erfahren\b",
+    r"\bjob ansehen\b",
+    r"\bview job\b",
+)
+
+
+def looks_like_malformed_company(value: str) -> bool:
+    """A generic-extraction candidate that leaked something other than a company name.
+
+    `infer_company`'s regexes capture whatever text sits where a company name
+    is expected; when the card has no real company metadata, that text is
+    often role text, a salary figure, a German gender-neutral marker like
+    "(m/w/d)", or a call-to-action phrase instead. Filtering these here keeps
+    the leak from becoming the emitted `company_name`, which the shared
+    publisher denylist (`CompanyStep`) cannot catch since it isn't a
+    publisher name at all.
+    """
+    if not value:
+        return True
+    if looks_like_role(value):
+        return True
+    if _SALARY_FIGURE_PATTERN.search(value):
+        return True
+    if _GENDER_MARKER_PATTERN.search(value):
+        return True
+    lowered = value.lower()
+    return any(re.search(pattern, lowered) for pattern in _CALL_TO_ACTION_PATTERNS)
 
 
 def infer_location(context: str, full_text: str) -> str:

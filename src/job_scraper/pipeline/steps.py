@@ -14,6 +14,7 @@ from job_scraper.pipeline.normalize import (
 )
 from job_scraper.pipeline.role_filter import (
     company_matches_allowlist,
+    company_matches_denylist,
     has_excluded_keyword,
     is_full_time_role,
     text_matches_target,
@@ -74,6 +75,11 @@ class CompanyStep:
     name = "company"
 
     def evaluate(self, job: JobRecord, context: EvaluationContext) -> Decision:
+        if company_matches_denylist(
+            job.company_name,
+            list(context.policy.excluded_company_names),
+        ):
+            return Decision.reject(RejectionReason.COMPANY_IS_PUBLISHER, step=self.name)
         if company_matches_allowlist(
             job.company_name,
             list(context.policy.allowed_companies),

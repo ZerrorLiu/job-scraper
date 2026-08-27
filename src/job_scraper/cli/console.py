@@ -71,6 +71,7 @@ def reason_label(reason: str) -> str:
         "not_target_country": "outside target countries",
         "older_than_24h": "older than post-age window",
         "company_not_allowed": "company not allowed",
+        "company_is_publisher": "company is a publisher, not an employer",
         "missing_target_keywords": "missing target keywords",
         "excluded_keyword": "excluded keyword",
         "excluded_requirement": "excluded requirement",

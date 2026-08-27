@@ -49,6 +49,7 @@ class FiltersConfig:
     minimum_english_ratio: float
     target_rules: list[TargetRuleConfig] = field(default_factory=list)
     company_names: list[str] = field(default_factory=list)
+    excluded_company_names: list[str] = field(default_factory=list)
     full_time_only: bool = True
     allow_part_time: bool = False
     allow_temporary: bool = False
@@ -112,6 +113,7 @@ KNOWN_FILTER_FIELDS = {
     "target_rules",
     "minimum_english_ratio",
     "company_names",
+    "excluded_company_names",
     "full_time_only",
     "allow_part_time",
     "allow_temporary",
@@ -181,6 +183,16 @@ def load_config(path: str | Path) -> AppConfig:
     for source_name, source_config in source_configs.items():
         inherit_search_matrix(source_name, source_config, source_configs)
 
+    allowed_description_languages = [
+        str(value).strip()
+        for value in filters.get("allowed_description_languages", [])
+        if str(value).strip()
+    ]
+    minimum_english_ratio = resolve_minimum_english_ratio(
+        filters,
+        allowed_description_languages,
+    )
+
     return AppConfig(
         project=ProjectConfig(
             timezone=project["timezone"],
@@ -211,11 +223,16 @@ def load_config(path: str | Path) -> AppConfig:
             ],
             target_match_scope=str(filters.get("target_match_scope", "title")).strip().lower()
             or "title",
-            minimum_english_ratio=float(filters["minimum_english_ratio"]),
+            minimum_english_ratio=minimum_english_ratio,
             target_rules=load_target_rules(filters),
             company_names=[
                 str(value).strip()
                 for value in filters.get("company_names", [])
+                if str(value).strip()
+            ],
+            excluded_company_names=[
+                str(value).strip()
+                for value in filters.get("excluded_company_names", [])
                 if str(value).strip()
             ],
             full_time_only=bool(filters.get("full_time_only", True)),
@@ -227,11 +244,7 @@ def load_config(path: str | Path) -> AppConfig:
                 if str(value).strip()
             ],
             require_english=bool(filters.get("require_english", True)),
-            allowed_description_languages=[
-                str(value).strip()
-                for value in filters.get("allowed_description_languages", [])
-                if str(value).strip()
-            ],
+            allowed_description_languages=allowed_description_languages,
         ),
         http=HttpConfig(
             user_agent=http["user_agent"],
@@ -251,6 +264,34 @@ def load_config(path: str | Path) -> AppConfig:
             daily_table_prefix=str(notion.get("daily_table_prefix", "")).strip(),
         ),
     )
+
+
+def resolve_minimum_english_ratio(filters: dict, allowed_description_languages: list[str]) -> float:
+    """Resolve `minimum_english_ratio`, honoring which of the two language modes applies.
+
+    `allowed_description_languages`, when non-empty, decides the language
+    verdict by membership alone -- see `is_allowed_description_language` in
+    `pipeline/language_filter.py`. `minimum_english_ratio` cannot affect any
+    verdict in that mode, so a profile setting both is asked to restate its
+    intent rather than have the ratio silently do nothing. See
+    `docs/public/specs/2026-08-27-description-language-policy-defect.md`.
+    """
+    has_ratio = "minimum_english_ratio" in filters
+    if allowed_description_languages:
+        if has_ratio:
+            raise ValueError(
+                "[filters] minimum_english_ratio has no effect once "
+                "allowed_description_languages is set: the language verdict is decided by "
+                "list membership alone. Remove minimum_english_ratio, or empty "
+                "allowed_description_languages to use the ratio gate instead."
+            )
+        return 0.0
+    if not has_ratio:
+        raise ValueError(
+            "[filters] minimum_english_ratio is required when allowed_description_languages "
+            "is empty"
+        )
+    return float(filters["minimum_english_ratio"])
 
 
 def load_source_config(sources: dict, source_name: str) -> SourceConfig:

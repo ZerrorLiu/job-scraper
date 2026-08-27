@@ -53,7 +53,20 @@ class CsvSink:
         # This sink is cumulative: its content is the whole stored history
         # re-filtered, not just the jobs this run accepted.
         del jobs, context
-        languages = ["English"] if self._policy.require_english else None
+        # Which languages to read must follow the same two-mode contract the
+        # `language` step follows, or the export answers a different question
+        # from the acquisition that filled the database. A non-empty
+        # `allowed_description_languages` decides by membership and
+        # `require_english` does not apply -- reading `require_english` here
+        # regardless meant a profile that admitted German acquired German
+        # postings and then silently dropped every one of them on the way out.
+        # See specs/2026-08-27-description-language-policy-defect.md.
+        if self._policy.allowed_description_languages:
+            languages = list(self._policy.allowed_description_languages)
+        elif self._policy.require_english:
+            languages = ["English"]
+        else:
+            languages = None
         rows = self._reader.export_jobs(languages=languages)
         rows = [
             row for row in rows if export_row_matches_policy(cast(ExportRow, row), self._policy)

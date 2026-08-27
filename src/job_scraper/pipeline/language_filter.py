@@ -151,16 +151,25 @@ def is_allowed_description_language(
     require_english: bool,
     allowed_languages: tuple[str, ...],
 ) -> bool:
+    """Decide whether a description's language passes the policy.
+
+    The three keys are one interacting contract, not three independent
+    knobs: a non-empty `allowed_languages` decides the verdict by label
+    membership alone, full stop. `english_threshold` governs only the empty
+    branch below. Consulting it for a membership hit would gate a single
+    label (English) behind a bar the other admitted labels never faced,
+    which rejects a more-English description while a less-English one
+    admitted through a different label passes -- see
+    `docs/public/specs/2026-08-27-description-language-policy-defect.md`.
+    `config.load_config` refuses to load a profile that sets both, so this
+    function never has to choose between the two at runtime.
+    """
     normalized_language = " ".join((language or "").split()).strip().casefold()
     normalized_allowed = {
         " ".join(value.split()).strip().casefold() for value in allowed_languages if value.strip()
     }
     if normalized_allowed:
-        if normalized_language not in normalized_allowed:
-            return False
-        if normalized_language == "english":
-            return english_score >= english_threshold
-        return True
+        return normalized_language in normalized_allowed
     return not require_english or is_english_job(language, english_score, english_threshold)
 
 

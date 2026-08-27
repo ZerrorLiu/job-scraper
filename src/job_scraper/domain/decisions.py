@@ -9,6 +9,7 @@ class RejectionReason(StrEnum):
     NOT_TARGET_COUNTRY = "not_target_country"
     TOO_OLD = "older_than_24h"
     COMPANY_NOT_ALLOWED = "company_not_allowed"
+    COMPANY_IS_PUBLISHER = "company_is_publisher"
     NOT_FULL_TIME = "not_full_time"
     EXCLUDED_KEYWORD = "excluded_keyword"
     MISSING_TARGET_KEYWORDS = "missing_target_keywords"

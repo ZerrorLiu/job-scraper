@@ -196,3 +196,20 @@ def company_matches_allowlist(
     if not allowed_company_names:
         return True
     return any_keyword_matches(allowed_company_names, normalize_text(company_name))
+
+
+def company_matches_denylist(
+    company_name: str, excluded_company_names: Sequence[str] | None = None
+) -> bool:
+    """True when `company_name` is a configured publisher, not an employer.
+
+    Exact match on normalized text, not `any_keyword_matches`'s word-boundary
+    substring search: a publisher denylist entry like "Amazon" must not reject
+    a real employer named "Amazon Web Services GmbH".
+    """
+    if not excluded_company_names:
+        return False
+    normalized = normalize_text(company_name)
+    if not normalized:
+        return False
+    return normalized in {normalize_text(value) for value in excluded_company_names}
