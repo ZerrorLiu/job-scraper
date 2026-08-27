@@ -11,6 +11,7 @@ without shipping anyone's search profile or workspace configuration.
 - IMAP recommendation-email ingestion
 - Typed domain records and composable pipeline steps
 - SQLite, cumulative CSV, and Notion adapters
+- A versioned JSON feed for a downstream screener
 - Profile orchestration, request coalescing, bounded concurrency, and a live
   terminal dashboard
 - Offline, credential-free quality checks
@@ -20,110 +21,51 @@ company watchlists, Notion workspace names, personal documents, or runtime
 data. Those live in the ignored `config/`, `data/`, and `.env` workspace on
 each installation.
 
-## Agent-first setup
+## Installation
 
-This project is designed to be installed and configured with an agent rather
-than distributed as an executable.
+This project is installed and configured with an agent rather than distributed
+as an executable. You describe what you want to find; the agent generates your
+private workspace.
 
-Requirements:
+Requirements are Python 3.11+, [uv](https://docs.astral.sh/uv/getting-started/installation/),
+and credentials only for the integrations you enable. The default composition —
+LinkedIn into a CSV file — needs no credentials and no accounts.
 
-- Python 3.11 or newer
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- Credentials only for the integrations the user enables
-
-After cloning:
-
-```powershell
+```bash
 uv sync --extra dev
-Copy-Item .env.example .env
+cp .env.example .env
 uv run job-scraper capabilities --json
 ```
 
-Ask the Agent to turn the user's requirements into one or more `init`
-commands. For each profile it supplies explicit queries, locations, countries,
-filter keywords, source IDs, and sink IDs:
+Then hand the agent [the deployment runbook](docs/public/agent-deployment.md).
+It is the complete procedure: the interview, credential acquisition for each
+optional integration, workspace generation, and the offline verification
+ladder. A minimal deployment is one `init` command:
 
-```powershell
-uv run job-scraper init `
-  --profile-id PROFILE_ID `
-  --label "PROFILE_LABEL" `
-  --query "SEARCH_QUERY" `
-  --location "SEARCH_LOCATION" `
-  --country COUNTRY_CODE `
-  --keyword "FILTER_SIGNAL" `
-  --source linkedin_direct `
-  --source indeed_brightdata `
-  --sink csv `
-  --sink notion_daily `
-  --email `
-  --imap-host "IMAP_HOST"
+```bash
+uv run job-scraper init \
+  --profile-id PROFILE_ID --label "PROFILE_LABEL" \
+  --query "SEARCH_QUERY" --location "SEARCH_LOCATION" --country COUNTRY_CODE \
+  --keyword "FILTER_SIGNAL" --timezone "AREA/CITY" \
+  --source linkedin_direct --sink csv
 ```
 
-Repeat `--query`, `--location`, `--country`, and `--keyword` as needed.
-Repeat `init` for additional independent profiles. The command writes only to
-the ignored private workspace and refuses to overwrite existing configuration.
-
-The Agent can use
-[the deployment playbook](docs/public/agent-deployment.md) and
-[configuration reference](docs/public/configuration.md), then validate it:
-
-```powershell
-uv run job-scraper list
-uv run job-scraper config validate --all
-uv run job-scraper doctor --all
-uv run job-scraper db init
-```
-
-Secrets are saved once in `.env`; they do not need to be entered for every
-run. A configuration directory outside the repository can be selected with
-`JOB_SCRAPER_CONFIG_DIR`.
+`init` writes only to the ignored private workspace and refuses to overwrite
+existing configuration. Secrets are saved once in `.env`. A workspace outside
+the repository is selected with `JOB_SCRAPER_CONFIG_DIR`.
 
 ## Running
 
-```powershell
-# Preview the deduplicated plan
-uv run job-scraper plan --show-queries
-
-# Run all enabled profiles, configured sources, channels, and sinks
-uv run job-scraper run
-
-# Run only one local profile
-uv run job-scraper run --profile <profile-id>
-
-# Use a temporary freshness override
-uv run job-scraper run --post-age-days 7
+```bash
+uv run job-scraper doctor --all         # runtime, credentials, destinations
+uv run job-scraper plan --show-queries  # preview the deduplicated plan
+uv run job-scraper run                  # every enabled profile and its outputs
 ```
 
-Profiles, sources, and queries are discovered from the private workspace.
-Every source selected during `init` is enabled there; daily runs do not need
-source-specific activation flags. The default mailbox lookback follows the
-widest configured online freshness window so one command covers the complete
-workflow consistently.
-
-### Repairing email detail enrichment
-
-Indeed jobs discovered in recommendation emails are enriched through Bright
-Data before filtering. Transient `408`, `429`, and `5xx` responses are retried
-with backoff. Listing URLs are processed in small concurrent batches; a batch
-that still fails is split until a persistently bad URL is isolated, so one
-vendor error does not downgrade every email job.
-
-To deliberately revisit recently processed messages after an upstream outage:
-
-```powershell
-uv run python -m job_scraper.jobs.ingest_email_recommendations `
-  --reprocess `
-  --lookback-days 1
-```
-
-This is a repair command, not the normal daily entry point. It ignores the
-processed-message state, evaluates the same email cards against every enabled
-email profile, and keeps normal database/Notion deduplication. Add
-`--skip-status-import` when the current Notion job-decision states do not need
-to be imported before the repair.
-
-Jobs marked `Applied` or `Not Interested` in Notion are normalized locally and
-excluded from later candidate processing so manual decisions remain authoritative.
+Profiles, sources, and queries are discovered from the private workspace, so
+the normal daily command takes no arguments and no activation flags. See
+[operations](docs/public/operations.md) for exceptional runs, the workspace
+database, the downstream feed, email repair, exports, and scheduling.
 
 ## Architecture
 
@@ -137,18 +79,24 @@ use-case orchestration
 ports + domain <- composable pipeline
       |
       v
-repositories / CSV / Notion
+repositories / CSV / Notion / feed
 ```
 
-See [architecture](docs/public/architecture.md) and the
-[extension guide](docs/public/extension-guide.md). Contributors and agents use
-the [development workflow](docs/public/agent-development-workflow.md), which
-keeps specifications, implementation, verification, and user-path review in
-one repeatable lifecycle.
+Dependencies point inward: domain and ports never depend on a vendor SDK,
+network transport, CLI, or database. A local profile selects component IDs; the
+public repository supplies implementations but no selection.
+
+## Documentation
+
+Start at [the documentation map](docs/public/README.md). It separates the
+install-and-run documents from the change-the-code documents.
+
+Contributors and agents read [`AGENTS.md`](AGENTS.md) first — it is
+authoritative on the privacy boundary, architecture rules, and quality gates.
 
 ## Quality checks
 
-```powershell
+```bash
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright

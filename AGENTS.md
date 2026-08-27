@@ -68,6 +68,33 @@ External raw payloads may use `object` at the adapter boundary. Convert them
 into typed domain values before entering application or pipeline code. A
 business rejection is a `Decision`, not an exception.
 
+Per-port detail is in
+[`docs/public/extension-guide.md`](docs/public/extension-guide.md).
+
+## Documentation
+
+[`docs/public/README.md`](docs/public/README.md) is the map. Documentation is
+split by audience, and a change belongs in exactly one place:
+
+| Kind of information | Home |
+|---|---|
+| How to install and configure an installation | `docs/public/agent-deployment.md` |
+| Everyday commands for an existing installation | `docs/public/operations.md` |
+| What a configuration key or environment variable does | `docs/public/configuration.md` |
+| Layers, concurrency, external writes, schema evolution | `docs/public/architecture.md` |
+| How to add a source, step, or sink | `docs/public/extension-guide.md` |
+| Why a behavior is the way it is | `docs/public/specs/<date>-<slug>.md` |
+| Repository law: privacy, architecture, gates | this file |
+
+`README.md` is a navigation page. It states what the project is, the shortest
+path to a working installation, and where to go next; it does not accumulate
+operational detail. Keep procedural instructions out of specs, and keep
+rationale out of the workflow document.
+
+Root-level Markdown is limited to `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
+and `SECURITY.md`. Working notes, migration write-ups, and superseded designs
+belong in the ignored `local/` archive, not in `docs/`.
+
 ## Quality gates
 
 Run before handing work back:
