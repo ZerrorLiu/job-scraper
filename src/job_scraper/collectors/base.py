@@ -33,10 +33,13 @@ class BaseCollector(ABC):
         """Fail before collection if this adapter's optional runtime is unavailable."""
         return None
 
-    def fetch_text(self, url: str) -> str:
+    def fetch_text(self, url: str, *, headers: dict[str, str] | None = None) -> str:
         last_error: Exception | None = None
+        request_headers = {"User-Agent": self.http_config.user_agent}
+        if headers:
+            request_headers.update(headers)
         for attempt in range(self.http_config.max_retries + 1):
-            request = Request(url, headers={"User-Agent": self.http_config.user_agent})
+            request = Request(url, headers=request_headers)
             try:
                 with urlopen(request, timeout=self.http_config.timeout_seconds) as response:
                     body = response.read().decode("utf-8", errors="replace")
@@ -53,7 +56,11 @@ class BaseCollector(ABC):
                 ConnectionResetError,
             ) as exc:
                 last_error = exc
-                if isinstance(exc, HTTPError) and exc.code == 429:
+                # A rejection a retry cannot fix: retrying a rate limit just spends
+                # the budget faster, and retrying a 403 dresses up "the path moved"
+                # as a transient failure instead of the named, non-retried error the
+                # caller needs to tell it apart from an expired credential.
+                if isinstance(exc, HTTPError) and exc.code in (403, 429):
                     raise
                 if attempt >= self.http_config.max_retries:
                     break

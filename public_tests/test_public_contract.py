@@ -39,7 +39,12 @@ from job_scraper.storage.db import Database
 def test_public_registry_exposes_only_supported_production_inputs() -> None:
     registry = create_builtin_registry()
 
-    assert registry.sources.available() == ("indeed_brightdata", "linkedin_direct")
+    assert registry.sources.available() == (
+        "arbeitsagentur_direct",
+        "ats_direct",
+        "indeed_brightdata",
+        "linkedin_direct",
+    )
     assert registry.channels.available() == ("email_imap",)
 
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from job_scraper.adapters.sinks.csv import DEFAULT_RETAINED_EXPORTS, CsvSink
 from job_scraper.adapters.sinks.notion_daily import NotionDailySink
 from job_scraper.adapters.sources.brightdata.indeed import BrightDataIndeedSource
+from job_scraper.adapters.sources.direct.arbeitsagentur import ArbeitsagenturDirectSource
+from job_scraper.adapters.sources.direct.ats import AtsDirectSource
 from job_scraper.adapters.sources.direct.linkedin import LinkedInDirectSource
 from job_scraper.adapters.sources.email.imap import ImapEmailChannel
 from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
@@ -82,6 +84,8 @@ def create_builtin_registry() -> ComponentRegistry:
     registry = ComponentRegistry()
     registry.register_source("linkedin_direct", _build_linkedin)
     registry.register_source("indeed_brightdata", _build_indeed)
+    registry.register_source("ats_direct", _build_ats_direct)
+    registry.register_source("arbeitsagentur_direct", _build_arbeitsagentur)
     registry.register_channel("email_imap", _build_email)
     registry.register_step("country", CountryStep)
     registry.register_step("freshness", FreshnessStep)
@@ -163,6 +167,16 @@ def _build_indeed(request: SourceBuildRequest) -> BrightDataIndeedSource:
         request.settings,
         snapshot_database=request.snapshot_database,
         event_logger=request.event_logger,
+    )
+
+
+def _build_ats_direct(request: SourceBuildRequest) -> AtsDirectSource:
+    return AtsDirectSource(request.http, request.settings, event_logger=request.event_logger)
+
+
+def _build_arbeitsagentur(request: SourceBuildRequest) -> ArbeitsagenturDirectSource:
+    return ArbeitsagenturDirectSource(
+        request.http, request.settings, event_logger=request.event_logger
     )
 
 
