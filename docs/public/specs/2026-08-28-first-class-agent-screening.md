@@ -290,6 +290,17 @@ this program.
   Service-level stop/start, service-user authorization, release verification,
   scheduled chaining, and failure recovery are proven; host-reboot recovery
   remains a maintenance-window acceptance item.
+- Fine-screen `7569518` removes the last sibling-checkout assumption from its
+  public CLI. It defaults to a standalone `job-scraper` argv with no working
+  directory; checkout-backed installations opt into an explicit JSON argv and
+  root. Fine-screen also stopped parsing the Positions `.env`: authorized
+  Notion credentials arrive through the process environment. Offline gates
+  passed 94 tests with one environment-dependent TeX test skipped, plus clean
+  Ruff and Pyright. A bounded VPS dry run then omitted `--positions-root`, used
+  the installed job-scraper executable with its private config directory,
+  resolved exactly one core job from cache, made zero model/external writes,
+  and exited 0. The checkout-backed service runner was separately replayed as
+  its service user, imported one bounded cached result, and exited 0.
 
 ## Acceptance criteria
 
@@ -330,7 +341,7 @@ this program.
 
 ### Deployment evolution
 
-- [ ] One local clone plus one private workspace can run the complete
+- [x] One local clone plus one private workspace can run the complete
   single-client workflow without a sibling code checkout or hard-coded path.
 - [x] The single-client workflow passes offline replay, shadow comparison,
   controlled publication, and the repository quality gates before VPS cutover.
