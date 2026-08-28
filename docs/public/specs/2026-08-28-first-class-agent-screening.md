@@ -159,6 +159,13 @@ compatibility, or data-recovery role.
   calls, atomic durable import, zero artifacts, bounded finalized publication,
   page-ID refresh, and preservation of unrelated Notion Screen state. A
   selected-job PDF/attachment cutover and host reboot remain separate gates.
+- Core publication cutover is now configured with rollback copies: the private
+  `ai` and `cpp` profiles override their acquisition sinks to CSV, so the
+  existing daily fine-screen unit owns their first Notion publication through
+  the finalized-result path. `review` and `discovery` profiles retain immediate
+  Notion compatibility while their semantic backlog is shadowed. The next
+  scheduled run, a selected-job attachment proof, and host reboot are still
+  required before retiring the compatibility boundary.
 
 ## Acceptance criteria
 
