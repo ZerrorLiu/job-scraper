@@ -294,7 +294,24 @@ class NotionDailySink:
             return
         resolved = NotionDatabaseBinding.from_database(database)
         if existing is None or existing.database_id != resolved.database_id:
-            self._binding_store.save(self._profile_id, resolved)
+            try:
+                self._binding_store.save(self._profile_id, resolved)
+            except OSError as exc:
+                # The binding is a cache: it lets the next run address this
+                # database by id instead of re-finding it by title. Failing to
+                # write it costs that shortcut and nothing else, and this runs
+                # *before* any row is published -- so letting it raise would
+                # throw away a whole track's postings to protect a cache. Warn
+                # and publish.
+                #
+                # The cost of the lost cache is worth naming: without it the
+                # next run resolves by table title, which is the path that
+                # creates a second table if a title or prefix has changed since.
+                self._logger(
+                    f"Notion | Warning | Could not record the database binding for "
+                    f"{self._profile_id}: {exc} | Publishing continues; the next run "
+                    "resolves this table by title"
+                )
 
 
 def _accepted_database_ids(accepted: AcceptedJob) -> list[str]:

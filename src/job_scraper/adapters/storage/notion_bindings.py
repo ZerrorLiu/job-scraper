@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, RLock
@@ -29,6 +30,38 @@ class NotionDatabaseBinding:
         if not database_id or not data_source_id:
             raise ValueError("Notion database response must include database and data source IDs")
         return cls(database_id=database_id, data_source_id=data_source_id)
+
+
+REPLACE_ATTEMPTS = 5
+REPLACE_BACKOFF_SECONDS = 0.05
+
+
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    """Move `source` onto `destination`, retrying while something else holds it.
+
+    The write is atomic by way of `os.replace`, which on POSIX succeeds even
+    when another reader has the destination open. On Windows it does not: any
+    open handle -- including one a virus scanner or search indexer takes on a
+    file the moment it is created -- fails the call with a permission error.
+    Our own code holds neither file open by this point (both reads and the
+    temporary write close before this runs), so the holder is external and the
+    wait is short.
+
+    Retrying is therefore correct rather than a mask: the operation is
+    idempotent, the obstruction is transient, and the alternative is losing a
+    binding write for a reason that has nothing to do with the caller. After
+    the last attempt the error is raised unchanged, because a permission error
+    that outlasts the backoff is a real one.
+    """
+
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_BACKOFF_SECONDS * (attempt + 1))
 
 
 class NotionDatabaseBindingStore:
@@ -77,7 +110,7 @@ class NotionDatabaseBindingStore:
                     handle.flush()
                     os.fsync(handle.fileno())
                     temporary_path = Path(handle.name)
-                os.replace(temporary_path, self.path)
+                _replace_with_retry(temporary_path, self.path)
             finally:
                 if temporary_path is not None and temporary_path.exists():
                     temporary_path.unlink()

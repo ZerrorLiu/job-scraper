@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
+
+import pytest
 
 from job_scraper.adapters.sinks.notion_daily import NotionDailySink
 from job_scraper.adapters.sinks.notion_workflow import configured_data_source_ids
@@ -322,3 +325,85 @@ def test_db_status_reports_a_binding_without_creating_it(
         "notion binding profile_one: database_id=database-one, data_source_id=source-one"
         in missing_output
     )
+
+
+def test_a_held_destination_is_retried_rather_than_lost(monkeypatch, tmp_path: Path) -> None:
+    """A transient holder must not cost a binding write.
+
+    On Windows any open handle on the destination -- including one a scanner
+    takes on a file the moment it is created -- fails `os.replace`. Our own
+    code holds neither file by then, so the obstruction is external and brief,
+    and the move is idempotent.
+    """
+    from job_scraper.adapters.storage import notion_bindings
+
+    path = tmp_path / "data" / "notion_database_bindings.json"
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "Access is denied")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(notion_bindings.os, "replace", flaky_replace)
+    monkeypatch.setattr(notion_bindings, "REPLACE_BACKOFF_SECONDS", 0)
+
+    NotionDatabaseBindingStore(path).save("fictional", NotionDatabaseBinding("db-1", "src-1"))
+
+    assert calls["n"] == 3
+    assert NotionDatabaseBindingStore(path).load("fictional") == NotionDatabaseBinding(
+        "db-1", "src-1"
+    )
+
+
+def test_a_holder_that_outlasts_the_backoff_still_raises(monkeypatch, tmp_path: Path) -> None:
+    """A permission error that survives every attempt is a real one."""
+    from job_scraper.adapters.storage import notion_bindings
+
+    def always_denied(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(notion_bindings.os, "replace", always_denied)
+    monkeypatch.setattr(notion_bindings, "REPLACE_BACKOFF_SECONDS", 0)
+
+    with pytest.raises(PermissionError):
+        NotionDatabaseBindingStore(tmp_path / "b.json").save(
+            "fictional", NotionDatabaseBinding("db-1", "src-1")
+        )
+
+
+def test_an_unwritable_binding_does_not_cost_the_publish(tmp_path: Path) -> None:
+    """The binding is a cache; a whole track's postings are not.
+
+    Recording it runs *before* any row is written, so letting the failure
+    propagate discarded everything the run had acquired in order to protect a
+    shortcut. The warning names what the lost cache costs -- the next run
+    resolves by table title, which is the path that can create a second table
+    if a title or prefix changed.
+    """
+
+    class _UnwritableStore(NotionDatabaseBindingStore):
+        def save(self, profile_id: str, binding: NotionDatabaseBinding) -> None:
+            raise PermissionError(5, "Access is denied")
+
+    logged: list[str] = []
+    sink = NotionDailySink(
+        _Repository(),  # type: ignore[arg-type]
+        _BoundClient(),  # type: ignore[arg-type]
+        timezone_name="UTC",
+        table_prefix="Fictional",
+        track_label="Fictional",
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        binding_store=_UnwritableStore(tmp_path / "notion_database_bindings.json"),
+        profile_id="profile_one",
+        logger=logged.append,
+    )
+
+    result = sink.publish([], PublishContext(run_id="fictional-run", profile_id="profile_one"))
+
+    assert result.errors == ()
+    warning = next(line for line in logged if "Warning" in line)
+    assert "Could not record the database binding" in warning
+    assert "resolves this table by title" in warning
