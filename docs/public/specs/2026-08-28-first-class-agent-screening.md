@@ -143,6 +143,14 @@ compatibility, or data-recovery role.
   one-job bounded `review` replay made one screening call, zero tailoring calls,
   and persisted no resume plan. The workspace database was backed up before
   schema migration 7.
+- The same revisions were deployed to the VPS (`Positions` 4c4894b,
+  fine-screen 882748a, private workspace 590f313). After a verified backup and
+  schema migration, a 411-row discovery shadow and one bounded core cache replay
+  persisted successfully with no Notion writes. A transient systemd acceptance
+  unit repeated the discovery path as the service user and exited 0. The old
+  scheduled apply unit remains unchanged and its earlier signal failure is not
+  reclassified as healthy; host-reboot proof and publication cutover remain
+  open gates.
 
 ## Acceptance criteria
 
