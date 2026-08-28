@@ -36,9 +36,11 @@ from job_scraper.collectors.data_integration_adapter import (
     BrightDataBatchResult,
     BrightDataDetailResolutionResult,
     execute_resilient_brightdata_detail_batches,
+    resolve_indeed_market,
 )
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import find_profile_definition
+from job_scraper.configuration.composition import apply_profile_to_runtime
 from job_scraper.configuration.policy import policy_from_legacy
 from job_scraper.domain.models import JobRecord, RawJobRecord, RunStats
 from job_scraper.domain.policies import FilterPolicy, title_scoped
@@ -46,7 +48,11 @@ from job_scraper.integrations.browser_details import (
     BrowserDetailContractError,
     BrowserDetailResult,
     BrowserDetailTask,
+    BrowserSearchResult,
+    BrowserSearchTask,
     queue_status,
+    search_queue_status,
+    search_task_from_mapping,
     task_from_mapping,
 )
 from job_scraper.integrations.email_recommendations import (
@@ -68,6 +74,7 @@ from job_scraper.integrations.email_recommendations import (
 from job_scraper.integrations.notion import NotionClient
 from job_scraper.pipeline.normalize import (
     build_dedupe_key,
+    country_to_code,
     normalize_candidate,
 )
 from job_scraper.pipeline.steps import default_pipeline
@@ -185,6 +192,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         help="Import complete rows from a local browser-detail queue through the email pipeline.",
     )
+    browser_mode.add_argument(
+        "--browser-search-queue",
+        type=Path,
+        help="Write or refresh local, single-lane Indeed browser-search tasks from track configuration.",
+    )
+    browser_mode.add_argument(
+        "--browser-search-claim",
+        type=Path,
+        help="Lease one pending local browser-search task and print it as JSON.",
+    )
+    browser_mode.add_argument(
+        "--browser-search-results",
+        type=Path,
+        help="Expand complete local browser-search results into a browser-detail queue.",
+    )
+    parser.add_argument(
+        "--browser-detail-queue",
+        type=Path,
+        help="Destination browser-detail queue; required with --browser-search-results.",
+    )
     parser.add_argument(
         "--browser-sender",
         action="append",
@@ -204,12 +231,31 @@ def main(
     if args.browser_senders and args.browser_queue is None:
         log_error("Email | --browser-sender requires --browser-queue")
         return 2
+    if args.browser_detail_queue is not None and args.browser_search_results is None:
+        log_error("Email | --browser-detail-queue requires --browser-search-results")
+        return 2
+    if args.browser_search_results is not None and args.browser_detail_queue is None:
+        log_error("Email | --browser-search-results requires --browser-detail-queue")
+        return 2
+    if (
+        args.browser_search_results is not None
+        and args.browser_detail_queue is not None
+        and args.browser_search_results.resolve() == args.browser_detail_queue.resolve()
+    ):
+        log_error("Email | Browser search and detail queues must use different files")
+        return 2
     if args.browser_queue is not None:
         return emit_browser_detail_queue(args)
     if args.browser_claim is not None:
         return claim_browser_detail_task(args.browser_claim)
     if args.browser_results is not None:
         return import_browser_detail_results(args)
+    if args.browser_search_queue is not None:
+        return emit_browser_search_queue(args)
+    if args.browser_search_claim is not None:
+        return claim_browser_search_task(args.browser_search_claim)
+    if args.browser_search_results is not None:
+        return expand_browser_search_results(args)
     try:
         preparation = prepare(command_args, dashboard=dashboard)
     except Exception as exc:  # pragma: no cover
@@ -260,24 +306,181 @@ def merge_browser_detail_queue(
 ) -> list[dict[str, object]]:
     """Keep one durable task per canonical Indeed job while preserving its checkpoint."""
 
+    return merge_browser_detail_tasks(
+        (BrowserDetailTask.from_candidate(candidate) for candidate in candidates), current
+    )
+
+
+def merge_browser_detail_tasks(
+    tasks: Iterable[BrowserDetailTask],
+    current: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Keep one durable task per canonical Indeed job while preserving its checkpoint."""
+
     prior_by_id: dict[str, dict[str, object]] = {}
     for row in current:
         task_id = task_from_mapping(row).task_id
         previous = prior_by_id.get(task_id)
         if previous is None or browser_queue_state_rank(row) > browser_queue_state_rank(previous):
             prior_by_id[task_id] = dict(row)
-    queue: list[dict[str, object]] = []
+    queue = list(prior_by_id.values())
     seen_task_ids: set[str] = set()
-    for candidate in candidates:
-        source_id, source_job_id = platform_job_reference(candidate.url)
-        if source_id != "indeed" or not source_job_id:
+    for task in tasks:
+        if task.task_id in prior_by_id:
             continue
-        task = BrowserDetailTask.from_candidate(candidate)
         if task.task_id in seen_task_ids:
             continue
         seen_task_ids.add(task.task_id)
-        queue.append(prior_by_id.get(task.task_id, task.to_dict()))
+        queue.append(task.to_dict())
     return queue
+
+
+def emit_browser_search_queue(args: argparse.Namespace) -> int:
+    """Emit browser-visible search work without reaching Indeed or a browser."""
+
+    email_config = load_email_ingest_config(args.config)
+    if args.track_configs:
+        email_config.track_config_paths = [
+            Path(value).resolve() for value in dict.fromkeys(args.track_configs)
+        ]
+    created_at = datetime.now(UTC)
+    tasks = browser_search_tasks(email_config.track_config_paths, created_at)
+    current = _read_browser_search_queue(args.browser_search_queue)
+    queue = merge_browser_search_queue(tasks, current)
+    _validate_single_browser_search_lease(queue)
+    _write_browser_search_queue(args.browser_search_queue, queue)
+    state_counts = Counter(str(row["status"]) for row in queue)
+    log_line(
+        f"Email | Browser search queue | {len(queue)} Indeed searches | "
+        f"Pending {state_counts['pending']} | In progress {state_counts['in_progress']} | "
+        f"Complete {state_counts['complete']} | Expanded {state_counts['expanded']}"
+    )
+    return 0
+
+
+def browser_search_tasks(
+    track_config_paths: Iterable[Path], created_at: datetime
+) -> list[BrowserSearchTask]:
+    tasks: list[BrowserSearchTask] = []
+    seen_task_ids: set[str] = set()
+    for config_path in track_config_paths:
+        config = load_config(config_path)
+        profile = find_profile_definition(config_path)
+        if profile is not None:
+            apply_profile_to_runtime(profile, config)
+        indeed_settings = config.sources.get("indeed_brightdata")
+        settings = indeed_settings
+        if settings is None or not settings.search_queries or not settings.locations:
+            settings = next(
+                (
+                    candidate
+                    for candidate in config.sources.values()
+                    if candidate.search_queries and candidate.locations
+                ),
+                None,
+            )
+        if settings is None:
+            continue
+        domain = browser_search_domain(
+            indeed_settings.options if indeed_settings is not None else settings.options,
+            config.filters.country,
+        )
+        for location in settings.locations:
+            for query in settings.search_queries:
+                task = BrowserSearchTask.create(
+                    domain=domain,
+                    query=query,
+                    location=location,
+                    created_at=created_at,
+                )
+                if task.task_id not in seen_task_ids:
+                    seen_task_ids.add(task.task_id)
+                    tasks.append(task)
+    return tasks
+
+
+def browser_search_domain(options: Mapping[str, object], geographic_zone: str) -> str:
+    """Resolve the storefront with the same market policy as direct Indeed collection."""
+
+    _country, domain = resolve_indeed_market(
+        geographic_zone,
+        country=str(options.get("country") or "") or country_to_code(geographic_zone) or None,
+        domain=str(options.get("domain") or "") or None,
+    )
+    return domain
+
+
+def merge_browser_search_queue(
+    tasks: Iterable[BrowserSearchTask], current: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    prior_by_id: dict[str, dict[str, object]] = {}
+    for row in current:
+        task_id = search_task_from_mapping(row).task_id
+        previous = prior_by_id.get(task_id)
+        if previous is None or browser_search_state_rank(row) > browser_search_state_rank(previous):
+            prior_by_id[task_id] = dict(row)
+    return [prior_by_id.get(task.task_id, task.to_dict()) for task in tasks]
+
+
+def browser_search_state_rank(row: Mapping[str, object]) -> int:
+    return {
+        "pending": 0,
+        "blocked": 1,
+        "unavailable": 1,
+        "in_progress": 2,
+        "complete": 3,
+        "expanded": 4,
+    }.get(str(row.get("status") or ""), -1)
+
+
+def claim_browser_search_task(path: Path) -> int:
+    queue = _read_browser_search_queue(path)
+    _validate_single_browser_search_lease(queue)
+    if any(str(row["status"]) == "in_progress" for row in queue):
+        log_line("Email | Browser search queue | A task is already in progress")
+        return 2
+    for row in queue:
+        if str(row["status"]) != "pending":
+            continue
+        row["status"] = "in_progress"
+        row["lease_started_at"] = datetime.now(UTC).isoformat()
+        _write_browser_search_queue(path, queue)
+        print(json.dumps(row, ensure_ascii=True, sort_keys=True))
+        return 0
+    log_line("Email | Browser search queue | No pending task")
+    return 0
+
+
+def expand_browser_search_results(args: argparse.Namespace) -> int:
+    if args.browser_detail_queue is None:
+        raise ValueError("--browser-search-results requires --browser-detail-queue")
+    if args.browser_search_results.resolve() == args.browser_detail_queue.resolve():
+        raise ValueError("Browser search and detail queues must use different files")
+    search_queue = _read_browser_search_queue(args.browser_search_results)
+    completed: list[tuple[int, BrowserSearchResult]] = []
+    for index, row in enumerate(search_queue):
+        if search_queue_status(row) == "complete":
+            completed.append((index, BrowserSearchResult.from_mapping(row)))
+    if not completed:
+        log_line("Email | Browser search expansion | No complete search rows")
+        return 0
+    detail_queue = _read_browser_queue(args.browser_detail_queue)
+    detail_tasks = (
+        BrowserDetailTask.from_search_card(card)
+        for _index, result in completed
+        for card in result.cards
+    )
+    merged_detail_queue = merge_browser_detail_tasks(detail_tasks, detail_queue)
+    for index, _result in completed:
+        search_queue[index]["status"] = "expanded"
+        search_queue[index].pop("lease_started_at", None)
+    _write_browser_queue(args.browser_detail_queue, merged_detail_queue)
+    _write_browser_search_queue(args.browser_search_results, search_queue)
+    log_line(
+        f"Email | Browser search expansion | Expanded {len(completed)} searches | "
+        f"Detail queue {len(merged_detail_queue)} URLs"
+    )
+    return 0
 
 
 def browser_queue_state_rank(row: Mapping[str, object]) -> int:
@@ -370,6 +573,39 @@ def import_browser_detail_results(args: argparse.Namespace) -> int:
 
 
 def raw_from_browser_detail(result: BrowserDetailResult, scraped_at: datetime) -> RawJobRecord:
+    if result.task.origin == "browser_search":
+        source_id, source_job_id = platform_job_reference(result.task.url)
+        if source_id != "indeed" or not source_job_id:
+            raise BrowserDetailContractError(
+                "Browser search detail is missing an Indeed job reference"
+            )
+        return RawJobRecord(
+            source="indeed",
+            source_job_id=source_job_id,
+            source_url=result.task.url,
+            canonical_url=result.task.url,
+            title=result.title,
+            company_name=result.company_name,
+            location_raw=result.location_raw,
+            posted_at_text=result.task.observed_at.isoformat(),
+            scraped_at=scraped_at,
+            job_description=result.description,
+            raw_payload={
+                "freshness_basis": "browser_observed",
+                "acquisition_mode": "authorised_browser_search",
+                "source_platforms": ["indeed"],
+                "detail_status": "ok",
+                "detail_source": "authorised_browser",
+                "description_source": "authorised_browser",
+                "title_source": "authorised_browser",
+                "browser_detail_task_id": result.task.task_id,
+                "browser_search_task_id": result.task.search_task_id,
+                "browser_search_query": result.task.search_query,
+                "browser_search_location": result.task.search_location,
+                "matched_source_id": "indeed",
+                "matched_source_job_id": source_job_id,
+            },
+        )
     raw = email_candidate_to_raw_job(result.task.to_candidate(), scraped_at=scraped_at)
     raw.title = result.title
     raw.company_name = result.company_name
@@ -441,7 +677,36 @@ def _read_browser_queue(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def _read_browser_search_queue(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise BrowserDetailContractError(
+                f"Browser search queue {path} line {line_number} is not JSON"
+            ) from exc
+        if not isinstance(value, dict):
+            raise BrowserDetailContractError(
+                f"Browser search queue {path} line {line_number} must be a JSON object"
+            )
+        search_task_from_mapping(value)
+        search_queue_status(value)
+        rows.append(value)
+    return rows
+
+
 def _write_browser_queue(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
+    path.write_text(content, encoding="utf-8")
+
+
+def _write_browser_search_queue(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
     path.write_text(content, encoding="utf-8")
@@ -451,6 +716,12 @@ def _validate_single_browser_lease(rows: Sequence[Mapping[str, object]]) -> None
     leases = sum(1 for row in rows if str(row.get("status") or "") == "in_progress")
     if leases > 1:
         raise BrowserDetailContractError("Browser detail queue permits only one in_progress task")
+
+
+def _validate_single_browser_search_lease(rows: Sequence[Mapping[str, object]]) -> None:
+    leases = sum(1 for row in rows if str(row.get("status") or "") == "in_progress")
+    if leases > 1:
+        raise BrowserDetailContractError("Browser search queue permits only one in_progress task")
 
 
 def prepare(

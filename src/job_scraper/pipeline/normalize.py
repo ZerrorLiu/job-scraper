@@ -6,7 +6,7 @@ import re
 import unicodedata
 from datetime import UTC, datetime, timedelta
 from functools import cache
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from job_scraper.domain.countries import COUNTRY_ALIASES, COUNTRY_LOCATION_HINTS
 from job_scraper.domain.locations import merge_locations
@@ -26,6 +26,13 @@ MOJIBAKE_MARKERS = (
 
 def canonicalize_url(url: str) -> str:
     parts = urlsplit(url)
+    hostname = (parts.hostname or "").casefold()
+    if hostname == "indeed.com" or hostname.endswith(".indeed.com"):
+        job_key = dict(parse_qsl(parts.query)).get("jk", "")
+        if job_key:
+            return urlunsplit(
+                (parts.scheme, parts.netloc, parts.path, urlencode({"jk": job_key}), "")
+            )
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 

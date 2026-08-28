@@ -32,6 +32,8 @@ downstream consumers; only the candidate-exclusion meaning changes.
 - [x] A `not_interested` status and a matching recent repost remain excluded.
 - [x] Changing `Not Interested` back to `Not Applied` clears the local
   exclusion at the next status import.
+- [x] An orphaned Notion page mapping is ignored, so it cannot interrupt a
+  status import for still-valid jobs.
 - [x] Email-derived jobs use the same history behavior as other candidates.
 - [x] Public operations documentation states the new status boundary.
 - [x] Focused offline tests and the repository quality gates pass.
