@@ -651,6 +651,11 @@ This is a new program after Phase 9, not part of the immediate refactor.
   authorization, and compatibility.
 - Business decisions are implemented once behind those contracts. The split
   must not create server and client copies of screening or tailoring logic.
+- Only code, schemas, and fictional conformance fixtures are shared between
+  clients. Profiles, source inputs, raw/canonical jobs, task queues, databases,
+  model caches, CV/evidence, artifacts, credentials, logs, backups, and sinks
+  are isolated per client instance; there is no shared job catalog or
+  cross-client cache.
 
 **Entry gate:** at least the single-client lifecycle and its operational costs
 are proven. The multi-client threat model, isolation model, data ownership,
@@ -678,16 +683,59 @@ page, or provider profile.
 | `ArtifactManifest` | client/private worker -> server/artifact store | artifact ID, canonical job/client IDs, decision/tailoring hashes, media type, size, content hash, validation status | Bytes are accepted only after hash/PDF validation; manifest commit is idempotent and precedes display publication |
 | `PublicationRequest` | finalized state -> sink worker | exact canonical-job set/count, final statuses, external binding IDs, artifact manifests | No publication before durable verification; uncertain creates are not replayed automatically |
 | `SyncCheckpoint` | server <-> local client | client-scoped monotonic cursor, acknowledged contract versions and artifact hashes | At-least-once transport with idempotent apply; checkpoint advances only after durable acknowledgement |
+| `BrowserTask` | client server instance -> local client worker | task/lease IDs, `search|detail`, profile ID, exact URL or query/location, contract version, expiry | Local worker pulls one task; an expired lease returns to the same client's queue |
+| `BrowserResult` | local client worker -> client server instance | task/lease IDs, idempotency key, `complete|blocked|unavailable`, validated visible fields, observed time | Server accepts only the worker credential bound to that client and the current lease; blocked access is terminal, never bypassed |
+| `WorkerEnrollment` | client server instance -> local client | one-time token, server endpoint, client-bound device credential, allowed task types | Enrollment token is single use; the resulting credential cannot name or access another client |
 
-The future server may store private client data only under an explicit data
-classification and retention policy. Search policy, evidence text, credentials,
-resume masters, and generated artifacts default to client-private ownership;
-the server receives only the minimum fields authorized by the contract. Tenant
-authorization is checked at every job, result, artifact, checkpoint, and sink
-lookup, and storage keys include `client_id`. Cross-client cache reuse is
-forbidden unless inputs are proven public and the cache namespace contains no
-private evidence or policy. Logs and metrics contain opaque IDs, never resume
-facts, tokens, job descriptions, or destination payloads.
+The future server runs one isolated runtime per client: separate configuration,
+database, browser queue, agent cache, CV/evidence workspace, artifact store,
+credentials, Notion bindings, logs, backups, locks, service, and timer. A
+process mounts only one client's runtime. Authentication resolves the client
+instance before request-body parsing; a caller-supplied `client_id` can never
+select another instance. Search policy, raw jobs, evidence, credentials, resume
+masters, generated artifacts, and destination state are never shared. Logs and
+metrics contain opaque task/run IDs and remain inside that instance.
+
+#### Client-owned Chrome worker
+
+Browser work is asynchronous and pull-based because a client computer may be
+offline or behind NAT. The VPS stores tasks durably; a locally installed
+`positions-client` claims one leased task over HTTPS, uses the user's own Chrome
+profile through an authorized Codex browser capability, heartbeats while it is
+running, and submits a versioned result. The server never opens a connection to
+the client, receives Chrome profile paths, cookies, credentials, HTML, or
+screenshots, or controls another client's browser session. Each enrolled worker
+is bound to one client and one locally selected Chrome profile. One local lock
+prevents concurrent tasks from using that profile.
+
+An offline client leaves tasks `pending`. A lost worker lease expires back to
+`pending`; duplicate result delivery is idempotent. Login walls, CAPTCHA,
+access blocks, and unavailable pages produce `blocked` or `unavailable` results
+and are not retry-escalated or bypassed. A continuously available browser path
+requires a client-owned always-on machine using that same isolated Chrome
+profile, not a shared browser on the main VPS.
+
+Indeed search creates browser `search` tasks from that client's own track/query/
+location configuration. Valid visible cards expand into one browser `detail`
+task per posting. The email channel reads only authorized Indeed mail, extracts
+minimal card/message provenance, and also creates a browser `detail` task for
+every card because email content is incomplete. Neither search cards nor email
+cards become jobs. Only a validated detail result enters that client's existing
+normalization, canonical merge, track routing, screening, artifact, and Notion
+flow.
+
+#### Cold start
+
+`create-client` provisions an empty isolated server runtime and a one-time
+enrollment token; it never copies an existing client's profiles. The local
+`positions-client enroll` and `setup` flow verifies Codex login and browser
+capability, lets the user select their own Chrome profile locally, gathers
+locations/languages/role families and per-track `core|review|discovery` policy,
+configures Indeed mail and the client's Notion destination, imports the private
+CV/evidence workspace, and runs `doctor`. A bounded calibration permits no
+external writes, followed by one authorized browser search, one Indeed-email
+detail, one core artifact, and one Notion publication. Only then may the
+client-specific daily timer be enabled.
 
 Repository separation is permitted only after fictional conformance fixtures
 exercise major-version rejection, minor-version forwarding, duplicate delivery,

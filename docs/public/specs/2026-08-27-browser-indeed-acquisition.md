@@ -40,8 +40,9 @@ Data detail providers and cannot call an interactive Codex browser session.
 - [x] Queue state is resumable and idempotent; an already imported listing is
   not re-imported as a duplicate.
 - [x] All tests are offline and use fictional URLs and browser-result payloads.
-- [ ] Phase 2 remains disabled until a separately documented browser search
-  validation establishes a safe, observable contract.
+- [x] Phase 2 has a separately documented, explicit local browser-search
+  queue; it remains unregistered as a source until live validation establishes
+  a stable observable contract.
 
 ## Design and constraints
 
@@ -79,6 +80,7 @@ separate, user-authorised check and is not part of the default suite.
 
 ## Follow-ups
 
-Phase 2 browser-visible search discovery requires its own specification after
-phase 1 is accepted. It must not be enabled merely because phase 1 can enrich
-known email URLs.
+Phase 2 browser-visible search discovery is specified in
+[`2026-08-27-browser-indeed-search-discovery.md`](2026-08-27-browser-indeed-search-discovery.md).
+It must not become a registered source merely because phase 1 can enrich known
+email URLs.
