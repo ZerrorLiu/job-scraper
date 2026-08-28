@@ -73,6 +73,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Temporarily replace each selected track's search matrix. Repeat for multiple queries.",
     )
     parser.add_argument(
+        "--source",
+        action="append",
+        dest="only_sources",
+        help=(
+            "Run only these of each selected track's sources. Repeat to select "
+            "several. Use when one source belongs on a different schedule."
+        ),
+    )
+    parser.add_argument(
         "--email-config",
         default="",
         help="Email ingest config path. Defaults to <config-dir>/email.toml.",
@@ -155,22 +164,7 @@ def _execute(
             email_argv,
             dashboard if dashboard.interactive else None,
         )
-    calls: list[tuple[Path, list[str]]] = []
-    for config_path in config_paths:
-        sub_argv = ["--config", str(config_path)]
-        if args.init_db:
-            sub_argv.append("--init-db")
-        if args.skip_export:
-            sub_argv.append("--skip-export")
-        if args.skip_notion:
-            sub_argv.append("--skip-notion")
-        if args.enable_indeed:
-            sub_argv.append("--enable-indeed")
-        if args.post_age_days is not None:
-            sub_argv.extend(["--post-age-days", str(args.post_age_days)])
-        for query in args.search_queries or []:
-            sub_argv.extend(["--query", query])
-        calls.append((config_path, sub_argv))
+    calls = [(config_path, build_profile_argv(args, config_path)) for config_path in config_paths]
 
     try:
         worker_count = min(args.profile_workers, len(calls))
@@ -214,6 +208,34 @@ def _execute(
     finally:
         if email_executor is not None:
             email_executor.shutdown(wait=True, cancel_futures=True)
+
+
+def build_profile_argv(args: argparse.Namespace, config_path: Path) -> list[str]:
+    """Translate this run's options into one profile run's arguments.
+
+    Named rather than inlined because it is the third link in a chain -- the
+    CLI parser, this parser, then `run_daily`'s -- and a flag that reaches only
+    the first two is accepted by `--help` and rejected at run time. Keeping the
+    translation in one callable is what lets a test walk the whole chain
+    instead of restating it.
+    """
+
+    sub_argv = ["--config", str(config_path)]
+    if args.init_db:
+        sub_argv.append("--init-db")
+    if args.skip_export:
+        sub_argv.append("--skip-export")
+    if args.skip_notion:
+        sub_argv.append("--skip-notion")
+    if args.enable_indeed:
+        sub_argv.append("--enable-indeed")
+    if args.post_age_days is not None:
+        sub_argv.extend(["--post-age-days", str(args.post_age_days)])
+    for query in args.search_queries or []:
+        sub_argv.extend(["--query", query])
+    for source in args.only_sources or []:
+        sub_argv.extend(["--source", source])
+    return sub_argv
 
 
 def build_email_argv(
