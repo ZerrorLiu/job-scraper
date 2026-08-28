@@ -127,6 +127,37 @@ def test_batch_persistence_rolls_back_when_any_crosswalk_is_missing(tmp_path: Pa
         connection.close()
 
 
+def test_canonical_duplicate_results_choose_and_verify_conservative_winner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "results.json"
+    _write_result(path)
+    evaluated = load_screening_results(path)[0]
+    failed_alias = replace(
+        evaluated,
+        legacy_job_id="legacy-2",
+        status="error",
+        selected=False,
+        tailoring_status="error",
+    )
+    workspace = WorkspaceDatabase(tmp_path / "workspace.db")
+    workspace.initialize()
+    with workspace.connect() as connection:
+        connection.execute(
+            """INSERT INTO canonical_jobs VALUES (
+            'canonical-1', 'identity-1', 'role', 'Example', 'DE', 'Berlin', 'Berlin',
+            'Description', 'full-time', '', '', '',
+            '2026-08-28T00:00:00+00:00', '2026-08-28T00:00:00+00:00')"""
+        )
+        connection.executemany(
+            "INSERT INTO legacy_job_links VALUES ('core_track', ?, 'canonical-1', '')",
+            [("legacy-1",), ("legacy-2",)],
+        )
+
+    workspace.record_screening_results((evaluated, failed_alias))
+    workspace.verify_screening_results((evaluated, failed_alias))
+
+
 def test_cli_import_rejects_stale_profile_policy(monkeypatch, tmp_path: Path) -> None:
     path = tmp_path / "results.json"
     _write_result(path)

@@ -448,23 +448,32 @@ class WorkspaceDatabase:
                         f"{result.profile_id}/{result.legacy_job_id}"
                     )
                 resolved.append((result, str(row["canonical_job_id"])))
-            for result, canonical_job_id in resolved:
+            for result, canonical_job_id in _canonical_screening_results(resolved):
                 self._upsert_screening_result(connection, result, canonical_job_id)
 
     def verify_screening_results(self, results: tuple[ScreeningResult, ...]) -> None:
         """Fail unless every handoff row exactly matches durable canonical state."""
 
         with self.connect() as connection:
+            resolved: list[tuple[ScreeningResult, str]] = []
             for result in results:
+                link = connection.execute(
+                    """SELECT canonical_job_id FROM legacy_job_links
+                    WHERE profile_id = ? AND legacy_job_id = ?""",
+                    (result.profile_id, result.legacy_job_id),
+                ).fetchone()
+                if link is None:
+                    raise ValueError(
+                        "screening result has no canonical legacy-job crosswalk: "
+                        f"{result.profile_id}/{result.legacy_job_id}"
+                    )
+                resolved.append((result, str(link["canonical_job_id"])))
+            for result, canonical_job_id in _canonical_screening_results(resolved):
                 row = connection.execute(
-                    """SELECT sr.payload_hash
-                    FROM legacy_job_links l
-                    JOIN screening_results sr
-                      ON sr.canonical_job_id = l.canonical_job_id
-                     AND sr.profile_id = l.profile_id
-                    WHERE l.profile_id = ? AND l.legacy_job_id = ?
-                      AND sr.contract_version = ?""",
-                    (result.profile_id, result.legacy_job_id, result.contract_version),
+                    """SELECT payload_hash FROM screening_results
+                    WHERE canonical_job_id = ? AND profile_id = ?
+                      AND contract_version = ?""",
+                    (canonical_job_id, result.profile_id, result.contract_version),
                 ).fetchone()
                 expected_hash = _screening_result_payload_hash(result)
                 if row is None or str(row["payload_hash"]) != expected_hash:
@@ -883,6 +892,31 @@ def _optional_float(value: object) -> float | None:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _canonical_screening_results(
+    resolved: list[tuple[ScreeningResult, str]],
+) -> list[tuple[ScreeningResult, str]]:
+    """Choose one deterministic, conservative result per canonical job/profile."""
+
+    grouped: dict[tuple[str, str, str], list[ScreeningResult]] = {}
+    for result, canonical_id in resolved:
+        grouped.setdefault((canonical_id, result.profile_id, result.contract_version), []).append(
+            result
+        )
+    winners: list[tuple[ScreeningResult, str]] = []
+    for (canonical_id, _profile_id, _version), candidates in sorted(grouped.items()):
+        winner = min(
+            candidates,
+            key=lambda result: (
+                0 if result.status == "error" else 1,
+                0 if result.selected else 1,
+                -(result.score or 0.0),
+                result.legacy_job_id,
+            ),
+        )
+        winners.append((winner, canonical_id))
+    return winners
 
 
 def _screening_result_payload_hash(result: ScreeningResult) -> str:
