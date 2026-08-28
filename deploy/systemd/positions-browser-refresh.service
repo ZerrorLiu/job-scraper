@@ -1,0 +1,20 @@
+[Unit]
+Description=Queue Positions Indeed search and email browser work
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dev
+Group=dev
+WorkingDirectory=/srv/positions
+Environment=HOME=/home/dev
+Environment=PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/dev/.local/bin/uv run job-scraper browser-search-refresh
+ExecStart=/home/dev/.local/bin/uv run job-scraper browser-email-refresh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/srv/positions /home/dev
+UMask=0027

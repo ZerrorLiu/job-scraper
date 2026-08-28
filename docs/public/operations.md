@@ -303,6 +303,28 @@ directory set to the installation and `JOB_SCRAPER_CONFIG_DIR` set when the
 workspace lives elsewhere. A scheduled run publishes to external systems on the
 user's behalf, so enable one only with their explicit go-ahead.
 
+### Browser task services
+
+The reference units in `deploy/systemd/` keep the browser API and transactional
+outbox on an always-on Linux installation, and refresh the client-private search
+and email task queues on their own cadence. Install them only after replacing
+the reference installation path and service account where necessary:
+
+```bash
+sudo cp deploy/systemd/positions-browser-* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now positions-browser-api.service
+sudo systemctl enable --now positions-browser-outbox.timer
+sudo systemctl enable --now positions-browser-refresh.timer
+```
+
+`positions-browser-refresh.timer` creates server-side work; it does not drive a
+browser. A recurring Codex task on the client machine claims that work through
+`positions-client` and uses that client's assigned Chrome profile. When the
+client is off, work remains pending and the VPS continues its non-browser jobs.
+Check server state with `job-scraper browser status` and client state with
+`positions-client doctor` and `positions-client status`.
+
 ### Giving one source its own cadence
 
 A profile's `sources` list says which adapters the track uses, not how often

@@ -1,0 +1,11 @@
+[Unit]
+Description=Drain Positions browser outbox
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=positions-browser-outbox.service
+
+[Install]
+WantedBy=timers.target

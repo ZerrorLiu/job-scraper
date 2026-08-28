@@ -474,6 +474,15 @@ host, never a shared browser on the main VPS.
 - [ ] Offline/lost-lease recovery, blocked-page cooldown, outbox replay, and a
   bounded live browser validation pass before recurring production enablement.
 
+The first-client deployment has now proved public tunnel reachability,
+enrollment, claim, heartbeat, and a bounded real Chrome result. Indeed returned
+an additional-verification page during that calibration, so the client recorded
+the task as terminal `blocked/captcha`; it did not bypass the challenge and no
+job entered the downstream pipeline. This proves the blocked-result path, not a
+successful detail extraction, outbox publication, empty-queue wake, or reboot
+recovery. Those acceptance items therefore remain open until separately
+observed.
+
 ## Verification
 
 Add focused offline tests and run Ruff format/check, Pyright, and Pytest. This

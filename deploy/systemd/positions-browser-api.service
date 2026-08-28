@@ -1,0 +1,23 @@
+[Unit]
+Description=Positions browser task API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dev
+Group=dev
+WorkingDirectory=/srv/positions
+Environment=HOME=/home/dev
+Environment=PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/dev/.local/bin/uv run job-scraper serve --host 127.0.0.1 --port 8500
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/srv/positions /home/dev
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

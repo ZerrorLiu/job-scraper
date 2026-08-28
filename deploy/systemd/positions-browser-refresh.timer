@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Positions browser tasks daily
+
+[Timer]
+OnCalendar=Tue..Sat *-*-* 05:00:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=300
+Unit=positions-browser-refresh.service
+
+[Install]
+WantedBy=timers.target
