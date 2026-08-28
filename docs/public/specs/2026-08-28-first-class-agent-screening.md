@@ -106,6 +106,88 @@ because it is disabled, has no current credential, or is not used by one
 profile. Deletion requires evidence that it has no runtime, migration,
 compatibility, or data-recovery role.
 
+### Complete component ledger
+
+This is the checked-in Phase 1 inventory. `Owner` means the component that owns
+the contract, not a person or a private installation. Private paths below are
+roles; concrete installation paths remain private configuration.
+
+| Component | Kind | Owner | Status and callers | Replacement / removal condition |
+|---|---|---|---|---|
+| `job-scraper` | public CLI entry point | Positions `cli/` | `KEEP`; operators, scheduler, and fine-screen durable handoff | No replacement planned |
+| `jobs/run_all_tracks.py` | orchestration compatibility entry point | Positions application boundary | `MIGRATE`; called by the CLI and module compatibility users, translates typed requests | Remove module `main` only after the rollback window and an external-caller audit; retain the typed use case |
+| `jobs/run_daily.py` | one-profile process runner | Positions application boundary | `MIGRATE`; called through typed profile requests and compatibility module execution | Move remaining concrete construction behind existing ports, then remove module execution only after caller audit |
+| `jobs/ingest_email_recommendations.py` | email-channel process runner | Positions channel/application boundary | `KEEP`; called by typed orchestration and explicit recovery operation | Remove standalone parsing only when all recovery callers use the typed request |
+| `jobs/run_brightdata_notion_e2e.py` | credentialed live acceptance utility | Positions test operations | `KEEP suspended`; explicit operator only, never scheduled | Remove only if the Bright Data product capability is explicitly retired |
+| `fine-screen` | semantic screening and tailoring CLI | fine-screen package | `KEEP authoritative`; systemd and bounded operators | Future client worker may wrap this contract; no duplicate implementation is allowed |
+| `fine-screen-release` | release manifest CLI | fine-screen release boundary | `KEEP`; deployment workflow and VPS runner | Remove only when an equivalent signed/versioned release verifier replaces it |
+| `positions-daily.timer` | acquisition scheduler | VPS installation | `KEEP`; systemd starts `positions-daily.service` | Replace only through an operational migration with rollback and restart proof |
+| `positions-daily.service` | acquisition service | VPS installation | `KEEP`; timer/manual start, triggers fine-screen on success | Replace only when a future server worker proves the same request and recovery contract |
+| `fine-screen-daily.service` | finalized core-processing service | VPS installation | `KEEP`; `OnSuccess` from acquisition/manual recovery | Replace only after the future client/server worker proves cache, artifact, and sink parity |
+| `Fine-Screen PDF Sync` | Windows sign-in task | local client installation | `KEEP`; downloads validated VPS artifacts, never deletes local PDFs | Replace after a versioned artifact-download client is live and migration replay finds no task caller |
+| per-profile V1 SQLite databases | acquisition/source state | Positions storage adapter | `KEEP authoritative for source rows during migration`; acquisition, feed rehydration, publication | Stop new writes only after canonical V2 supplies every read/write contract; never delete in ordinary cleanup |
+| `workspace.db` V2 | canonical merge, policy, screening state | Positions storage adapter | `KEEP` authoritative for canonical identity and durable screening | Future server storage must migrate idempotently and prove exact crosswalk/rollback before replacement |
+| CSV exports | cumulative operator export | Positions CSV sink | `KEEP`; configured profiles and manual consumers | Remove only after a consumer audit and explicit product decision |
+| Notion database bindings JSON | external identity state | Positions Notion adapter | `KEEP`; status import and idempotent publication | Migrate atomically with any sink replacement; never rediscover/create after uncertain failure |
+| agent decision/tailoring caches | expensive deterministic cache | fine-screen private workspace | `KEEP`; screening and tailoring CLI | Invalidate by contract/evidence versions; delete only as regenerable cache, never as factual authority |
+| screening result JSON | versioned handoff/audit artifact | fine-screen producer, Positions validator | `KEEP`; import and bounded publication | Replace only with a backward-compatible versioned envelope and migration fixture |
+| release manifest and runtime locks/logs | deployment/runtime state | fine-screen operations | `KEEP`; deploy verifier, failover runner, service manager | Rotate logs by operations policy; replace manifest only with stronger release identity proof |
+| editable `resume/variants/*.tex` | human-approved narrative/layout masters | private CV workspace | `RECONCILE`; fine-screen tailoring inputs | Becomes authoritative only with the evidence reconciliation approval below |
+| `shared/evidence-library.json` and `shared/profile-notes.md` | factual evidence | private CV workspace | `RECONCILE`; fine-screen validation inputs | Human owner approves the reconciliation manifest; generated PDFs never replace these sources |
+| generated applications and `CV/Fine-Screened` PDFs | output artifacts | private CV workspace | `KEEP as outputs`; uploader/sync/manual review | Retain per private policy; never ingest automatically as evidence |
+| Notion | final display sink | Positions sink boundary | `KEEP replaceable`; finalized publication and manual status input only | A future display may replace it after external-ID/status migration and idempotency proof |
+| mailbox/IMAP | acquisition channel | Positions email adapter | `KEEP`; explicit configured channel | Remove only by product decision with provenance/state migration |
+| source websites/APIs | acquisition adapters | Positions source ports | `KEEP per public contract`; configured profiles | Each adapter removal requires capability-contract change and compatibility evidence |
+
+The `job-scraper` command groups are all owned by the single CLI entry point:
+`init`, `doctor`, `list`, `capabilities`, `plan`, `feed`, `config`, `run`,
+`ingest-email`, and `db`. The `db` group owns `init`, compatibility `migrate`,
+`status`, `import-screening`, and `publish-screening`. Compatibility `db migrate`
+remains callable but hidden while V1-to-V2 rollback is live; its removal
+condition is the V1 retirement gate, not lack of help text. Read-only commands
+write nothing. Mutating authority is limited to private config bootstrap,
+configured acquisition/storage/export, mailbox checkpoint updates, atomic
+screening import, and explicitly authorized finalized publication. Network
+acquisition and Notion are adapters, never import-time effects.
+
+Every active specification is also inventoried so historical rationale cannot
+silently compete with this program document:
+
+| Active specification(s) | Contract owner | Status / callers | Replacement / removal condition |
+|---|---|---|---|
+| `2026-08-28-first-class-agent-screening.md` | unified workflow | `KEEP authoritative`; implementation and completion audit | Superseded only by an explicitly approved successor that removes this file in the same change |
+| `2026-08-27-downstream-screening-feed.md` | feed contract | `KEEP supporting`; Positions/fine-screen integration | Merge/remove only when feed compatibility ends and fixtures migrate |
+| `2026-08-26-production-hardening-cleanup.md`, `2026-08-12-acquisition-reliability-hardening.md`, `2026-08-11-external-run-lifecycle-bounds.md` | reliability/history | `KEEP rationale`; tests and operations | Remove only after all still-open criteria are resolved or merged into canonical architecture/operations docs |
+| `2026-08-26-notion-database-id-bindings.md`, `2026-08-26-notion-internal-connection-restoration.md`, `2026-08-28-orphaned-notion-status-mappings.md` | Notion identity/auth/status | `KEEP rationale`; Notion adapter and tests | Remove after behavior is fully represented in canonical docs and no open migration remains |
+| `2026-08-27-not-interested-history-filter.md` | manual-decision history | `KEEP active`; pipeline/status import | Remove only with an explicit policy replacement and state migration |
+| `2026-08-26-brightdata-suspension.md` | paid-source circuit breaker | `KEEP active`; source registry/config | Remove only if provider capability is retired or safely re-enabled under a successor spec |
+| `2026-08-27-browser-indeed-acquisition.md`, `2026-08-27-browser-indeed-search-discovery.md` | browser-assisted local acquisition | `KEEP active/manual`; local operator and tests | Remove only after a separately proven unattended replacement or explicit retirement |
+| `2026-08-27-employer-direct-source-coverage.md`, `2026-08-27-token-free-board-sources.md`, `2026-08-27-public-employment-agency-source.md` | direct-source coverage | `KEEP active`; registry, profiles, tests | Remove per adapter only when the public capability contract changes |
+| `2026-08-28-de-nontech-track-goes-live.md`, `2026-08-27-deployment-configuration-guidance.md`, `2026-08-27-deployment-documentation-restructure.md` | track/deployment documentation rationale | `KEEP supporting`; profile/deployment docs | Remove after rationale has no open migration and canonical docs contain all current behavior |
+| `2026-08-27-description-language-policy-defect.md`, `2026-08-06-engineering-role-targeting.md` | filtering policy rationale | `KEEP supporting`; pipeline tests | Remove only with an explicit policy successor |
+| `2026-08-03-platform-links-only.md`, `2026-08-06-efinancial-email-metadata.md`, `2026-08-06-efinancial-neighbor-country-scope.md`, `2026-08-06-linkedin-email-card-metadata.md` | source identity/metadata rationale | `KEEP supporting`; adapters and storage tests | Remove after canonical docs and compatibility migrations fully absorb the contracts |
+| `2026-07-25-agent-development-workflow.md`, `2026-07-25-vibe-project-bootstrap.md` | repository development governance | `KEEP historical rationale`; AGENTS/workflow docs | Remove after confirming no unique rationale or active migration remains |
+
+The Phase 1 deletion record is recoverable from Git commit `4c4894b`:
+
+| Deleted specification | Reference/replacement evidence | Verification and recovery |
+|---|---|---|
+| `2026-07-30-fine-role-skill-analysis.md` | Implemented screening/tailoring contract is owned here and in fine-screen; no runtime referenced the proposal | Repository/spec reference search and full offline gates passed; recover from Git |
+| `2026-08-04-brightdata-snapshot-recovery.md` | Current provider safety is owned by acquisition reliability, Bright Data suspension, operations, and tests | Capability and reference search retained the live adapter; recover from Git |
+| `2026-08-05-recent-not-interested-suppression.md` | Current 30-day manual-decision behavior is owned by `2026-08-27-not-interested-history-filter.md` and canonical operations/configuration docs | Status/filter tests passed; no data or Notion objects were deleted; recover from Git |
+| `2026-08-24-downstream-agent-screening-orchestration.md` | Superseded and merged into this authoritative workflow plus the feed contract | Link/reference search and workflow tests passed; recover from Git |
+| `2026-08-27-deferred-cli-consolidation.md` | Typed CLI/application request convergence and remaining removal condition are recorded here | CLI orchestration tests and full gates passed; recover from Git |
+| `2026-08-27-repository-accumulation-controls.md` | Repository law moved to `AGENTS.md`; program-specific cleanup policy remains here | Documentation inventory/reference search passed; recover from Git |
+
+The private evidence reconciliation currently has one candidate authority:
+the private `cv-cover-workspace` containing editable variants, shared evidence,
+profile notes, and quick-learn policy. The former `CV_Cover` workspace no longer
+contains a runnable screener; its generated/manual PDFs are not evidence. File
+comparison found the editable/shared factual material equivalent apart from line
+endings at the reconciliation point. This is technical reconciliation evidence,
+not owner approval: declaring the candidate workspace as factual authority and
+archiving any divergent private material remains a human fact decision.
+
 ### Implementation status (2026-08-28)
 
 - Phase 0 local baseline is recorded: the component registry exposes one
@@ -517,6 +599,45 @@ This is a new program after Phase 9, not part of the immediate refactor.
 are proven. The multi-client threat model, isolation model, data ownership,
 authentication, API, storage, and migration requirements receive their own
 approved specification before repository separation begins.
+
+#### Versioned contract seams
+
+Physical repository separation is deferred, but these logical contracts are
+now fixed enough to prevent duplicated business logic. Every envelope carries
+`schema_version`, `contract_version`, `client_id`, `request_id`, `created_at`,
+and an idempotency key. Unknown major versions fail closed; unknown additive
+minor fields are ignored and preserved when relayed. `client_id` is assigned by
+the future server and is never inferred from a track, filesystem path, Notion
+page, or provider profile.
+
+| Contract | Producer -> consumer | Required identity and payload | Authority / retry rule |
+|---|---|---|---|
+| `AcquisitionRequest` | client policy -> server worker | client, enabled track-policy versions, source IDs, time/window bounds, cost limits | Server may retry idempotent reads; request key prevents duplicate runs |
+| `CanonicalJob` | server acquisition -> durable store/client | canonical job ID, immutable source references, normalized facts, provenance, first/last seen | Server owns canonical identity; raw provider data is untrusted and retained at the adapter boundary |
+| `TrackPolicy` | client -> server routing | client-scoped track ID, `core|review|discovery`, hard gates, policy version | Client owns policy; server validates but does not invent personal preferences |
+| `ScreeningRequest` | server orchestrator -> client/private worker | canonical job snapshot/hash, track-policy version, screening contract, evidence version, cost deadline | Exactly one semantic decision per complete version tuple; stale inputs fail closed |
+| `ScreeningResult` | client/private worker -> server | disposition/status, score, variant, cited evidence IDs, honest gaps, rationale, source/cache identity | Client worker owns evidence-grounded semantics; server validates schema/version and stores atomically |
+| `TailoringRequest` | server orchestrator -> client/private worker | validated decision ID/hash, editable variant ID/version, cited evidence subset, artifact constraints | May be emitted only for `core`; cannot make a second fit decision |
+| `ArtifactManifest` | client/private worker -> server/artifact store | artifact ID, canonical job/client IDs, decision/tailoring hashes, media type, size, content hash, validation status | Bytes are accepted only after hash/PDF validation; manifest commit is idempotent and precedes display publication |
+| `PublicationRequest` | finalized state -> sink worker | exact canonical-job set/count, final statuses, external binding IDs, artifact manifests | No publication before durable verification; uncertain creates are not replayed automatically |
+| `SyncCheckpoint` | server <-> local client | client-scoped monotonic cursor, acknowledged contract versions and artifact hashes | At-least-once transport with idempotent apply; checkpoint advances only after durable acknowledgement |
+
+The future server may store private client data only under an explicit data
+classification and retention policy. Search policy, evidence text, credentials,
+resume masters, and generated artifacts default to client-private ownership;
+the server receives only the minimum fields authorized by the contract. Tenant
+authorization is checked at every job, result, artifact, checkpoint, and sink
+lookup, and storage keys include `client_id`. Cross-client cache reuse is
+forbidden unless inputs are proven public and the cache namespace contains no
+private evidence or policy. Logs and metrics contain opaque IDs, never resume
+facts, tokens, job descriptions, or destination payloads.
+
+Repository separation is permitted only after fictional conformance fixtures
+exercise major-version rejection, minor-version forwarding, duplicate delivery,
+stale evidence/policy rejection, cross-client access denial, artifact hash
+mismatch, uncertain sink creation, checkpoint replay, and rollback to the
+single-client implementation. The existing feed schema 2 and screening-result
+schema 1 are migration inputs, not silently rebranded multi-client APIs.
 
 ## Verification plan
 
