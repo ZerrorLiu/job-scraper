@@ -156,9 +156,31 @@ The third is the closest fit and still returns roughly one board in 178. A full
 sweep of that provider is free and takes about fifteen minutes without
 tripping rate limits, and would return a stock of low tens of postings, most of
 which the existing sources already carry. The cost is not the obstacle; the
-yield is. A track whose role rule selects a different population — one matching
-the first provider's trades and office roles, say — should re-run this
-measurement rather than inherit the conclusion.
+yield is.
+
+**The same list against a different role rule, measured after the above.** That
+last sentence was the important one. The first provider — the German SMB
+system, dismissed above for carrying "zero technical postings" — was swept in
+full for a non-technical track whose role rule selects office, commercial, and
+administrative titles instead. 765 crawled tokens reduced to 506 live boards;
+those served 5,570 positions, of which 392 passed that track's filters, from
+180 employers. 177 of the 180 were absent from a database already holding 526
+employers acquired from a public statutory job index, so the overlap between
+the two surfaces is near zero rather than partial. That track's stored postings
+grew by half in one sweep.
+
+So "wrong population" was never a property of these boards. It is a
+relationship between a board's population and one track's role rule, and it
+reverses completely when the rule does. **Do not read the table above as a
+verdict on the providers.** Re-run the measurement for any track whose roles
+differ from the technical ones it was taken against; the sweep is free, and the
+answer changed sign the first time it was asked again.
+
+The freshness window matters as much as the role rule here. These boards are
+slow: median posting age on the swept provider was 262 days, and only about 1%
+of stock was a day old. A track reading them under a 24-hour window sees almost
+nothing; the track above configures 60 days, which is why the same boards yield
+for it.
 
 **Freshness.** Like every other source, these do not filter by the search
 window; `posted_at_text` is carried through and the pipeline's `freshness` step
@@ -187,6 +209,28 @@ for an unrecoverable employer name. Two shapes the fixtures had not covered
 turned up and are handled: the national feed sends multi-location strings in
 more than one format, only one of which is safely splittable, and a minority
 of its postings carry no location at all.
+
+**Production outcome (2026-08-28).** Against the technical track these sources
+were built for, the honest result is that they add little: through that track's
+own filters and its 24-hour window, the search source and the regional board
+each accepted nothing and the national feed accepted about ten postings a day,
+of which most employers were already known. That track now runs the national
+feed only. The limit is the market, not the adapters — the same measurement
+found the role rule was rejecting almost nothing that belonged.
+
+Where the same work paid off was elsewhere, and only after a reader pointed out
+that the wrong population for one track is the right one for another: see the
+`ats_direct` sweep recorded above and in that source's own spec.
+
+An error worth recording because it cost a broken deploy: `--source` was added
+to the CLI parser and to `run_daily`'s, but `job-scraper run` reaches
+`run_daily` through `run_all_tracks`, which reparses and rebuilds the argument
+list. The flag was accepted by `--help` and rejected at run time. The test that
+missed it asserted the selection function behaved correctly, which it did;
+nothing walked the chain. Its replacement does, and the per-profile argument
+construction was extracted to `build_profile_argv` so a test can use the real
+translation rather than restate it — restating it reproduces the bug instead of
+catching it.
 
 ## Follow-ups
 

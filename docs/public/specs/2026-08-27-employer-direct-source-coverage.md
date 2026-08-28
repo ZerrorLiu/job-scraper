@@ -258,9 +258,13 @@ requirement. Confirm against one real board token before enabling
   crawl index, which accepts a subdomain wildcard and returns every crawled URL
   under a host — measured, one crawl yielded thousands of tokens across the
   supported providers. What the measurement also showed is that having the
-  list does not help: the boards it enumerates carry the wrong populations for
-  the roles a track like this one selects. The reason not to automate discovery
-  is therefore yield, not feasibility.
+  list does not help *for a technical-role track*: the boards it enumerates
+  carry the wrong population for those roles. The reason not to automate
+  discovery is therefore yield, not feasibility — and yield is per track, not
+  per provider. Measured afterwards against a non-technical track's role rule,
+  the same enumerated list produced 392 accepted postings from 180 employers in
+  one sweep, 177 of them employers that track had never seen. It now runs there
+  on its own weekly timer.
   [`2026-08-27-token-free-board-sources.md`](2026-08-27-token-free-board-sources.md)
   carries both measurements and adds the sources that need no per-employer
   configuration. This source remains the cleanest way to *read* an employer
