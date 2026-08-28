@@ -42,14 +42,6 @@ def test_selected_direct_source_is_disabled_without_the_explicit_opt_in(
     assert not config.sources["indeed_brightdata"].enabled
 
 
-def test_legacy_enable_indeed_flag_cannot_bypass_suspension(monkeypatch, tmp_path, capsys) -> None:
-    monkeypatch.delenv("BRIGHTDATA_DIRECT_COLLECTION_ENABLED", raising=False)
-
-    assert run_daily.main(["--config", str(tmp_path / "unused.toml"), "--enable-indeed"]) == 2
-
-    assert "direct collection is suspended" in capsys.readouterr().err
-
-
 def test_live_e2e_exits_before_loading_config_while_suspended(
     monkeypatch, tmp_path, capsys
 ) -> None:

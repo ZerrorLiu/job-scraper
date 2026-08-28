@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -114,12 +115,14 @@ def emit_screening_feed(
         # for a profile that has never run.
         if not config.project.database_path.exists():
             continue
+        profile_records = Database(config.project.database_path).read_screening_feed(
+            profile_id=definition.profile_id,
+            since=since,
+            until_exclusive=until,
+        )
         records.extend(
-            Database(config.project.database_path).read_screening_feed(
-                profile_id=definition.profile_id,
-                since=since,
-                until_exclusive=until,
-            )
+            replace(record, processing_mode=definition.processing_mode)
+            for record in profile_records
         )
 
     assert window is not None

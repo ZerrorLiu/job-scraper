@@ -116,6 +116,18 @@ class EmailPreparation:
     skipped_messages: int
 
 
+@dataclass(frozen=True, slots=True)
+class EmailPrepareRequest:
+    config_path: Path
+    track_config_paths: tuple[Path, ...]
+    lookback_days: int | None
+    max_messages: int | None
+    detail_workers: int
+    folder: str | None = None
+    skip_notion: bool = False
+    skip_status_import: bool = True
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Ingest job recommendation emails and append matching jobs to Notion."
@@ -448,7 +460,27 @@ def prepare(
 ) -> EmailPreparation:
     """Fetch and resolve email cards without publishing or mutating message state."""
 
-    args = parse_args(argv)
+    return prepare_request(_prepare_request_from_args(parse_args(argv)), dashboard=dashboard)
+
+
+def prepare_request(
+    request: EmailPrepareRequest,
+    *,
+    dashboard: LiveRunTable | None = None,
+) -> EmailPreparation:
+    """Prepare email acquisition from a typed orchestration boundary."""
+
+    args = argparse.Namespace(
+        config=str(request.config_path),
+        track_configs=[str(path) for path in request.track_config_paths],
+        lookback_days=request.lookback_days,
+        max_messages=request.max_messages,
+        detail_workers=request.detail_workers,
+        folder=request.folder,
+        skip_notion=request.skip_notion,
+        skip_status_import=request.skip_status_import,
+        reprocess=False,
+    )
     email_config = load_email_ingest_config(args.config)
     email_config = apply_overrides(email_config, args.max_messages, args.lookback_days, args.folder)
     if args.track_configs:
@@ -492,6 +524,19 @@ def prepare(
     except Exception as exc:
         _mark_email_runs_failed(runtimes, exc, dashboard)
         raise
+
+
+def _prepare_request_from_args(args: argparse.Namespace) -> EmailPrepareRequest:
+    return EmailPrepareRequest(
+        config_path=Path(args.config).resolve(),
+        track_config_paths=tuple(Path(value).resolve() for value in args.track_configs or ()),
+        lookback_days=args.lookback_days,
+        max_messages=args.max_messages,
+        detail_workers=args.detail_workers,
+        folder=args.folder,
+        skip_notion=args.skip_notion,
+        skip_status_import=args.skip_status_import,
+    )
 
 
 def _prepare_with_runtimes(

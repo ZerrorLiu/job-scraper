@@ -36,14 +36,21 @@ V1/V2 split stop being part of the downstream contract.
 
 ## Design and constraints
 
-The dependency direction from
-[`2026-08-24-downstream-agent-screening-orchestration.md`](2026-08-24-downstream-agent-screening-orchestration.md)
-is unchanged; this only replaces *how* the downstream side reads.
+The feed remains the stable read boundary while the cleanup-first unified
+workflow in
+[`2026-08-28-first-class-agent-screening.md`](2026-08-28-first-class-agent-screening.md)
+is implemented and proven. It replaces *how* a separate consumer reads without
+making SQLite layout part of the contract:
 
 ```text
 downstream screener -> job-scraper feed (versioned document)
 job-scraper         -X-> downstream workspace
 ```
+
+That one-way topology describes the current compatibility phase, not the final
+workflow authority. The feed is not a second semantic-screening engine and is
+retired from production orchestration only after replay, controlled cutover,
+and the rollback window defined by the unified-workflow specification.
 
 Before this, a downstream reader had to know four private things: the
 `data/jobs_<profile>.db` filename convention, the `jobs` / `notion_sync_state`

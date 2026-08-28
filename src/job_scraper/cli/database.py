@@ -5,6 +5,7 @@ from pathlib import Path
 
 from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.adapters.storage.sqlite_v2 import WorkspaceDatabase
+from job_scraper.application.screening_results import load_screening_results
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import available_profiles, load_profile_definition
 from job_scraper.storage.db import Database
@@ -24,10 +25,14 @@ def initialize_profiles(profile_id: str | None = None) -> int:
         print("No enabled profiles found.")
         return 2
 
-    for definition in definitions:
-        config = load_config(definition.runtime_config)
+    configs = [load_config(definition.runtime_config) for definition in definitions]
+    for definition, config in zip(definitions, configs, strict=True):
         Database(config.project.database_path).initialize()
         print(f"INITIALIZED {definition.profile_id}: {config.project.database_path}")
+    workspace_path = _configured_workspace_path(configs)
+    if workspace_path is not None:
+        WorkspaceDatabase(workspace_path).initialize()
+        print(f"INITIALIZED workspace: {workspace_path}")
     return 0
 
 
@@ -156,6 +161,42 @@ def show_status(workspace_path: Path, profile_ids: list[str] | None = None) -> i
                 f"database_id={binding.database_id}, data_source_id={binding.data_source_id}"
             )
     return 0 if workspace_exists else 1
+
+
+def import_screening_results(result_paths: list[Path], workspace_path: Path) -> int:
+    """Persist validated screener output; repeated imports are idempotent."""
+
+    if not workspace_path.is_file():
+        print(f"Workspace database does not exist: {workspace_path}")
+        return 2
+    workspace = WorkspaceDatabase(workspace_path)
+    pending = workspace.pending_migrations()
+    if pending:
+        versions = ", ".join(str(migration.version) for migration in pending)
+        print(f"Workspace has pending migrations: {versions}; run `job-scraper db init`")
+        return 2
+    try:
+        results = tuple(
+            result for result_path in result_paths for result in load_screening_results(result_path)
+        )
+        profile_modes: dict[str, str] = {}
+        for result in results:
+            if result.profile_id not in profile_modes:
+                profile_modes[result.profile_id] = load_profile_definition(
+                    result.profile_id
+                ).processing_mode
+            expected_mode = profile_modes[result.profile_id]
+            if result.processing_mode != expected_mode:
+                raise ValueError(
+                    "screening result processing_mode does not match current profile policy: "
+                    f"{result.profile_id} is {expected_mode}, result says {result.processing_mode}"
+                )
+        workspace.record_screening_results(results)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR screening result import failed: {exc}")
+        return 2
+    print(f"IMPORTED screening results: {len(results)} record(s) -> {workspace_path}")
+    return 0
 
 
 def _configured_workspace_path(configs: list[AppConfig]) -> Path | None:

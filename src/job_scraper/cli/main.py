@@ -16,6 +16,7 @@ from job_scraper.cli.bootstrap import (
     initialize_profile,
 )
 from job_scraper.cli.database import (
+    import_screening_results,
     initialize_profiles,
     migrate_profiles,
     resolve_status_workspace_path,
@@ -74,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--email", action="store_true")
     init.add_argument("--imap-host", default="")
     init.add_argument("--timezone", default="UTC")
+    init.add_argument(
+        "--processing-mode",
+        choices=("core", "review", "discovery"),
+        default="core",
+    )
     init.add_argument("--config-dir", type=Path)
 
     doctor = subparsers.add_parser("doctor", help="Check runtime and configuration.")
@@ -164,13 +170,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         help="Run only this profile. By default all enabled profiles run.",
     )
-    # Deprecated pre-CLI flags, kept working and hidden from --help. Each one's
-    # removal condition is recorded in
-    # docs/public/specs/2026-08-27-deferred-cli-consolidation.md; the set is
-    # closed by test_deprecated_run_flags_are_a_closed_set. Do not add a fourth.
-    run.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
-    run.add_argument("--init-db", action="store_true", help=argparse.SUPPRESS)
-    run.add_argument("--enable-indeed", action="store_true", help=argparse.SUPPRESS)
     run.add_argument(
         "--skip-email",
         action="store_true",
@@ -266,6 +265,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inspect this workspace database path directly instead of resolving it "
         "from local profiles.",
     )
+    import_screening = database_subparsers.add_parser(
+        "import-screening",
+        help="Validate and persist private screener result documents.",
+    )
+    import_screening.add_argument("results", nargs="+", type=Path)
+    import_screening.add_argument(
+        "--workspace",
+        type=Path,
+        help="Workspace database path. Defaults to the configured shared workspace.",
+    )
 
     return parser
 
@@ -327,6 +336,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resolve_status_workspace_path(args.profiles, args.workspace),
                 args.profiles,
             )
+        if args.database_command == "import-screening":
+            try:
+                workspace_path = resolve_status_workspace_path(None, args.workspace)
+            except ValueError as exc:
+                print(f"ERROR {exc}", file=sys.stderr)
+                return 2
+            return import_screening_results(args.results, workspace_path)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
@@ -348,6 +364,7 @@ def _initialize(args: argparse.Namespace) -> int:
                 enable_email=args.email,
                 timezone=args.timezone,
                 imap_host=args.imap_host,
+                processing_mode=args.processing_mode,
             )
         )
     except (FileExistsError, OSError, ValueError) as exc:
@@ -463,36 +480,29 @@ def _validate_config(profile_id: str | None, *, all_profiles: bool) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    if args.all and args.profile:
-        print("ERROR choose either --all or --profile", file=sys.stderr)
-        return 2
-    common = _legacy_run_flags(args)
+    config_root = get_config_root()
     if args.profile is None:
         profiles = [
             profile
             for profile_id in available_profiles()
             if (profile := load_profile_definition(profile_id)).enabled
         ]
-        config_paths = [str(profile.runtime_config) for profile in profiles]
+        config_paths = tuple(profile.runtime_config for profile in profiles)
         if not config_paths:
             print(
                 "ERROR no enabled local profiles found; create private configuration first",
                 file=sys.stderr,
             )
             return 2
-        common.extend(
-            [
-                "--config-dir",
-                str(get_config_root()),
-                "--configs",
-                *config_paths,
-                "--profile-workers",
-                str(args.profile_workers),
-            ]
+        return run_all_tracks.execute(
+            _all_tracks_request(
+                args,
+                config_paths=config_paths,
+                config_root=config_root,
+                skip_email=args.skip_email
+                or not any("email_imap" in profile.channels for profile in profiles),
+            )
         )
-        if args.skip_email or not any("email_imap" in profile.channels for profile in profiles):
-            common.append("--skip-email")
-        return run_all_tracks.main(common)
 
     profile_id = _selected_profile_id(args.profile)
     if profile_id is None:
@@ -502,36 +512,34 @@ def _run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
-    if args.skip_email or "email_imap" not in profile.channels:
-        common.append("--skip-email")
-    return run_all_tracks.main(
-        [
-            "--config-dir",
-            str(get_config_root()),
-            "--config",
-            str(profile.runtime_config),
-            *common,
-        ]
+    return run_all_tracks.execute(
+        _all_tracks_request(
+            args,
+            config_paths=(profile.runtime_config,),
+            config_root=config_root,
+            skip_email=args.skip_email or "email_imap" not in profile.channels,
+        )
     )
 
 
-def _legacy_run_flags(args: argparse.Namespace) -> list[str]:
-    flags: list[str] = []
-    if args.init_db:
-        flags.append("--init-db")
-    if args.enable_indeed:
-        flags.append("--enable-indeed")
-    if args.skip_notion:
-        flags.append("--skip-notion")
-    if args.skip_export:
-        flags.append("--skip-export")
-    if args.post_age_days is not None:
-        flags.extend(["--post-age-days", str(args.post_age_days)])
-    for query in args.query or []:
-        flags.extend(["--query", query])
-    for source in args.source or []:
-        flags.extend(["--source", source])
-    return flags
+def _all_tracks_request(
+    args: argparse.Namespace,
+    *,
+    config_paths: tuple[Path, ...],
+    config_root: Path,
+    skip_email: bool,
+) -> run_all_tracks.AllTracksRequest:
+    return run_all_tracks.AllTracksRequest(
+        config_paths=config_paths,
+        config_dir=config_root,
+        skip_export=args.skip_export,
+        skip_notion=args.skip_notion,
+        skip_email=skip_email,
+        post_age_days=args.post_age_days,
+        search_queries=tuple(args.query or ()),
+        only_sources=tuple(args.source or ()),
+        profile_workers=args.profile_workers,
+    )
 
 
 def _selected_profile_id(requested: str | None) -> str | None:

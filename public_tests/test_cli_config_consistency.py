@@ -124,26 +124,20 @@ def test_resolve_status_workspace_path_prefers_profile_configured_path(
 
 
 def test_source_selection_survives_the_whole_cli_dispatch_chain() -> None:
-    """`--source` must reach the per-profile runner, not just be accepted.
-
-    `job-scraper run` does not call `run_daily` directly. It builds a flag
-    list, hands it to `run_all_tracks`, which reparses and builds a *second*
-    flag list per profile. A flag added to only one of those three parsers is
-    accepted by `--help` and then rejected at run time by the next one down --
-    which is exactly how this flag shipped broken. Every link is walked here
-    using the real translation each one performs; restating any of them would
-    reproduce the bug rather than catch it.
-    """
-    from job_scraper.cli.main import _legacy_run_flags, build_parser
-    from job_scraper.jobs import run_all_tracks, run_daily
+    """`--source` reaches the typed per-profile request, not another parser."""
+    from job_scraper.cli.main import _all_tracks_request, build_parser
+    from job_scraper.jobs import run_all_tracks
 
     args = build_parser().parse_args(
         ["run", "--profile", "fictional", "--source", "alpha_direct", "--source", "beta_direct"]
     )
 
-    forwarded = _legacy_run_flags(args)
-    parsed = run_all_tracks.parse_args([*forwarded, "--config", "fictional.toml"])
-    sub_argv = run_all_tracks.build_profile_argv(parsed, Path("fictional.toml"))
-    final = run_daily.parse_args(sub_argv)
+    all_request = _all_tracks_request(
+        args,
+        config_paths=(Path("fictional.toml"),),
+        config_root=Path("config"),
+        skip_email=True,
+    )
+    request = run_all_tracks.build_profile_request(all_request, Path("fictional.toml"))
 
-    assert final.only_sources == ["alpha_direct", "beta_direct"]
+    assert request.only_sources == ("alpha_direct", "beta_direct")

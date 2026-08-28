@@ -34,6 +34,7 @@ class BootstrapRequest:
     enable_email: bool = False
     timezone: str = "UTC"
     imap_host: str = ""
+    processing_mode: str = "core"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,9 @@ def initialize_profile(request: BootstrapRequest) -> BootstrapResult:
         "pipeline",
     )
     sinks = _component_values(request.sinks, registry.sinks.available(), "sinks")
+    processing_mode = request.processing_mode.strip().lower()
+    if processing_mode not in {"core", "review", "discovery"}:
+        raise ValueError("processing_mode must be core, review, or discovery")
     if request.enable_email and "email_imap" not in channels:
         channels = (*channels, "email_imap")
 
@@ -93,6 +97,7 @@ def initialize_profile(request: BootstrapRequest) -> BootstrapResult:
             channels=channels,
             pipeline=pipeline,
             sinks=sinks,
+            processing_mode=processing_mode,
         ),
         encoding="utf-8",
     )
@@ -131,6 +136,7 @@ def _profile_toml(
     channels: tuple[str, ...],
     pipeline: tuple[str, ...],
     sinks: tuple[str, ...],
+    processing_mode: str,
 ) -> str:
     return (
         "[profile]\n"
@@ -138,6 +144,7 @@ def _profile_toml(
         f"label = {_toml_string(label)}\n"
         f"runtime_config = {_toml_string(f'../{runtime_filename}')}\n"
         "enabled = true\n"
+        f"processing_mode = {_toml_string(processing_mode)}\n"
         f"sources = {_toml_array(sources)}\n"
         f"channels = {_toml_array(channels)}\n"
         f"pipeline = {_toml_array(pipeline)}\n"

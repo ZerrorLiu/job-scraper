@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Statuses that mean "this job is settled". A screener that generates
 # applications has nothing left to do for them, but whether to skip them is the
@@ -58,3 +58,4 @@ class ScreeningFeedRecord:
     first_seen_at: str
     application_status: str
     publication: Publication
+    processing_mode: str = "core"

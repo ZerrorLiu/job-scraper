@@ -40,6 +40,20 @@ class RunPlan:
         return NOTION_SINK_ID in self.sink_ids
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileRunRequest:
+    """Typed input shared by CLI, scheduler orchestration, and one profile run."""
+
+    config_path: Path
+    export_csv: str | None = None
+    skip_export: bool = False
+    skip_notion: bool = False
+    ignore_post_age: bool = False
+    post_age_days: int | None = None
+    search_queries: tuple[str, ...] = ()
+    only_sources: tuple[str, ...] = ()
+
+
 def resolve_profile_id(profile_id: str | None, track_label: str) -> str:
     """A profile's own id when it has one, else the track label.
 

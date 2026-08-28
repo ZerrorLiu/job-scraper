@@ -23,6 +23,7 @@ from job_scraper.application.aggregation import AcceptedJob
 from job_scraper.application.process_candidate import ProcessJobCandidate
 from job_scraper.application.run_plan import (
     DEFAULT_SINK_IDS,
+    ProfileRunRequest,
     RunPlan,
     acquisition_produced_nothing,
     effective_post_age_hours,
@@ -113,7 +114,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         required=True,
         help="Path to the private runtime configuration TOML.",
     )
-    parser.add_argument("--init-db", action="store_true", help="Initialize the database and exit.")
     parser.add_argument(
         "--export-csv",
         help="Optional CSV export path. Defaults to exports/jobs_<today>.csv using the configured timezone.",
@@ -122,11 +122,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--skip-export", action="store_true", help="Do not write the daily CSV export."
     )
     parser.add_argument("--skip-notion", action="store_true", help="Do not sync to Notion.")
-    parser.add_argument(
-        "--enable-indeed",
-        action="store_true",
-        help="Enable Indeed through Bright Data, inheriting the track's LinkedIn search matrix.",
-    )
     parser.add_argument(
         "--ignore-post-age",
         action="store_true",
@@ -162,24 +157,30 @@ def main(
 ) -> int:
     load_dotenv()
     args = parse_args(argv if argv is not None else sys.argv[1:])
-    if args.enable_indeed and not brightdata_direct_collection_enabled():
-        print(
-            "Bright Data direct collection is suspended; set "
-            "BRIGHTDATA_DIRECT_COLLECTION_ENABLED=true only after approval.",
-            file=sys.stderr,
-        )
-        return 2
-    config = load_config(args.config)
-    profile = find_profile_definition(args.config)
+    request = ProfileRunRequest(
+        config_path=Path(args.config),
+        export_csv=args.export_csv,
+        skip_export=args.skip_export,
+        skip_notion=args.skip_notion,
+        ignore_post_age=args.ignore_post_age,
+        post_age_days=args.post_age_days,
+        search_queries=tuple(args.search_queries or ()),
+        only_sources=tuple(args.only_sources or ()),
+    )
+    return execute(request, runtime=runtime)
+
+
+def execute(request: ProfileRunRequest, *, runtime: RuntimeServices | None = None) -> int:
+    """Run one profile from typed input without reparsing command-line arguments."""
+    config = load_config(request.config_path)
+    profile = find_profile_definition(request.config_path)
     if profile is not None:
         apply_profile_to_runtime(profile, config)
-    if args.enable_indeed:
-        enable_indeed_source(config)
     _disable_brightdata_when_suspended(config)
-    if args.only_sources:
-        restrict_sources(config, args.only_sources, profile_id=args.config)
-    if args.search_queries:
-        override_search_queries(config, args.search_queries)
+    if request.only_sources:
+        restrict_sources(config, list(request.only_sources), profile_id=str(request.config_path))
+    if request.search_queries:
+        override_search_queries(config, list(request.search_queries))
     track_label = display_track_label(config.project.track_label)
     runtime = runtime or RuntimeServices(
         request_coalescer=RequestCoalescer(),
@@ -191,10 +192,6 @@ def main(
     )
     database = Database(config.project.database_path)
     database.initialize()
-
-    if args.init_db:
-        print(f"Initialized database at {config.project.database_path}")
-        return 0
 
     sources = build_collectors(config, runtime=runtime, track_label=track_label)
     try:
@@ -212,7 +209,7 @@ def main(
         config.project.database_path.parent / "notion_database_bindings.json"
     )
 
-    if notion.enabled() and not args.skip_notion:
+    if notion.enabled() and not request.skip_notion:
         synced_statuses = sync_processed_statuses_from_notion(
             database,
             notion,
@@ -261,8 +258,8 @@ def main(
         )
         max_post_age_hours = effective_post_age_hours(
             configured_post_age_hours,
-            override_days=args.post_age_days,
-            ignore_post_age=args.ignore_post_age,
+            override_days=request.post_age_days,
+            ignore_post_age=request.ignore_post_age,
         )
         executions.append(
             _SourceExecution(
@@ -354,7 +351,7 @@ def main(
         log_error(f"Run failed | Track: {track_label} | No jobs reached downstream synchronization")
         return 1
 
-    plan = build_run_plan(args, config, profile, started_at=window.started_at)
+    plan = build_run_plan(request, config, profile, started_at=window.started_at)
     export_destination = plan.export_destination
     publish_context = PublishContext(
         run_id=f"profile:{plan.profile_id}",
@@ -404,7 +401,7 @@ def main(
 
 
 def build_run_plan(
-    args: argparse.Namespace,
+    request: ProfileRunRequest,
     config: AppConfig,
     profile: ProfileDefinition | None,
     *,
@@ -413,8 +410,8 @@ def build_run_plan(
     """Decide what this run will do, before it does anything."""
     track_label = display_track_label(config.project.track_label)
     export_destination = resolve_export_destination(
-        explicit_destination=args.export_csv,
-        skip_export=args.skip_export,
+        explicit_destination=request.export_csv,
+        skip_export=request.skip_export,
         timezone_name=config.project.timezone,
         export_dir=config.project.export_dir,
         started_at=started_at,
@@ -428,8 +425,8 @@ def build_run_plan(
         track_label=track_label,
         sink_ids=select_sink_ids(
             profile.sinks if profile is not None else DEFAULT_SINK_IDS,
-            skip_export=args.skip_export,
-            skip_notion=args.skip_notion,
+            skip_export=request.skip_export,
+            skip_notion=request.skip_notion,
             has_export_destination=export_destination is not None,
         ),
         export_destination=export_destination,
@@ -487,25 +484,6 @@ def build_collectors(
     return collectors
 
 
-def enable_indeed_source(config: AppConfig) -> None:
-    """Apply a bounded Indeed overlay without duplicating the profile search matrix."""
-    try:
-        source = config.sources["indeed_brightdata"]
-    except KeyError as exc:
-        raise ValueError(
-            "Indeed cannot be enabled because sources.indeed_brightdata is not configured"
-        ) from exc
-    source.enabled = True
-    source.max_listing_pages = source.max_listing_pages if source.max_listing_pages > 0 else 2
-    source.max_detail_fetches = source.max_detail_fetches if source.max_detail_fetches > 0 else 40
-    if not source.search_queries:
-        source.search_queries = _first_search_matrix(config, "search_queries")
-    if not source.locations:
-        source.locations = _first_search_matrix(config, "locations")
-    if not source.search_queries:
-        raise ValueError("Indeed cannot be enabled because the track has no search queries")
-
-
 def _disable_brightdata_when_suspended(config: AppConfig) -> None:
     """Keep an accidentally selected paid source from issuing live requests."""
     if brightdata_direct_collection_enabled():
@@ -554,16 +532,6 @@ def override_search_queries(config: AppConfig, queries: list[str]) -> None:
         raise ValueError("At least one non-empty --query value is required")
     for settings in config.sources.values():
         settings.search_queries = list(normalized)
-
-
-def _first_search_matrix(config: AppConfig, field_name: str) -> list[str]:
-    for source_id, settings in config.sources.items():
-        if source_id == "indeed_brightdata":
-            continue
-        values = getattr(settings, field_name)
-        if values:
-            return list(values)
-    return []
 
 
 def validate_collector_runtimes(collectors: list[JobSource]) -> None:

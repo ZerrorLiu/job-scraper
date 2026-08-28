@@ -93,6 +93,33 @@ the document, alongside `schema_version`, `generated_at`, and `record_count`.
 Jobs already settled as applied or not interested are dropped unless
 `--include-settled` is given.
 
+This is the compatibility path for the current separate screener. An
+orchestrator may first invoke `job-scraper run` with an argv list and continue
+to screening only when it returns exit code `0`. Screening-only operation skips
+that acquisition call and reads already acquired state through `job-scraper
+feed`. Do not build a shell command string, and do not open or modify the source
+SQLite database from the downstream process.
+
+The planned unified workflow replaces this orchestration only after replay and
+controlled cutover. It screens and validates artifacts before Notion is updated;
+the current feed remains available during migration and rollback.
+
+The migration handoff is also versioned. After a separate screener writes its
+`screening-*-results.json`, validate and persist it in the configured shared
+workspace before any final display reconciliation:
+
+```bash
+uv run job-scraper db init
+uv run job-scraper db import-screening PATH_TO_RESULTS_JSON
+```
+
+The import is idempotent for the same canonical job, search track, and contract
+version. It fails closed when the feed job has no V1-to-canonical crosswalk,
+when the result mode differs from the current profile policy, when the
+workspace needs a migration, or when the document is malformed. All supplied
+documents are validated and committed as one transaction; a later bad record
+cannot leave an earlier partial import behind.
+
 ## Repairing email detail enrichment
 
 Indeed jobs discovered in recommendation emails are enriched before filtering.
@@ -157,6 +184,53 @@ deduplication, and checkpoints an accepted row as `imported`. Add
 `--skip-notion` to make the import local-only. Do not place these JSONL files
 in the repository: they contain private mailbox context.
 
+## Browser-assisted Indeed search discovery
+
+The same local browser workflow can discover new Indeed listing URLs from the
+existing private track query/location matrix. It makes no network request and
+does not enable the Bright Data source:
+
+```bash
+uv run job-scraper ingest-email --browser-search-queue local/indeed-browser-search.jsonl
+uv run job-scraper ingest-email --browser-search-claim local/indeed-browser-search.jsonl
+```
+
+The search queue reads the existing track config paths from the private email
+configuration only to obtain their query/location matrix; it does not connect
+to IMAP. Use `--track-config PATH` to choose a narrower matrix explicitly.
+
+The second command leases one search page. The interactive browser operator
+updates the row with `status: "complete"` and a `cards` list. Every card needs
+a canonical Indeed `viewjob` URL plus visible `title`, `company_name`,
+`location_raw`, and `context`; a blocked or unavailable search gets its terminal
+status and an `error` instead. A completed search with no matching cards is
+valid and will be checkpointed as expanded. The following fictional shapes are
+the full payload changes after a task has been claimed:
+
+```json
+{"status":"complete","cards":[{"url":"https://de.indeed.com/viewjob?jk=fictional","title":"Platform Engineer","company_name":"Example GmbH","location_raw":"Berlin","context":"Visible result-card summary."}]}
+{"status":"complete","cards":[]}
+{"status":"blocked","error":"Browser showed a CAPTCHA."}
+```
+
+Keep the other fields from the claimed JSON row unchanged. If an operator stops
+before recording an outcome, first confirm no browser is working that task,
+then change that same row back to `pending` and remove `lease_started_at`; do
+not create a second row. A browser block, login, or CAPTCHA should instead be
+recorded as `blocked` or `unavailable` with its error.
+
+Expand completed search rows into the existing detail queue, then use the
+detail lease and import commands above:
+
+```bash
+uv run job-scraper ingest-email --browser-search-results local/indeed-browser-search.jsonl --browser-detail-queue local/indeed-browser-queue.jsonl
+```
+
+Search and detail queues must be separate files. Both are one-browser-lane
+checkpoints; there is no background browser, headless/VPS mode, login, or
+CAPTCHA bypass. Jobs discovered this way retain `indeed` as their job-source
+provenance once their final detail is imported.
+
 ## Manual decisions are authoritative
 
 Jobs marked `Not Interested` in Notion are normalized locally and excluded
@@ -193,10 +267,10 @@ user's behalf, so enable one only with their explicit go-ahead.
 ### Giving one source its own cadence
 
 A profile's `sources` list says which adapters the track uses, not how often
-each should run. When one source wants a different schedule from the rest --
+each should run. When one source wants a different schedule from the rest —
 typically a board sweep that spends one request per configured employer, where
 running it daily multiplies load on a third party for postings that move
-slowly -- split it across two timers with `--source` rather than duplicating the
+slowly — split it across two timers with `--source` rather than duplicating the
 track as a second profile:
 
 ```bash
@@ -214,7 +288,7 @@ edit is otherwise indistinguishable from one whose source found nothing new.
 
 The freshness window must be at least the sweep interval. `FreshnessStep`
 filters on `posted_at`, a fixed value, so a posting older than the window is
-rejected on every future run, not just the current one -- a weekly sweep under a
+rejected on every future run, not just the current one — a weekly sweep under a
 window shorter than a week loses whatever appeared between runs, permanently.
 
 ## When something looks wrong

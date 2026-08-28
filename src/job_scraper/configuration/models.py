@@ -18,3 +18,4 @@ class ProfileDefinition:
     locations: tuple[str, ...]
     early_career_modifiers: tuple[str, ...]
     watchlists: tuple[str, ...]
+    processing_mode: str = "core"

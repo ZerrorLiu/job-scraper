@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from io import StringIO
+from pathlib import Path
 from threading import Event
 
 from job_scraper.cli.console import LiveRunTable
@@ -73,19 +74,50 @@ def test_email_preparation_receives_the_shared_dashboard(monkeypatch) -> None:
 
     received: list[object] = []
 
-    def fake_prepare(argv: list[str], *, dashboard: LiveRunTable | None = None) -> str:
-        received.extend([argv, dashboard])
+    def fake_prepare(request: object, *, dashboard: LiveRunTable | None = None) -> str:
+        received.extend([request, dashboard])
         return "prepared"
 
     monkeypatch.setattr(
         run_all_tracks.ingest_email_recommendations,
-        "prepare",
+        "prepare_request",
         fake_prepare,
     )
     dashboard = LiveRunTable()
 
-    assert run_all_tracks._invoke_email_prepare(["--skip-notion"], dashboard) == "prepared"
-    assert received == [["--skip-notion"], dashboard]
+    request = run_all_tracks.ingest_email_recommendations.EmailPrepareRequest(
+        config_path=Path("email.toml"),
+        track_config_paths=(),
+        lookback_days=1,
+        max_messages=0,
+        detail_workers=1,
+        skip_notion=True,
+    )
+    assert run_all_tracks._invoke_email_prepare(request, dashboard) == "prepared"
+    assert received == [request, dashboard]
+
+
+def test_all_tracks_builds_a_typed_email_request(tmp_path: Path) -> None:
+    config_paths = [tmp_path / "one.toml", tmp_path / "two.toml"]
+    request = run_all_tracks.AllTracksRequest(
+        config_paths=tuple(config_paths),
+        config_dir=tmp_path,
+        post_age_days=3,
+        email_max_messages=25,
+        email_detail_workers=6,
+        email_folder="All Mail",
+        skip_notion=True,
+    )
+
+    email_request = run_all_tracks.build_email_request(request, config_paths)
+
+    assert email_request is not None
+    assert email_request.track_config_paths == tuple(config_paths)
+    assert email_request.lookback_days == 3
+    assert email_request.max_messages == 25
+    assert email_request.detail_workers == 6
+    assert email_request.folder == "All Mail"
+    assert email_request.skip_notion is True
 
 
 def test_title_level_filters_do_not_read_job_description() -> None:
@@ -179,19 +211,16 @@ def test_email_preparation_starts_before_online_tracks_finish(monkeypatch, tmp_p
         lambda value, *, dashboard=None: 0 if value is preparation else 1,
     )
 
-    args = run_all_tracks.parse_args(
-        [
-            "--config",
-            str(tmp_path / "track.toml"),
-            "--post-age-days",
-            "1",
-            "--skip-export",
-        ]
+    request = run_all_tracks.AllTracksRequest(
+        config_paths=(tmp_path / "track.toml",),
+        config_dir=tmp_path,
+        post_age_days=1,
+        skip_export=True,
     )
 
     assert (
         run_all_tracks._execute(
-            args,
+            request,
             run_all_tracks.run_daily.RuntimeServices(),
             LiveRunTable(),
         )

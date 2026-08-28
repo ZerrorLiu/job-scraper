@@ -47,7 +47,7 @@ uv run job-scraper init \
   --profile-id PROFILE_ID --label "PROFILE_LABEL" \
   --query "SEARCH_QUERY" --location "SEARCH_LOCATION" --country COUNTRY_CODE \
   --keyword "FILTER_SIGNAL" --timezone "AREA/CITY" \
-  --source linkedin_direct --sink csv
+  --source linkedin_direct --sink csv --processing-mode core
 ```
 
 `init` writes only to the ignored private workspace and refuses to overwrite

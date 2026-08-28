@@ -193,16 +193,20 @@ status honestly when offering one:
 | `indeed_brightdata` | Available, gated, paid | Selecting the source is not enough: `BRIGHTDATA_DIRECT_COLLECTION_ENABLED` must also be true. Low yield for most searches. Offer only on request. |
 | Bright Data email enrichment | Available, gated, paid | Separate gate, `BRIGHTDATA_EMAIL_DETAIL_ENRICHMENT_ENABLED`. Enriches Indeed jobs found in email. |
 | Bright Data async snapshots | Available, needs infrastructure | `BRIGHTDATA_WEBHOOK_URL` / `_TOKEN` require a receiver the vendor can reach. Without them acquisition polls synchronously. |
-| Downstream screening | **Interface only** | This repository publishes the feed and stores the result. The screener itself is a separate program; see below. |
+| Screening feed | Available compatibility interface | This repository publishes versioned job records for the current separate screener. The cleanup-first unified workflow will move screening behind the application boundary after replay and cutover. |
 
 Do not invent a component ID. `job-scraper capabilities --json` is the
 authoritative list, and `init` rejects an ID the registry does not know.
 
-### The downstream screening interface
+### The screening-feed compatibility interface
 
-This repository deliberately stops at "here are the jobs". Deciding which ones
-deserve an application, and generating anything from them, belongs to a
-separate program.
+The current released workflow stops at "here are the jobs" and uses a separate
+private program for screening and document generation. This is an honest
+description of today's runtime, not the long-term architecture: the active
+[`cleanup-first unified workflow`](specs/2026-08-28-first-class-agent-screening.md)
+moves reusable screening and tailoring orchestration behind this repository's
+application boundaries only after cleanup, evidence reconciliation, replay,
+and controlled cutover.
 
 The boundary is the feed contract, and it exists today:
 
@@ -212,7 +216,7 @@ uv run job-scraper feed --profile PROFILE_ID --published-only
 
 It emits versioned JSON — `schema_version`, `generated_at`, `window`,
 `record_count`, `records` — where each record carries `job_id`, `profile_id`,
-`title`, `company`, `location`, `language`, `url`, `description`,
+`processing_mode`, `title`, `company`, `location`, `language`, `url`, `description`,
 `first_seen_at`, `application_status`, and a `publication` object naming the
 sink, the external object ID, and its container.
 
@@ -221,7 +225,8 @@ Notion page the user is already reading, which is why `--published-only`
 exists. Adding a field to the record is a compatible change; removing one or
 changing its meaning bumps `SCHEMA_VERSION`.
 
-A deployment that will eventually screen should therefore:
+A deployment that continues to use the current separate screener and wants to
+write verdicts back to existing Notion pages should therefore:
 
 - keep `notion_daily` enabled, so published objects exist to annotate;
 - leave the workspace database in place rather than treating exports as the
@@ -230,7 +235,13 @@ A deployment that will eventually screen should therefore:
   database schema is internal and changes without notice; the feed is the
   contract.
 
-There is no screener command in this repository, and none is planned here.
+A deployment intended only for the future unified workflow does not need to
+publish to Notion before screening. In that workflow, Notion receives finalized
+durable state after screening and any authorized artifact generation.
+
+There is no built-in screener command in the current release. Until the unified
+path has publication authority, deployments continue to use the versioned feed
+rather than opening SQLite directly.
 
 ## Idempotency and re-deployment
 

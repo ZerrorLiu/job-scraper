@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from job_scraper.domain.decisions import Decision
+from job_scraper.domain.decisions import Decision, ScreeningResult
 from job_scraper.domain.identity import (
     canonical_identity,
     canonical_job_id,
@@ -165,6 +165,33 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ON external_publications(sink_id, external_id)",
         ),
     ),
+    Migration(
+        version=7,
+        description="persist validated semantic screening results",
+        statements=(
+            """CREATE TABLE IF NOT EXISTS screening_results (
+                canonical_job_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                processing_mode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                selected INTEGER NOT NULL,
+                score REAL,
+                core_fit TEXT NOT NULL,
+                variant TEXT NOT NULL,
+                true_gap_json TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                decision_source TEXT NOT NULL,
+                tailoring_status TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                evaluated_at TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                PRIMARY KEY(canonical_job_id, profile_id, contract_version),
+                FOREIGN KEY(canonical_job_id) REFERENCES canonical_jobs(id)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_screening_results_profile "
+            "ON screening_results(profile_id, processing_mode, status, evaluated_at)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = max(
@@ -181,6 +208,7 @@ KNOWN_TABLES = (
     "applications",
     "external_publications",
     "legacy_job_links",
+    "screening_results",
 )
 
 # Tables no run writes to. They are populated once by `migrate_v1` and then
@@ -398,6 +426,92 @@ class WorkspaceDatabase:
                 )
         return canonical_id
 
+    def record_screening_result(self, result: ScreeningResult) -> None:
+        """Upsert one validated result through its stable legacy-job crosswalk."""
+
+        self.record_screening_results((result,))
+
+    def record_screening_results(self, results: tuple[ScreeningResult, ...]) -> None:
+        """Persist a complete handoff atomically, or leave the workspace unchanged."""
+
+        with self.connect() as connection:
+            resolved: list[tuple[ScreeningResult, str]] = []
+            for result in results:
+                row = connection.execute(
+                    """SELECT canonical_job_id FROM legacy_job_links
+                    WHERE profile_id = ? AND legacy_job_id = ?""",
+                    (result.profile_id, result.legacy_job_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(
+                        "screening result has no canonical legacy-job crosswalk: "
+                        f"{result.profile_id}/{result.legacy_job_id}"
+                    )
+                resolved.append((result, str(row["canonical_job_id"])))
+            for result, canonical_job_id in resolved:
+                self._upsert_screening_result(connection, result, canonical_job_id)
+
+    @staticmethod
+    def _upsert_screening_result(
+        connection: sqlite3.Connection,
+        result: ScreeningResult,
+        canonical_job_id: str,
+    ) -> None:
+
+        payload = {
+            "processing_mode": result.processing_mode,
+            "status": result.status,
+            "selected": result.selected,
+            "score": result.score,
+            "core_fit": result.core_fit,
+            "variant": result.variant,
+            "true_gap": result.true_gap,
+            "rationale": result.rationale,
+            "decision_source": result.decision_source,
+            "tailoring_status": result.tailoring_status,
+        }
+        payload_json = _json(payload)
+        payload_hash = stable_id("screening-result", payload_json)
+        connection.execute(
+            """INSERT INTO screening_results(
+                    canonical_job_id, profile_id, processing_mode, status, selected,
+                    score, core_fit, variant, true_gap_json, rationale,
+                    decision_source, tailoring_status, contract_version,
+                    evaluated_at, payload_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(canonical_job_id, profile_id, contract_version) DO UPDATE SET
+                    processing_mode = excluded.processing_mode,
+                    status = excluded.status,
+                    selected = excluded.selected,
+                    score = excluded.score,
+                    core_fit = excluded.core_fit,
+                    variant = excluded.variant,
+                    true_gap_json = excluded.true_gap_json,
+                    rationale = excluded.rationale,
+                    decision_source = excluded.decision_source,
+                    tailoring_status = excluded.tailoring_status,
+                    evaluated_at = excluded.evaluated_at,
+                    payload_hash = excluded.payload_hash
+                """,
+            (
+                canonical_job_id,
+                result.profile_id,
+                result.processing_mode,
+                result.status,
+                int(result.selected),
+                result.score,
+                result.core_fit,
+                result.variant,
+                _json(result.true_gap),
+                result.rationale,
+                result.decision_source,
+                result.tailoring_status,
+                result.contract_version,
+                result.evaluated_at.astimezone(UTC).isoformat(),
+                payload_hash,
+            ),
+        )
+
     def migrate_v1(self, profile_id: str, database_path: Path) -> MigrationReport:
         if not database_path.is_file():
             return MigrationReport(profile_id=profile_id, database_path=database_path)
@@ -470,6 +584,7 @@ class WorkspaceDatabase:
                     connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
                 )
                 for table in tables
+                if _table_exists(connection, table)
             }
             for table in self.unknown_tables():
                 counted[f"{table} (unknown)"] = int(

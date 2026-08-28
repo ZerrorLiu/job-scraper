@@ -59,13 +59,20 @@ def test_a_database_created_before_a_migration_still_receives_it(tmp_path: Path)
                 "DELETE FROM schema_migrations WHERE version = ?", (migration.version,)
             )
             for statement in migration.statements:
-                name = statement.split("IF NOT EXISTS")[1].split()[0]
-                connection.execute(f"DROP INDEX IF EXISTS {name}")
+                words = statement.split("IF NOT EXISTS", 1)
+                if len(words) != 2:
+                    continue
+                name = words[1].split()[0]
+                if statement.lstrip().upper().startswith("CREATE INDEX"):
+                    connection.execute(f"DROP INDEX IF EXISTS {name}")
+                elif statement.lstrip().upper().startswith("CREATE TABLE"):
+                    connection.execute(f"DROP TABLE IF EXISTS {name}")
         connection.commit()
     finally:
         connection.close()
 
     assert [m.version for m in workspace.pending_migrations()] == [m.version for m in MIGRATIONS]
+    assert "screening_results" not in workspace.counts()
 
     workspace.initialize()
 

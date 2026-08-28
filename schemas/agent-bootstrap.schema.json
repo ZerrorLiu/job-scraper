@@ -67,6 +67,11 @@
         "pattern": "^[a-z][a-z0-9_]*$"
       }
     },
+    "processing_mode": {
+      "type": "string",
+      "enum": ["core", "review", "discovery"],
+      "default": "core"
+    },
     "channels": {
       "type": "array",
       "uniqueItems": true,

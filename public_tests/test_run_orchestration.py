@@ -246,17 +246,6 @@ def test_skip_flags_remove_the_matching_sinks(workspace, monkeypatch) -> None:
     assert built == ["notion_daily"]
 
 
-def test_init_db_creates_the_database_and_does_no_acquisition(workspace, monkeypatch) -> None:
-    sinks = {"csv": RecordingSink("csv")}
-    _install(monkeypatch, [FakeSource("linkedin", [_job("Software Engineer")])], sinks)
-
-    assert _run(workspace, "--init-db") == 0
-
-    assert (workspace / "jobs.db").is_file()
-    assert _titles(workspace / "jobs.db") == []
-    assert sinks["csv"].published_batches == []
-
-
 def test_accepted_jobs_are_persisted_for_the_next_run(workspace, monkeypatch) -> None:
     sinks = {"csv": RecordingSink("csv")}
     _install(monkeypatch, [FakeSource("linkedin", [_job("Software Engineer")])], sinks)

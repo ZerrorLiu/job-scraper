@@ -23,7 +23,9 @@ ALLOWED_PROFILE_FIELDS = {
     "locations",
     "early_career_modifiers",
     "watchlists",
+    "processing_mode",
 }
+PROCESSING_MODES = frozenset({"core", "review", "discovery"})
 
 
 def get_config_root(config_root: Path | None = None) -> Path:
@@ -81,6 +83,11 @@ def load_profile_definition(
     if not runtime_config.is_file():
         raise ValueError(f"Profile {normalized_id!r} references missing config: {runtime_config}")
 
+    processing_mode = str(merged.get("processing_mode", "core")).strip().lower()
+    if processing_mode not in PROCESSING_MODES:
+        allowed = ", ".join(sorted(PROCESSING_MODES))
+        raise ValueError(f"processing_mode must be one of: {allowed}")
+
     return ProfileDefinition(
         profile_id=normalized_id,
         label=str(merged.get("label", normalized_id)).strip() or normalized_id,
@@ -97,6 +104,7 @@ def load_profile_definition(
             "early_career_modifiers",
         ),
         watchlists=_string_tuple(merged.get("watchlists", []), "watchlists"),
+        processing_mode=processing_mode,
     )
 
 

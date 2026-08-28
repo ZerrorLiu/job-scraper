@@ -324,6 +324,27 @@ watchlists = []
     assert resolve_config_paths(args) == [runtime.resolve()]
 
 
+def test_profile_processing_mode_is_explicit_and_validated(tmp_path: Path) -> None:
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    runtime = tmp_path / "runtime.toml"
+    runtime.touch()
+    profile_path = profiles / "profile_one.toml"
+    profile_path.write_text(
+        '[profile]\nruntime_config = "../runtime.toml"\nprocessing_mode = "review"\n',
+        encoding="utf-8",
+    )
+
+    assert load_profile_definition("profile_one", config_root=tmp_path).processing_mode == "review"
+
+    profile_path.write_text(
+        '[profile]\nruntime_config = "../runtime.toml"\nprocessing_mode = "unknown"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="processing_mode"):
+        load_profile_definition("profile_one", config_root=tmp_path)
+
+
 def test_placeholder_credentials_are_not_treated_as_secrets(monkeypatch) -> None:
     monkeypatch.setenv("EXAMPLE_TOKEN", "YOUR_ACTUAL_TOKEN")
 
@@ -350,6 +371,7 @@ def test_agent_can_generate_validate_and_initialize_a_new_workspace(
     )
 
     assert result.profile_path.is_file()
+    assert load_profile_definition("profile_one", config_root=config_root).processing_mode == "core"
     assert result.runtime_path.is_file()
     initialize_profile(
         BootstrapRequest(
@@ -362,9 +384,11 @@ def test_agent_can_generate_validate_and_initialize_a_new_workspace(
             keywords=("signal two",),
             sources=("linkedin_direct",),
             sinks=("csv",),
+            processing_mode="review",
         )
     )
     monkeypatch.setenv("JOB_SCRAPER_CONFIG_DIR", str(config_root))
+    assert load_profile_definition("profile_two").processing_mode == "review"
     assert cli.main(["config", "validate", "--all"]) == 0
     assert cli.main(["doctor", "--all"]) == 0
     assert cli.main(["db", "init"]) == 0
@@ -372,22 +396,20 @@ def test_agent_can_generate_validate_and_initialize_a_new_workspace(
     assert (config_root / "data" / "profile_one.db").is_file()
     assert (config_root / "data" / "profile_two.db").is_file()
 
-    run_arguments: list[str] = []
+    run_requests = []
     monkeypatch.setattr(
         cli.run_all_tracks,
-        "main",
-        lambda arguments: run_arguments.extend(arguments) or 0,
+        "execute",
+        lambda request: run_requests.append(request) or 0,
     )
     assert cli.main(["run"]) == 0
-    assert "--configs" in run_arguments
-    assert str(result.runtime_path) in run_arguments
-    assert "--enable-indeed" not in run_arguments
+    assert result.runtime_path in run_requests[-1].config_paths
+    assert len(run_requests[-1].config_paths) == 2
 
-    run_arguments.clear()
+    run_requests.clear()
     assert cli.main(["run", "--profile", "profile_one", "--skip-email"]) == 0
-    assert "--config" in run_arguments
-    assert "--configs" not in run_arguments
-    assert "--skip-email" in run_arguments
+    assert run_requests[-1].config_paths == (result.runtime_path,)
+    assert run_requests[-1].skip_email is True
 
 
 def test_email_lookback_uses_widest_configured_freshness(
@@ -534,11 +556,7 @@ def test_public_documentation_links_resolve_for_someone_who_cloned() -> None:
     )
 
 
-DEPRECATED_RUN_FLAGS = {"--all", "--init-db", "--enable-indeed"}
-
-
-def test_deprecated_run_flags_are_a_closed_set() -> None:
-    """Hidden compatibility flags may leave this set, but nothing may join it."""
+def test_run_has_no_hidden_compatibility_flags() -> None:
     parser = cli.build_parser()
     subparsers = next(
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
@@ -550,10 +568,7 @@ def test_deprecated_run_flags_are_a_closed_set() -> None:
         for option in action.option_strings
     }
 
-    assert hidden <= DEPRECATED_RUN_FLAGS, (
-        f"New hidden flag on `run`: {sorted(hidden - DEPRECATED_RUN_FLAGS)}. Deprecated "
-        "surface is closed; see docs/public/specs/2026-08-27-deferred-cli-consolidation.md."
-    )
+    assert hidden == set()
 
 
 def _documented_table_column(document: Path, heading: str) -> set[str]:

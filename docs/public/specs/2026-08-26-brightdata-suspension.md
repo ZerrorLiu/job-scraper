@@ -41,11 +41,13 @@ off unless the operator explicitly opts in after the provider is stable.
 Profile composition decides whether a direct source adapter runs, so suspension
 belongs in the ignored profile/default `sources` list rather than only in the
 runtime source table. `BRIGHTDATA_DIRECT_COLLECTION_ENABLED` is a second,
-default-off circuit breaker for an accidentally selected source, the legacy
-`--enable-indeed` override, and the one-off live E2E utility. Email detail enrichment previously used credential
-presence as its only activation condition; a separate explicit flag avoids
-accidental paid requests when credentials remain configured. The flag defaults
-to disabled and accepts only the literal case-insensitive value `true`.
+default-off circuit breaker for an accidentally selected source and the one-off
+live E2E utility. The former `--enable-indeed` override has been removed; runtime
+activation now has one configuration path. Email detail enrichment previously
+used credential presence as its only activation condition; a separate explicit
+flag avoids accidental paid requests when credentials remain configured. The
+flag defaults to disabled and accepts only the literal case-insensitive value
+`true`.
 
 ## Verification
 

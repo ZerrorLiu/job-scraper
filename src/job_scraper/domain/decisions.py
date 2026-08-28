@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -47,3 +48,23 @@ class Decision:
             step=step,
             details=details or {},
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ScreeningResult:
+    """Validated semantic-screening state ready for durable persistence."""
+
+    legacy_job_id: str
+    profile_id: str
+    processing_mode: str
+    status: str
+    selected: bool
+    score: float | None
+    core_fit: str
+    variant: str
+    true_gap: tuple[str, ...]
+    rationale: str
+    decision_source: str
+    tailoring_status: str
+    contract_version: str
+    evaluated_at: datetime

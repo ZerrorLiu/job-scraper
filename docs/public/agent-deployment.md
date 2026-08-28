@@ -20,7 +20,7 @@ uv run job-scraper init \
   --profile-id PROFILE_ID --label "PROFILE_LABEL" \
   --query "SEARCH_QUERY" --location "SEARCH_LOCATION" --country COUNTRY_CODE \
   --keyword "FILTER_SIGNAL" --timezone "AREA/CITY" \
-  --source linkedin_direct --sink csv
+  --source linkedin_direct --sink csv --processing-mode core
 uv run job-scraper doctor --all
 uv run job-scraper db init
 ```
@@ -65,7 +65,9 @@ a Notion table prefix will do six weeks from now. Those are the agent's
 decisions. [Designing a profile](profile-design.md) is the method for making
 them; read it before the interview, not after.
 
-1. **Profiles.** How many independent search directions, and a label for each.
+1. **Profiles.** How many independent search directions, a label for each, and
+   whether each is `core` (screen + resume), `review` (screen only), or
+   `discovery` (visibility only).
    One profile is one search matrix with one filtering policy and one output
    set. Separate profiles when the filtering policy genuinely differs, not
    merely because the job titles differ.
@@ -83,11 +85,13 @@ them; read it before the interview, not after.
    see 3.1.
 7. **Recommendation email.** Only if the user already receives job
    recommendation mail and wants it ingested — see 3.2.
-8. **Downstream screening.** Ask whether anything will later consume these
-   results automatically. If so, keep `notion_daily` enabled and read the
-   screening-interface section of
-   [Designing a profile](profile-design.md#the-downstream-screening-interface);
-   the decision affects what must be published now, not later.
+8. **Screening.** If the deployment will keep using the current separate
+   screener and write verdicts back to existing Notion objects, keep
+   `notion_daily` enabled and read the
+   [screening-feed compatibility section](profile-design.md#the-screening-feed-compatibility-interface).
+   A deployment intended only for the future unified workflow does not need to
+   pre-publish jobs for screening; that workflow finalizes upstream state before
+   updating Notion.
 
 The optional components, what each one costs, and which are interface-only are
 tabulated in

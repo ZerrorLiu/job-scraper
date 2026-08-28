@@ -26,6 +26,9 @@ Every value in this tree is local. Do not force-add it to Git.
 Each `profiles/<profile-id>.toml` contains a `[profile]` table. Supported keys:
 
 - `id`, `label`, `enabled`
+- `processing_mode`: `core` runs agent screening and permits authorized resume
+  generation; `review` runs screening without resume generation; `discovery`
+  keeps the profile in acquisition/reporting without agent or resume work
 - `runtime_config`: relative path to the full runtime TOML
 - `sources`, `channels`, `pipeline`, `sinks`: registered component IDs
 - `base_queries`, `locations`, `early_career_modifiers`: the profile's single
@@ -151,8 +154,10 @@ effective profile `sources` list (including inherited defaults and any local
 override) and leave `BRIGHTDATA_DIRECT_COLLECTION_ENABLED` unset or `false`.
 Keep its runtime `[sources.indeed_brightdata]` table intact; profile composition
 determines which source adapters run, and the environment flag prevents a
-mistakenly selected source or `--enable-indeed` from making a request. Email-derived
-Indeed detail enrichment also requires all of:
+mistakenly selected source from making a request. The former CLI override has
+been removed; source activation belongs only to private profile composition and
+this default-off circuit breaker. Email-derived Indeed detail enrichment also
+requires all of:
 
 - `BRIGHTDATA_API_KEY`
 - `BRIGHTDATA_DATASET_ID`
