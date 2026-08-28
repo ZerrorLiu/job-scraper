@@ -163,9 +163,24 @@ compatibility, or data-recovery role.
   `ai` and `cpp` profiles override their acquisition sinks to CSV, so the
   existing daily fine-screen unit owns their first Notion publication through
   the finalized-result path. `review` and `discovery` profiles retain immediate
-  Notion compatibility while their semantic backlog is shadowed. The next
-  scheduled run, a selected-job attachment proof, and host reboot are still
-  required before retiring the compatibility boundary.
+  Notion compatibility while their semantic backlog is shadowed.
+- The first production cutover run completed acquisition successfully and
+  triggered fine-screen through `OnSuccess`. Core C++ and AI wrote CSV only;
+  compatibility tracks retained their existing Notion path. Fine-screen
+  evaluated 119 core rows with bounded cache/model budgets and failed closed
+  before publication when all six initial tailoring plans violated the strict
+  editorial contract. That run exposed and fixed canonical duplicate-result
+  verification (three source-alias groups mapped to one durable job) and made
+  the tailoring label/size contract explicit.
+- A bounded eight-job recovery then ran as the service user on the corrected
+  releases. It reused six cached decisions, refined two, imported all eight
+  results atomically, produced three validated tailored PDFs, published the
+  exact eight-job slice through the finalized Notion transition, preserved
+  unrelated Notion state, and exited 0. Windows sync copied six cumulative VPS
+  PDFs without deleting local files. Both scheduled units are now inactive with
+  a successful manager state; the acquisition unit description no longer says
+  screening is paused. Host-reboot recovery remains the only unproven Phase 9
+  operational gate and is intentionally not inferred from service-level proof.
 
 ## Acceptance criteria
 
