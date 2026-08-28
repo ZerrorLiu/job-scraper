@@ -154,6 +154,11 @@ compatibility, or data-recovery role.
   scheduled apply unit remains unchanged and its earlier signal failure is not
   reclassified as healthy; host-reboot proof and publication cutover remain
   open gates.
+- A one-job VPS `core --apply` acceptance run used a cached rejection and
+  proved the new order end to end: unpublished-capable feed, zero new model
+  calls, atomic durable import, zero artifacts, bounded finalized publication,
+  page-ID refresh, and preservation of unrelated Notion Screen state. A
+  selected-job PDF/attachment cutover and host reboot remain separate gates.
 
 ## Acceptance criteria
 
