@@ -326,3 +326,78 @@ deployment inputs, not repository content.
 Because the workspace is not in Git, moving an existing installation to another
 machine means copying `config/`, `.env`, and the database. Cloning the
 repository alone produces an empty installation.
+
+## Planned multi-client Codex/Chrome worker onboarding
+
+This section records the approved target user path for the browser client/server
+program. It is **not implemented yet** and must not be presented as a command
+that works in the current release. The authoritative behavior and security
+contract is the
+[browser-visible Indeed specification](specs/2026-08-27-browser-indeed-search-discovery.md).
+
+The server-side agent:
+
+1. Runs `create-client` to provision an empty per-client Linux account, runtime,
+   SQLite queue/outbox, loopback service, Cloudflare ingress route, backup, and
+   single-use enrollment token. It copies no profile, query, job, credential,
+   CV/evidence, cache, Notion binding, or artifact from another client.
+2. Runs the normal profile-design interview for this client and writes only
+   that client's runtime configuration: role families, query/location/country/
+   language matrix, per-track `core|review|discovery` mode, hard filters, and
+   enabled source policy. No values are inherited from an existing client.
+3. With explicit user authorization, configures the client's own Indeed mailbox
+   boundary, Notion destination, and private CV/evidence workspace. Mail and
+   Notion credentials enter only this server runtime's secret store. Other
+   supported recommendation mail keeps its existing non-browser path; only
+   Indeed cards enter the browser-detail queue.
+4. Gives the user only their HTTPS endpoint and short-lived enrollment token.
+   The token is never written to project files, prompts, logs, or Git.
+
+On the client's own computer, the guided Codex setup:
+
+1. Installs the shared `positions-client` CLI and positions browser-worker
+   plugin/skill.
+2. Runs `positions-client enroll`; the resulting device credential is stored in
+   the OS credential manager and is not shown to the Codex worker.
+3. Has the user connect the Chrome plugin from the existing Chrome profile they
+   want this client to use. The setup does not enumerate, copy, or read profile
+   files. It records only a local one-way extension-instance fingerprint and
+   fails if that Chrome surface is or was owned by another immutable client
+   identity. The user is told that task URLs, query/location values, and visible
+   public job content are processed in their own Codex account.
+4. Runs one combined doctor. The CLI checks HTTPS, contract compatibility,
+   device authentication, credential storage, and the local journal. The Codex
+   worker checks its own account, Chrome connection, permanent client ownership
+   of the local extension fingerprint, local mutex, and creation and cleanup of
+   a harmless browser tab.
+5. Performs one count-bounded, no-publication search task and one Indeed-email
+   detail task. A login wall, CAPTCHA, access block, or unexpected navigation is
+   recorded and handed to the user; it is never bypassed.
+6. After transport, lease expiry, idempotent replay, outbox replay, and one
+   client-specific downstream publication are proven, creates one recurring
+   Codex App heartbeat attached to a dedicated worker task.
+
+Before enabling the heartbeat, the server agent runs the target browser status
+contract, proves the calibration outbox event is `applied`, and confirms there
+are no unexpected pending or failed events. Outbox work retries automatically
+at most five times with capped backoff. A poison item remains visible in
+`failed`; the agent inspects it and may retry only one exact event with an
+expected count. Stored result bytes are never edited or deleted during replay.
+
+Each heartbeat claims through `positions-client`, processes detail before
+search, and runs sequentially for at most three tasks or fifteen minutes. The
+worker uses normal visible Chrome navigation, clicking, scrolling, waiting,
+expansion, and reading. It makes no direct Indeed HTTP request and performs no
+application submission. An empty queue exits immediately; a browser block,
+lost lease, schema error, or repeated transport failure stops that wake.
+
+If the computer is off, the Codex local host is unavailable, Chrome is
+disconnected, or the network is down, no server push is attempted. Tasks remain
+durably pending on the VPS and other server-side sources continue normally.
+
+Offboarding disables the recurring Codex heartbeat first, revokes the server
+device credential, deactivates the local browser binding/mutex, and archives or
+removes the local journal only with the user's explicit approval. The
+non-secret browser-ownership tombstone remains, preventing that Chrome session
+from being reassigned to another client. Server data, Notion state, backups,
+and browser tabs are not deleted implicitly.

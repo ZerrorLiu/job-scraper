@@ -636,9 +636,13 @@ path.
 restart-proven, and recoverable. Source workspaces and rollback snapshots remain
 available for the agreed retention period.
 
-### Phase 10: Future multi-client server/client split
+### Phase 10: Multi-client server/client split
 
-This is a new program after Phase 9, not part of the immediate refactor.
+This is a separate program after Phase 9. The browser-task slice now has an
+approved concrete implementation contract in
+`2026-08-27-browser-indeed-search-discovery.md`; the remaining screening,
+artifact, administration, and repository-separation slices still require their
+own implementation decisions before they move.
 
 - The future VPS/server project may own acquisition, canonical job storage,
   scheduling/workers, tenant orchestration, durable lifecycle state, and final
@@ -658,19 +662,24 @@ This is a new program after Phase 9, not part of the immediate refactor.
   cross-client cache.
 
 **Entry gate:** at least the single-client lifecycle and its operational costs
-are proven. The multi-client threat model, isolation model, data ownership,
-authentication, API, storage, and migration requirements receive their own
-approved specification before repository separation begins.
+are proven. Each physical slice receives an approved threat model, isolation
+model, data ownership, authentication, API, storage, and migration contract
+before repository separation begins. The browser slice satisfies that design
+gate through the linked browser spec; this is not evidence that its code or
+deployment is complete.
 
 #### Versioned contract seams
 
-Physical repository separation is deferred, but these logical contracts are
-now fixed enough to prevent duplicated business logic. Every envelope carries
-`schema_version`, `contract_version`, `client_id`, `request_id`, `created_at`,
-and an idempotency key. Unknown major versions fail closed; unknown additive
-minor fields are ignored and preserved when relayed. `client_id` is assigned by
-the future server and is never inferred from a track, filesystem path, Notion
-page, or provider profile.
+Physical repository separation outside the browser worker is deferred, but
+these logical contracts are fixed enough to prevent duplicated business logic.
+Every durable envelope carries `schema_version`, `contract_version`,
+`request_id`, `created_at`, and an idempotency key. Business-workflow envelopes
+also carry the server-assigned `client_id`. Browser HTTP bodies deliberately do
+not: reverse-proxy routing selects one isolated tenant process before parsing,
+so accepting a caller-supplied client selector would weaken the boundary.
+Unknown major versions fail closed; unknown additive minor fields are ignored
+and preserved when relayed. A client is never inferred from a track,
+filesystem path, Notion page, provider profile, or Chrome profile.
 
 | Contract | Producer -> consumer | Required identity and payload | Authority / retry rule |
 |---|---|---|---|
@@ -683,11 +692,11 @@ page, or provider profile.
 | `ArtifactManifest` | client/private worker -> server/artifact store | artifact ID, canonical job/client IDs, decision/tailoring hashes, media type, size, content hash, validation status | Bytes are accepted only after hash/PDF validation; manifest commit is idempotent and precedes display publication |
 | `PublicationRequest` | finalized state -> sink worker | exact canonical-job set/count, final statuses, external binding IDs, artifact manifests | No publication before durable verification; uncertain creates are not replayed automatically |
 | `SyncCheckpoint` | server <-> local client | client-scoped monotonic cursor, acknowledged contract versions and artifact hashes | At-least-once transport with idempotent apply; checkpoint advances only after durable acknowledgement |
-| `BrowserTask` | client server instance -> local client worker | task/lease IDs, `search|detail`, profile ID, exact URL or query/location, contract version, expiry | Local worker pulls one task; an expired lease returns to the same client's queue |
+| `BrowserTask` | client server instance -> local client worker | task/lease IDs, `search|detail`, exact allowed URL and minimal provenance, contract version, expiry | Local worker pulls one task; an expired lease returns to the same client's queue; Chrome identity never leaves the client |
 | `BrowserResult` | local client worker -> client server instance | task/lease IDs, idempotency key, `complete|blocked|unavailable`, validated visible fields, observed time | Server accepts only the worker credential bound to that client and the current lease; blocked access is terminal, never bypassed |
 | `WorkerEnrollment` | client server instance -> local client | one-time token, server endpoint, client-bound device credential, allowed task types | Enrollment token is single use; the resulting credential cannot name or access another client |
 
-The future server runs one isolated runtime per client: separate configuration,
+The multi-client server runs one isolated runtime per client: separate configuration,
 database, browser queue, agent cache, CV/evidence workspace, artifact store,
 credentials, Notion bindings, logs, backups, locks, service, and timer. A
 process mounts only one client's runtime. Authentication resolves the client
@@ -699,43 +708,47 @@ metrics contain opaque task/run IDs and remain inside that instance.
 #### Client-owned Chrome worker
 
 Browser work is asynchronous and pull-based because a client computer may be
-offline or behind NAT. The VPS stores tasks durably; a locally installed
-`positions-client` claims one leased task over HTTPS, uses the user's own Chrome
-profile through an authorized Codex browser capability, heartbeats while it is
-running, and submits a versioned result. The server never opens a connection to
-the client, receives Chrome profile paths, cookies, credentials, HTML, or
-screenshots, or controls another client's browser session. Each enrolled worker
-is bound to one client and one locally selected Chrome profile. One local lock
-prevents concurrent tasks from using that profile.
+offline or behind NAT. The VPS stores tasks durably; one dedicated local Codex
+App worker task claims leased work through
+`positions-client`, drives the user's connected Chrome through the Chrome
+plugin, heartbeats while it is running, and submits a versioned result. The
+server never opens a connection to the client, receives Chrome profile paths,
+cookies, credentials, HTML, or screenshots, or controls another client's
+browser session. Each enrolled worker is bound to one client, one Codex worker
+task, and the Chrome extension surface selected by that user. One local lock
+prevents overlapping worker wakes. A standalone `codex exec` process is not the
+browser executor.
 
 An offline client leaves tasks `pending`. A lost worker lease expires back to
 `pending`; duplicate result delivery is idempotent. Login walls, CAPTCHA,
 access blocks, and unavailable pages produce `blocked` or `unavailable` results
 and are not retry-escalated or bypassed. A continuously available browser path
-requires a client-owned always-on machine using that same isolated Chrome
-profile, not a shared browser on the main VPS.
+requires a client-owned always-on machine with that user's connected Chrome
+surface available, not a shared browser on the main VPS.
 
 Indeed search creates browser `search` tasks from that client's own track/query/
 location configuration. Valid visible cards expand into one browser `detail`
-task per posting. The email channel reads only authorized Indeed mail, extracts
-minimal card/message provenance, and also creates a browser `detail` task for
-every card because email content is incomplete. Neither search cards nor email
-cards become jobs. Only a validated detail result enters that client's existing
-normalization, canonical merge, track routing, screening, artifact, and Notion
-flow.
+task per posting. The email channel's Indeed browser-detail branch reads only
+authorized Indeed mail, extracts minimal card/message provenance, and creates a
+browser `detail` task for every Indeed card because email content is incomplete.
+Other supported recommendation mail keeps its existing non-browser path.
+Neither Indeed search cards nor Indeed email cards become jobs. Only a validated
+detail result enters that client's existing normalization, canonical merge,
+track routing, screening, artifact, and Notion flow.
 
 #### Cold start
 
 `create-client` provisions an empty isolated server runtime and a one-time
-enrollment token; it never copies an existing client's profiles. The local
-`positions-client enroll` and `setup` flow verifies Codex login and browser
-capability, lets the user select their own Chrome profile locally, gathers
-locations/languages/role families and per-track `core|review|discovery` policy,
-configures Indeed mail and the client's Notion destination, imports the private
-CV/evidence workspace, and runs `doctor`. A bounded calibration permits no
-external writes, followed by one authorized browser search, one Indeed-email
-detail, one core artifact, and one Notion publication. Only then may the
-client-specific daily timer be enabled.
+enrollment token; it never copies an existing client's profiles. The guided
+server setup then gathers this client's locations/languages/role families and
+per-track `core|review|discovery` policy, configures the client's own Indeed
+mail and Notion destination, and imports only that client's private CV/evidence
+workspace. Local `positions-client enroll` plus Codex worker setup connects the
+user's chosen existing Chrome profile through the Chrome plugin and runs the
+combined transport/browser doctor. A bounded calibration permits no external
+writes, followed by one authorized browser search, one Indeed-email detail, one
+core artifact, and one Notion publication. Only then may the client-specific
+server timers and local Codex heartbeat be enabled.
 
 Repository separation is permitted only after fictional conformance fixtures
 exercise major-version rejection, minor-version forwarding, duplicate delivery,
@@ -772,9 +785,8 @@ different completion states and must be reported separately.
 
 ## Follow-ups
 
-After the single-client workflow is stable, write a separate approved spec for
-the multi-client server/client product boundary. That follow-up chooses concrete
-identity, tenant isolation, storage, secret management, synchronization, API,
-and deployment mechanisms. This document deliberately defines the contract
-seams without pretending those future infrastructure decisions are already
-made.
+The browser-task spec now fixes the concrete browser runtime, profile model,
+identity, tenant isolation, queue/outbox, HTTPS API, cold start, and scheduling
+mechanisms. Before separating screening, tailoring, artifacts, or administration
+into further products, extend this document or the single closest owning spec;
+do not create another general server/client design alongside these two homes.
