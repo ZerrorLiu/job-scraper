@@ -84,6 +84,9 @@ def test_result_persistence_is_idempotent_and_requires_crosswalk(tmp_path: Path)
 
     workspace.record_screening_result(result)
     workspace.record_screening_result(result)
+    workspace.verify_screening_results((result,))
+    with pytest.raises(ValueError, match="durable canonical state"):
+        workspace.verify_screening_results((replace(result, status="error"),))
 
     connection = sqlite3.connect(workspace.path)
     try:
@@ -136,3 +139,67 @@ def test_cli_import_rejects_stale_profile_policy(monkeypatch, tmp_path: Path) ->
     )
 
     assert database_cli.import_screening_results([path], workspace.path) == 2
+
+
+def test_final_publication_is_bounded_and_uses_validated_results(
+    monkeypatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "results.json"
+    _write_result(path)
+    workspace_path = tmp_path / "workspace.db"
+    workspace_path.touch()
+    monkeypatch.setattr(
+        database_cli,
+        "load_profile_definition",
+        lambda _profile_id: SimpleNamespace(
+            processing_mode="core", runtime_config=tmp_path / "runtime.toml"
+        ),
+    )
+    monkeypatch.setattr(
+        database_cli,
+        "load_config",
+        lambda _path: SimpleNamespace(
+            project=SimpleNamespace(
+                database_path=tmp_path / "jobs.db",
+                timezone="UTC",
+                track_label="Core Track",
+                workspace_database_path=workspace_path,
+            ),
+            notion=SimpleNamespace(daily_table_prefix="Core"),
+        ),
+    )
+    monkeypatch.setattr(
+        database_cli,
+        "NotionClient",
+        lambda _config: SimpleNamespace(enabled=lambda: True),
+    )
+    monkeypatch.setattr(
+        database_cli,
+        "Database",
+        lambda _path: SimpleNamespace(
+            read_accepted_jobs=lambda _ids: [SimpleNamespace(job_id="legacy-1")]
+        ),
+    )
+    verified: list[int] = []
+    monkeypatch.setattr(
+        database_cli,
+        "WorkspaceDatabase",
+        lambda _path: SimpleNamespace(
+            pending_migrations=lambda: (),
+            verify_screening_results=lambda results: verified.append(len(results)),
+        ),
+    )
+    published: list[int] = []
+    monkeypatch.setattr(
+        database_cli,
+        "publish_daily",
+        lambda _database, jobs, *_args, **_kwargs: (
+            published.append(len(jobs)) or SimpleNamespace(errors=(), published=len(jobs))
+        ),
+    )
+
+    assert database_cli.publish_screening_results([path], expected_count=2) == 2
+    assert published == []
+    assert database_cli.publish_screening_results([path], expected_count=1) == 0
+    assert published == [1]
+    assert verified == [1]

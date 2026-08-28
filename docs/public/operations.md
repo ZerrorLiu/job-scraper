@@ -111,6 +111,7 @@ workspace before any final display reconciliation:
 ```bash
 uv run job-scraper db init
 uv run job-scraper db import-screening PATH_TO_RESULTS_JSON
+uv run job-scraper db publish-screening PATH_TO_RESULTS_JSON --expect-job-count COUNT
 ```
 
 The import is idempotent for the same canonical job, search track, and contract
@@ -119,6 +120,12 @@ when the result mode differs from the current profile policy, when the
 workspace needs a migration, or when the document is malformed. All supplied
 documents are validated and committed as one transaction; a later bad record
 cannot leave an earlier partial import behind.
+
+`publish-screening` is the bounded final-display transition. It refuses a
+handoff that does not exactly match durable canonical state, then publishes the
+corresponding stored jobs through the existing idempotent Notion sink. Resume
+artifacts must validate before this command is called; a caller may then refresh
+the feed to obtain page IDs and attach authorized artifacts.
 
 ## Repairing email detail enrichment
 

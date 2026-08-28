@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
 
+from job_scraper.adapters.sinks.notion_workflow import publish_daily
 from job_scraper.adapters.storage.notion_bindings import NotionDatabaseBindingStore
 from job_scraper.adapters.storage.sqlite_v2 import WorkspaceDatabase
 from job_scraper.application.screening_results import load_screening_results
 from job_scraper.config import AppConfig, load_config
 from job_scraper.configuration import available_profiles, load_profile_definition
+from job_scraper.domain.decisions import ScreeningResult
+from job_scraper.integrations.notion import NotionClient
 from job_scraper.storage.db import Database
 
 
@@ -176,27 +181,94 @@ def import_screening_results(result_paths: list[Path], workspace_path: Path) -> 
         print(f"Workspace has pending migrations: {versions}; run `job-scraper db init`")
         return 2
     try:
-        results = tuple(
-            result for result_path in result_paths for result in load_screening_results(result_path)
-        )
-        profile_modes: dict[str, str] = {}
-        for result in results:
-            if result.profile_id not in profile_modes:
-                profile_modes[result.profile_id] = load_profile_definition(
-                    result.profile_id
-                ).processing_mode
-            expected_mode = profile_modes[result.profile_id]
-            if result.processing_mode != expected_mode:
-                raise ValueError(
-                    "screening result processing_mode does not match current profile policy: "
-                    f"{result.profile_id} is {expected_mode}, result says {result.processing_mode}"
-                )
+        results = _validated_screening_results(result_paths)
         workspace.record_screening_results(results)
     except (OSError, ValueError) as exc:
         print(f"ERROR screening result import failed: {exc}")
         return 2
     print(f"IMPORTED screening results: {len(results)} record(s) -> {workspace_path}")
     return 0
+
+
+def publish_screening_results(result_paths: list[Path], *, expected_count: int | None) -> int:
+    """Publish jobs only after their validated screening handoff exists."""
+
+    try:
+        results = _validated_screening_results(result_paths)
+        if expected_count is not None and len(results) != expected_count:
+            raise ValueError(f"screening result count is {len(results)}; expected {expected_count}")
+        definitions = {
+            profile_id: load_profile_definition(profile_id)
+            for profile_id in sorted({result.profile_id for result in results})
+        }
+        configs = {
+            profile_id: load_config(definition.runtime_config)
+            for profile_id, definition in definitions.items()
+        }
+        workspace_path = _configured_workspace_path(list(configs.values()))
+        if workspace_path is None or not workspace_path.is_file():
+            raise ValueError("configured durable workspace database does not exist")
+        workspace = WorkspaceDatabase(workspace_path)
+        if workspace.pending_migrations():
+            raise ValueError("durable workspace has pending migrations")
+        workspace.verify_screening_results(results)
+        by_profile: dict[str, list[ScreeningResult]] = defaultdict(list)
+        for screening_result in results:
+            by_profile[screening_result.profile_id].append(screening_result)
+        published = 0
+        for profile_id, profile_results in sorted(by_profile.items()):
+            config = configs[profile_id]
+            notion = NotionClient(config.notion)
+            if not notion.enabled():
+                raise ValueError(f"profile {profile_id} has no enabled Notion sink")
+            database = Database(config.project.database_path)
+            job_ids = {result.legacy_job_id for result in profile_results}
+            jobs = database.read_accepted_jobs(job_ids)
+            missing = sorted(job_ids - {accepted.job_id for accepted in jobs})
+            if missing:
+                raise ValueError(
+                    f"profile {profile_id} is missing {len(missing)} finalized source jobs"
+                )
+            publish_result = publish_daily(
+                database,
+                jobs,
+                notion,
+                config.project.timezone,
+                datetime.now(UTC),
+                config.notion.daily_table_prefix,
+                config.project.track_label,
+                profile_id,
+                NotionDatabaseBindingStore(
+                    config.project.database_path.parent / "notion_database_bindings.json"
+                ),
+            )
+            if publish_result.errors:
+                raise RuntimeError("; ".join(publish_result.errors))
+            published += publish_result.published
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"ERROR finalized screening publication failed: {exc}")
+        return 2
+    print(f"PUBLISHED finalized screening jobs: {published} -> Notion")
+    return 0
+
+
+def _validated_screening_results(result_paths: list[Path]) -> tuple[ScreeningResult, ...]:
+    results = tuple(
+        result for result_path in result_paths for result in load_screening_results(result_path)
+    )
+    profile_modes: dict[str, str] = {}
+    for result in results:
+        if result.profile_id not in profile_modes:
+            profile_modes[result.profile_id] = load_profile_definition(
+                result.profile_id
+            ).processing_mode
+        expected_mode = profile_modes[result.profile_id]
+        if result.processing_mode != expected_mode:
+            raise ValueError(
+                "screening result processing_mode does not match current profile policy: "
+                f"{result.profile_id} is {expected_mode}, result says {result.processing_mode}"
+            )
+    return results
 
 
 def _configured_workspace_path(configs: list[AppConfig]) -> Path | None:

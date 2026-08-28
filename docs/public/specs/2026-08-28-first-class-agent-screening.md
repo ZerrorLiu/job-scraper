@@ -123,8 +123,11 @@ compatibility, or data-recovery role.
   dry-run screening reads unpublished jobs; only `core` can tailor a resume;
   and fine-screen emits a versioned result handoff that Positions validates
   against current profile policy and stores atomically/idempotently in
-  canonical workspace state before artifacts or Notion. Apply remains on the
-  published-only compatibility path until final publication authority moves.
+  canonical workspace state before artifacts or Notion. The bounded
+  `publish-screening` transition now verifies that exact durable state and uses
+  the existing idempotent sink; fine-screen apply publishes only after all PDFs
+  validate, then refreshes page IDs before attachments. Production scheduling
+  remains on the compatibility path until a bounded live cutover succeeds.
 - Documentation cleanup removed an abandoned, never-implemented market-analysis
   proposal and superseded specifications. Current feed compatibility, gap/track
   semantics, filename compatibility, Bright Data safety, CLI behavior, and the

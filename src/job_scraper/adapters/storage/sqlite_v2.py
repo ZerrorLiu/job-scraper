@@ -451,6 +451,28 @@ class WorkspaceDatabase:
             for result, canonical_job_id in resolved:
                 self._upsert_screening_result(connection, result, canonical_job_id)
 
+    def verify_screening_results(self, results: tuple[ScreeningResult, ...]) -> None:
+        """Fail unless every handoff row exactly matches durable canonical state."""
+
+        with self.connect() as connection:
+            for result in results:
+                row = connection.execute(
+                    """SELECT sr.payload_hash
+                    FROM legacy_job_links l
+                    JOIN screening_results sr
+                      ON sr.canonical_job_id = l.canonical_job_id
+                     AND sr.profile_id = l.profile_id
+                    WHERE l.profile_id = ? AND l.legacy_job_id = ?
+                      AND sr.contract_version = ?""",
+                    (result.profile_id, result.legacy_job_id, result.contract_version),
+                ).fetchone()
+                expected_hash = _screening_result_payload_hash(result)
+                if row is None or str(row["payload_hash"]) != expected_hash:
+                    raise ValueError(
+                        "screening result is not present in durable canonical state: "
+                        f"{result.profile_id}/{result.legacy_job_id}"
+                    )
+
     @staticmethod
     def _upsert_screening_result(
         connection: sqlite3.Connection,
@@ -458,20 +480,7 @@ class WorkspaceDatabase:
         canonical_job_id: str,
     ) -> None:
 
-        payload = {
-            "processing_mode": result.processing_mode,
-            "status": result.status,
-            "selected": result.selected,
-            "score": result.score,
-            "core_fit": result.core_fit,
-            "variant": result.variant,
-            "true_gap": result.true_gap,
-            "rationale": result.rationale,
-            "decision_source": result.decision_source,
-            "tailoring_status": result.tailoring_status,
-        }
-        payload_json = _json(payload)
-        payload_hash = stable_id("screening-result", payload_json)
+        payload_hash = _screening_result_payload_hash(result)
         connection.execute(
             """INSERT INTO screening_results(
                     canonical_job_id, profile_id, processing_mode, status, selected,
@@ -874,6 +883,22 @@ def _optional_float(value: object) -> float | None:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _screening_result_payload_hash(result: ScreeningResult) -> str:
+    payload = {
+        "processing_mode": result.processing_mode,
+        "status": result.status,
+        "selected": result.selected,
+        "score": result.score,
+        "core_fit": result.core_fit,
+        "variant": result.variant,
+        "true_gap": result.true_gap,
+        "rationale": result.rationale,
+        "decision_source": result.decision_source,
+        "tailoring_status": result.tailoring_status,
+    }
+    return stable_id("screening-result", _json(payload))
 
 
 def _first_payload_text(payload: object, *keys: str) -> str:

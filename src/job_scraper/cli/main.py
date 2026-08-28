@@ -19,6 +19,7 @@ from job_scraper.cli.database import (
     import_screening_results,
     initialize_profiles,
     migrate_profiles,
+    publish_screening_results,
     resolve_status_workspace_path,
     show_status,
 )
@@ -275,6 +276,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Workspace database path. Defaults to the configured shared workspace.",
     )
+    publish_screening = database_subparsers.add_parser(
+        "publish-screening",
+        help="Publish jobs from validated, durable screening result documents.",
+    )
+    publish_screening.add_argument("results", nargs="+", type=Path)
+    publish_screening.add_argument("--expect-job-count", type=int)
 
     return parser
 
@@ -343,6 +350,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"ERROR {exc}", file=sys.stderr)
                 return 2
             return import_screening_results(args.results, workspace_path)
+        if args.database_command == "publish-screening":
+            return publish_screening_results(
+                args.results,
+                expected_count=args.expect_job_count,
+            )
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

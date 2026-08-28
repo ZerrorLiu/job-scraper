@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from job_scraper.domain.locations import merge_locations
-from job_scraper.domain.models import JobHistorySnapshot, JobRecord, RunStats
+from job_scraper.domain.models import AcceptedJob, JobHistorySnapshot, JobRecord, RunStats
 from job_scraper.domain.payload_sanitization import sanitize_job_payload
 from job_scraper.domain.screening_feed import Publication, ScreeningFeedRecord
 from job_scraper.pipeline.normalize import (
@@ -536,6 +536,22 @@ class Database:
             for row in rows
         ]
 
+    def read_accepted_jobs(self, job_ids: set[str]) -> list[AcceptedJob]:
+        """Rehydrate finalized V1 jobs for a post-processing sink."""
+
+        if not job_ids:
+            return []
+        placeholders = ", ".join("?" for _ in job_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM jobs WHERE id IN ({placeholders}) ORDER BY first_seen_at, id",
+                tuple(sorted(job_ids)),
+            ).fetchall()
+        return [
+            AcceptedJob(job=_job_record_from_row(row), job_id=str(row["id"]), linked_job_ids=[])
+            for row in rows
+        ]
+
     def has_jobs(self) -> bool:
         with self.connect() as connection:
             row = connection.execute("SELECT 1 FROM jobs LIMIT 1").fetchone()
@@ -796,6 +812,47 @@ def _json_object(value: object) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _job_record_from_row(row: sqlite3.Row) -> JobRecord:
+    posted = str(row["posted_at"] or "").strip()
+    return JobRecord(
+        source=str(row["source"]),
+        source_job_id=str(row["source_job_id"]),
+        source_url=str(row["source_url"]),
+        canonical_url=str(row["canonical_url"]),
+        title=str(row["normalized_title"]),
+        company_name=str(row["company_name"]),
+        location_raw=str(row["location_text"]),
+        country=str(row["country_code"]),
+        city=str(row["city"]),
+        region=str(row["region"]),
+        remote_type=str(row["remote_mode"]),
+        employment_type=str(row["employment_type"]),
+        seniority=str(row["seniority"]),
+        posted_at=datetime.fromisoformat(posted) if posted else None,
+        first_seen_at=datetime.fromisoformat(str(row["first_seen_at"])),
+        scraped_at=datetime.fromisoformat(str(row["last_seen_at"])),
+        job_description=str(row["description_full"]),
+        description_language=str(row["description_language"]),
+        english_ratio=float(row["english_ratio"]),
+        keyword_hits=_json_strings(row["keyword_hits_json"]),
+        tech_stack=_json_strings(row["tech_stack_json"]),
+        salary_text=str(row["salary_text"]),
+        salary_min=float(row["salary_min"]) if row["salary_min"] is not None else None,
+        salary_max=float(row["salary_max"]) if row["salary_max"] is not None else None,
+        salary_currency=str(row["currency"]) if row["currency"] is not None else None,
+        dedupe_key=str(row["dedupe_key"]),
+        raw_payload=_json_object(row["raw_payload_json"]),
+    )
+
+
+def _json_strings(value: object) -> list[str]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
 def _normalized_location(value: str) -> str:
