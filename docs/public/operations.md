@@ -167,6 +167,11 @@ Changing a Notion status back to `Not Applied` clears the local exclusion on
 the next status import. Re-eligible does not mean the Notion sink creates a
 duplicate page: publication retains its own page-level idempotency.
 
+If a historical Notion page has a stale local mapping whose job no longer
+exists, status import ignores that mapping and continues. It does not repair or
+delete the historical page; valid mapped pages and safe fallback matches still
+import normally.
+
 ## Exports
 
 Every run rewrites the complete filtered history into
@@ -191,6 +196,7 @@ user's behalf, so enable one only with their explicit go-ahead.
 | No jobs at all | `plan --show-queries`, then the freshness window in `[project]` |
 | A profile is skipped | `list` for its enabled state, then `config validate --all` |
 | Notion writes nothing | `doctor --all`, then `db status` for the binding |
+| Jobs were published but a downstream scheduled action did not run | inspect the run's final status-import error before the host scheduler's success trigger |
 | Notion made a duplicate table | `daily_table_prefix` or `container_title` was changed; see [configuration](configuration.md) |
 | Indeed returns nothing | expected without the Bright Data gates; `doctor --all` names the gate |
 | Mailbox ingestion is empty | the app password and IMAP folder in `config/email.toml` |

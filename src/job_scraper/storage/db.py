@@ -574,7 +574,12 @@ class Database:
             return ""
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT job_id FROM notion_sync_state WHERE notion_page_id = ?",
+                """
+                SELECT sync.job_id
+                FROM notion_sync_state AS sync
+                JOIN jobs ON jobs.id = sync.job_id
+                WHERE sync.notion_page_id = ?
+                """,
                 (normalized_page_id,),
             ).fetchone()
             return str(row["job_id"]) if row else ""

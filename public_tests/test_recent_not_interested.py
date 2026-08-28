@@ -110,6 +110,44 @@ def test_notion_import_preserves_page_edit_time(tmp_path) -> None:
     assert row["last_user_edit_at"] == "2026-07-22T12:34:56+00:00"
 
 
+def test_notion_import_ignores_orphaned_page_mapping(tmp_path) -> None:
+    database = Database(tmp_path / "jobs.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            """
+            INSERT INTO notion_sync_state (
+                job_id, notion_page_id, notion_data_source_id, last_synced_at,
+                last_payload_hash, sync_status
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "deleted-job",
+                "page-orphan",
+                "source-1",
+                "2026-07-20T10:00:00+00:00",
+                "hash",
+                "synced",
+            ),
+        )
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    notion = SimpleNamespace(
+        config=SimpleNamespace(database_id="database-1"),
+        resolve_data_source_id=lambda: "source-1",
+        list_data_source_pages=lambda _data_source_id: [
+            {
+                "id": "page-orphan",
+                "last_edited_time": "2026-07-22T12:34:56.000Z",
+                "properties": {"Status": {"select": {"name": "Not Interested"}}},
+            }
+        ],
+    )
+
+    assert import_processed_statuses(database, notion) == 0
+
+
 def test_notion_not_applied_status_clears_not_interested_exclusion(tmp_path) -> None:
     database = Database(tmp_path / "jobs.db")
     database.initialize()
