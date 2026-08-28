@@ -179,24 +179,24 @@ The Phase 1 deletion record is recoverable from Git commit `4c4894b`:
 | `2026-08-27-deferred-cli-consolidation.md` | Typed CLI/application request convergence and remaining removal condition are recorded here | CLI orchestration tests and full gates passed; recover from Git |
 | `2026-08-27-repository-accumulation-controls.md` | Repository law moved to `AGENTS.md`; program-specific cleanup policy remains here | Documentation inventory/reference search passed; recover from Git |
 
-The private evidence reconciliation currently has one candidate authority:
-the private `cv-cover-workspace` containing editable variants, shared evidence,
-profile notes, and quick-learn policy. The former `CV_Cover` workspace no longer
-contains a runnable screener; its generated/manual PDFs are not evidence. File
-comparison found the editable/shared factual material equivalent apart from line
-endings at the reconciliation point. This is technical reconciliation evidence,
-not owner approval: declaring the candidate workspace as factual authority and
-archiving any divergent private material remains a human fact decision.
+The private `cv-cover-workspace` is the declared technical authority for editable
+variants, shared evidence, profile notes, and quick-learn policy. Revision
+`946828a` records that authority and the precedence rules inside the private
+workspace. The former `CV_Cover` workspace no longer contains a runnable
+screener; its generated/manual PDFs are outputs or reference material, not
+evidence. File comparison found the editable/shared factual material equivalent
+apart from line endings at the reconciliation point. This does not authorize an
+agent to resolve a future factual conflict or delete private material: divergent
+claims still require the human owner, and irreversible cleanup remains outside
+this program.
 
 ### Implementation status (2026-08-28)
 
 - Phase 0 local baseline is recorded: the component registry exposes one
   channel, eight pipeline steps, two sinks, and seven acquisition sources.
-  Offline verification reports 371 passing tests, clean Ruff lint, and clean
-  Pyright. Ruff format has one pre-existing working-tree failure in
-  `adapters/storage/notion_bindings.py`; it is not reformatted by this cleanup
-  because that file contains unrelated active work.
-- Phase 1 is in progress. Reference searches confirm that `run_daily.py`,
+  The completed local verification reports 377 passing tests and clean Ruff
+  format/lint and Pyright gates while preserving unrelated working-tree edits.
+- Phase 1 cleanup is complete for the approved scope. Reference searches confirm that `run_daily.py`,
   `run_all_tracks.py`, the feed, and frozen V2 tables still have code or test
   callers. The three hidden `run` compatibility switches had no active local or
   VPS caller and have been removed with their forwarding code and tests.
@@ -209,7 +209,8 @@ archiving any divergent private material remains a human fact decision.
   `publish-screening` transition now verifies that exact durable state and uses
   the existing idempotent sink; fine-screen apply publishes only after all PDFs
   validate, then refreshes page IDs before attachments. Production scheduling
-  remains on the compatibility path until a bounded live cutover succeeds.
+  now uses this finalized-state path for `core`; `review` and `discovery` keep
+  their intentionally visible, non-tailoring compatibility publication.
 - Documentation cleanup removed an abandoned, never-implemented market-analysis
   proposal and superseded specifications. Current feed compatibility, gap/track
   semantics, filename compatibility, Bright Data safety, CLI behavior, and the
@@ -268,54 +269,75 @@ archiving any divergent private material remains a human fact decision.
   no longer says screening is paused. Host-reboot recovery remains the only
   unproven Phase 9 operational gate and is intentionally not inferred from
   service-level proof.
+- The release at fine-screen `daca749` makes finalized display state explicit:
+  each bounded result receives `Fine-screened`, `Fine-screen rejected`,
+  `Fine-screen blocked`, or `Fine-screen error`; only a selected result with a
+  validated artifact receives the successful tag. Offline verification passed
+  92 tests with one environment-dependent TeX test skipped, plus clean Ruff and
+  Pyright gates. The standard VPS service verified the release manifest, reused
+  all 117 semantic decisions, replayed the 119-job finalized window, published
+  118 bound pages with explicit terminal status and zero Notion failures, and
+  exited 0. Reconciliation also cleared one stale display tag. Windows sync then
+  copied eight cumulative PDFs without deleting local files.
+- Backup recovery was exercised without touching production state. The
+  pre-migration backup copied to a temporary restore location with matching
+  SHA-256, passed SQLite `integrity_check`, and exposed the expected ten tables
+  and five historical migrations. A separate online post-cutover backup at
+  `/srv/positions/data/backups/workspace-post-cutover-20260828T153442Z.db`
+  passed `integrity_check` and contains 528 durable screening results.
+- Whole-host reboot was not performed. The VPS also runs unrelated production
+  and user services, so rebooting it is a materially broader external action.
+  Service-level stop/start, service-user authorization, release verification,
+  scheduled chaining, and failure recovery are proven; host-reboot recovery
+  remains a maintenance-window acceptance item.
 
 ## Acceptance criteria
 
 ### Cleanup and authority
 
-- [ ] A checked-in component ledger lists every runtime entry point, scheduler,
+- [x] A checked-in component ledger lists every runtime entry point, scheduler,
   datastore, external write, private-workspace dependency, and active design
   document with its owner, status, callers, replacement, and removal condition.
-- [ ] Each deletion has a reference search, replacement or reason, recovery
+- [x] Each deletion has a reference search, replacement or reason, recovery
   story, focused verification, and a reviewable commit; user databases and
   private artifacts are never included in bulk cleanup.
-- [ ] Superseded docs are consolidated into their canonical homes and removed;
+- [x] Superseded docs are consolidated into their canonical homes and removed;
   no two active documents claim authority over the same workflow.
 - [ ] One private evidence/CV authority is declared only after divergent
   masters, shared facts, and compatibility artifacts are reconciled by a human.
-- [ ] Exactly one screening implementation and one application orchestration
+- [x] Exactly one screening implementation and one application orchestration
   path remain runnable after the migration window.
 
 ### Workflow
 
-- [ ] A canonical candidate passes acquisition, canonical merge, deterministic
+- [x] A canonical candidate passes acquisition, canonical merge, deterministic
   hard gates, client-specific track routing, and the configured processing mode
   before any external publication.
-- [ ] A `core` track can run exactly one validated semantic screening decision
+- [x] A `core` track can run exactly one validated semantic screening decision
   and, when authorized, resume tailoring and artifact validation.
-- [ ] `review` and `discovery` tracks can remain visible without creating a
+- [x] `review` and `discovery` tracks can remain visible without creating a
   resume that overstates the client's relevant experience.
-- [ ] Resume tailoring consumes a validated decision and cited evidence; it
+- [x] Resume tailoring consumes a validated decision and cited evidence; it
   cannot issue a second independent fit decision or invent experience.
-- [ ] Agent, evidence, or artifact failure fails closed into a durable review or
+- [x] Agent, evidence, or artifact failure fails closed into a durable review or
   error state and is visible to the display sink without being presented as a
   successful tailored application.
-- [ ] Notion is updated from finalized durable state after upstream processing.
+- [x] Notion is updated from finalized durable state after upstream processing.
   Reconciliation is idempotent and preserves the existing uncertain-create
   safety policy.
-- [ ] Commands support bounded job IDs/count assertions for costly or mutating
+- [x] Commands support bounded job IDs/count assertions for costly or mutating
   runs. No workflow step submits an application.
 
 ### Deployment evolution
 
 - [ ] One local clone plus one private workspace can run the complete
   single-client workflow without a sibling code checkout or hard-coded path.
-- [ ] The single-client workflow passes offline replay, shadow comparison,
+- [x] The single-client workflow passes offline replay, shadow comparison,
   controlled publication, and the repository quality gates before VPS cutover.
 - [ ] VPS completion separately proves service configuration, authorization,
   bounded execution, backup/restore, and recovery after service and host
   restart.
-- [ ] A future server/client split is based on versioned contracts proven by
+- [x] A future server/client split is based on versioned contracts proven by
   the single-client workflow, not on duplicated business logic.
 
 ## Vocabulary and policy
