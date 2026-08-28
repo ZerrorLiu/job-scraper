@@ -189,6 +189,30 @@ recorded — not an exception that ends the run. This matches the reliability
 bounds in
 [`2026-08-12-acquisition-reliability-hardening.md`](2026-08-12-acquisition-reliability-hardening.md).
 
+Two failure codes are reported distinctly rather than as one HTTP status,
+because they call for opposite operator responses. `404` means the employer
+left the provider or renamed its board: the token is dead and belongs out of
+the configuration. `429` means the sweep asked too fast: the token is fine and
+will be read on the next run. Pruning a list and pacing a run are different
+actions, and an undifferentiated "returned HTTP nnn" tells the operator
+neither.
+
+**Pacing (added after measurement).** A configured board list is also a request
+rate, because this source spends one request per board rather than per query.
+Boards are therefore paced with the same rate limiter every other source uses
+between pages; the first board is not delayed, so a single-board list costs
+nothing. Measured against the German small-employer provider: an unpaced sweep
+drew rate-limit responses, a sweep paced at the collector's configured interval
+did not, and a list of a few hundred boards is otherwise a burst at one host.
+
+**Token lists go stale, and how fast is worth knowing.** Where a list is built
+from a third-party crawl index rather than by hand, it is a snapshot of when
+that crawl ran. Measured on one provider, 23% of crawled tokens no longer
+resolved to a board, and a further share resolved to a board with no open
+positions. A list built this way needs a liveness pass before it is configured,
+and re-checking when it is refreshed — which is another reason the yield, not
+the list, is the thing to evaluate first.
+
 **Privacy.** Board tokens name the employers a particular person is targeting,
 which is search strategy. They live in the ignored workspace beside profiles
 and watchlists, and no token, employer name, or denylist entry drawn from a

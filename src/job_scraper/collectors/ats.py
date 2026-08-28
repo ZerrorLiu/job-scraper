@@ -83,7 +83,14 @@ class AtsDirectCollector(BaseCollector):
 
     def collect(self, window: SearchWindow) -> Iterable[RawJobRecord]:
         del window  # every board is read in full; there is no freshness window to page against
-        for board in self.boards:
+        for index, board in enumerate(self.boards):
+            # One request per board means a configured list is also a request
+            # rate. Unpaced, a list of a few hundred boards is a burst at one
+            # host: measured against the German small-employer provider, an
+            # unpaced sweep drew rate-limit responses that a paced one did not.
+            # Every other source paces between pages for the same reason.
+            if index:
+                self.rate_limiter.sleep()
             try:
                 yield from _PROVIDERS[board.provider](self, board)
             except Exception as exc:
@@ -117,7 +124,13 @@ def _collect_personio(collector: AtsDirectCollector, board: AtsBoard) -> list[Ra
     try:
         body = collector.fetch_text(url, headers={"Accept": "application/xml"})
     except HTTPError as exc:
-        raise AtsPayloadError(f"personio board {board.token!r} returned HTTP {exc.code}") from exc
+        # A configured token fails for two reasons that need different
+        # responses, and an undifferentiated "returned HTTP nnn" hides which:
+        # 404 means the employer left this provider or renamed its board, so
+        # the token is dead and belongs out of the configuration; 429 means the
+        # sweep asked too fast and the same token will work next run. Saying
+        # which is the difference between pruning a list and pacing a run.
+        raise AtsPayloadError(_personio_http_reason(board.token, exc.code)) from exc
     try:
         root = ElementTree.fromstring(body)
     except ElementTree.ParseError as exc:
@@ -156,6 +169,20 @@ def _collect_personio(collector: AtsDirectCollector, board: AtsBoard) -> list[Ra
             )
         )
     return records
+
+
+def _personio_http_reason(token: str, code: int) -> str:
+    if code == 404:
+        return (
+            f"personio board {token!r} does not exist (HTTP 404) -- the employer left "
+            "this provider or renamed its board; remove the token from configuration"
+        )
+    if code == 429:
+        return (
+            f"personio board {token!r} was rate limited (HTTP 429) -- the sweep is "
+            "paced too tightly; the token itself is fine and will be read next run"
+        )
+    return f"personio board {token!r} returned HTTP {code}"
 
 
 def _collect_jsonld(collector: AtsDirectCollector, board: AtsBoard) -> list[RawJobRecord]:

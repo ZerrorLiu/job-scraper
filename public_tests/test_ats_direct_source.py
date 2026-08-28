@@ -342,3 +342,70 @@ def test_independent_user_path_simulation_through_the_production_registry(
 
     assert [record.source_job_id for record in records] == ["goodboard-4711"]
     assert records[0].company_name == "Good Co"
+
+
+def test_boards_are_paced_so_a_long_list_is_not_a_burst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured board list is also a request rate.
+
+    One request per board means an unpaced sweep of a few hundred tokens is a
+    burst at a single host, which is what drew rate-limit responses when this
+    was measured. The first board must not wait -- pacing a single-board list
+    would be pure latency -- and every later one must.
+    """
+    monkeypatch.setattr(base, "urlopen", lambda *_a, **_k: _FakeResponse(PERSONIO_XML.encode()))
+    sleeps: list[int] = []
+    collector = AtsDirectCollector(
+        _http_config(),
+        _source_config(
+            [
+                {"provider": "personio", "token": "one"},
+                {"provider": "personio", "token": "two"},
+                {"provider": "personio", "token": "three"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(collector.rate_limiter, "sleep", lambda: sleeps.append(1))
+
+    records = list(collector.collect(_window()))
+
+    assert len(records) == 3
+    assert len(sleeps) == 2
+
+
+def test_a_dead_token_and_a_throttled_one_are_reported_differently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """404 and 429 need different operator responses, so they read differently.
+
+    A 404 board is gone for good and the token belongs out of the
+    configuration; a 429 board is fine and will be read on the next run. An
+    undifferentiated "returned HTTP nnn" leaves the operator unable to tell
+    which list to prune.
+    """
+    codes = {"gone": 404, "throttled": 429}
+
+    def fake_urlopen(request, timeout=None):
+        token = request.full_url.split("//", 1)[1].split(".", 1)[0]
+        raise HTTPError(request.full_url, codes[token], "err", None, None)
+
+    monkeypatch.setattr(base, "urlopen", fake_urlopen)
+    events: list[str] = []
+    collector = AtsDirectCollector(
+        _http_config(),
+        _source_config(
+            [
+                {"provider": "personio", "token": "gone"},
+                {"provider": "personio", "token": "throttled"},
+            ]
+        ),
+        event_logger=events.append,
+    )
+
+    assert list(collector.collect(_window())) == []
+    assert len(events) == 2
+    assert "does not exist" in events[0]
+    assert "remove the token from configuration" in events[0]
+    assert "rate limited" in events[1]
+    assert "will be read next run" in events[1]
