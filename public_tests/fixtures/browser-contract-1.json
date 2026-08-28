@@ -1,0 +1,23 @@
+{
+  "contract_version": "1.0",
+  "schema_version": 1,
+  "task_id": "fictional-task-1",
+  "lease_id": "fictional-lease-1",
+  "lease_expires_at": "2026-08-29T12:10:00+00:00",
+  "kind": "detail",
+  "payload": {
+    "schema_version": 2,
+    "task_id": "fictional-task-1",
+    "status": "pending",
+    "origin": "browser_search",
+    "url": "https://de.indeed.com/viewjob?jk=fictional-job-1",
+    "title": "Fictional Engineer",
+    "company_name": "Example GmbH",
+    "location_raw": "Example City",
+    "context": "Fictional visible card",
+    "observed_at": "2026-08-29T12:00:00+00:00",
+    "search_task_id": "fictional-search-1",
+    "search_query": "Fictional Engineer",
+    "search_location": "Example City"
+  }
+}

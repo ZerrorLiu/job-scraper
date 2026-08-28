@@ -59,6 +59,15 @@ email-card metadata. Successful sibling batches retain their full job
 descriptions and snapshot provenance. The original platform listing URL remains
 authoritative.
 
+Browser-rendered Indeed work uses a separate asynchronous boundary. Each client
+deployment has its own FastAPI process, SQLite database, device credential,
+queue, and transactional outbox. The HTTP process validates and durably accepts
+a leased result only; it never expands search cards, runs the job pipeline, or
+writes Notion inline. A separate outbox invocation performs those idempotent
+effects. The local `positions-client` stores claims and exact result bytes before
+showing or uploading them, while Codex operates the user's connected Chrome.
+No caller-supplied client identifier selects a tenant process.
+
 ## External writes
 
 Requests that create a Notion object are never replayed after a server error

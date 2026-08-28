@@ -25,6 +25,17 @@ from job_scraper.cli.database import (
 )
 from job_scraper.cli.doctor import has_errors, run_doctor
 from job_scraper.cli.feed import emit_screening_feed
+from job_scraper.cli.serve import (
+    browser_email_refresh,
+    browser_outbox_list,
+    browser_outbox_retry,
+    browser_outbox_run,
+    browser_revoke_device,
+    browser_search_refresh,
+    browser_status,
+    serve,
+    serve_enroll_token,
+)
 from job_scraper.config import load_config
 from job_scraper.configuration import (
     available_profiles,
@@ -218,6 +229,65 @@ def build_parser() -> argparse.ArgumentParser:
     )
     email.add_argument("arguments", nargs=argparse.REMAINDER)
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run this tenant's networked browser-task queue for a positions-client worker.",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, required=True)
+    serve_parser.add_argument(
+        "--db", help="Browser task queue database path. Defaults to data/browser_tasks.db."
+    )
+
+    enroll_token = subparsers.add_parser(
+        "serve-enroll-token",
+        help="Print a one-time token a positions-client can redeem for a device credential.",
+    )
+    enroll_token.add_argument("--db", help="Browser task queue database path.")
+    enroll_token.add_argument("--ttl-seconds", type=int, default=3600)
+
+    search_refresh = subparsers.add_parser(
+        "browser-search-refresh",
+        help="Regenerate pending Indeed browser-search tasks from track configuration. "
+        "Makes no network request; run on its own daily schedule.",
+    )
+    search_refresh.add_argument(
+        "--config", help="Path to email ingest TOML. Defaults to config/email.toml."
+    )
+    search_refresh.add_argument("--db", help="Browser task queue database path.")
+
+    email_refresh = subparsers.add_parser(
+        "browser-email-refresh",
+        help="Queue browser detail work for every authorized Indeed email card.",
+    )
+    email_refresh.add_argument("--config", help="Path to email ingest TOML.")
+    email_refresh.add_argument("--db", help="Browser task queue database path.")
+
+    browser = subparsers.add_parser(
+        "browser", help="Inspect and operate the durable browser queue."
+    )
+    browser_subparsers = browser.add_subparsers(dest="browser_command", required=True)
+    browser_status_parser = browser_subparsers.add_parser("status")
+    browser_status_parser.add_argument("--db", help="Browser task queue database path.")
+    browser_revoke = browser_subparsers.add_parser("revoke-device")
+    browser_revoke.add_argument("--db", help="Browser task queue database path.")
+    browser_revoke.add_argument("--device-id", required=True)
+    browser_revoke.add_argument("--expect-count", type=int, required=True)
+    outbox = browser_subparsers.add_parser("outbox")
+    outbox_subparsers = outbox.add_subparsers(dest="outbox_command", required=True)
+    outbox_list = outbox_subparsers.add_parser("list")
+    outbox_list.add_argument("--db", help="Browser task queue database path.")
+    outbox_list.add_argument("--state", choices=("pending", "processing", "applied", "failed"))
+    outbox_retry = outbox_subparsers.add_parser("retry")
+    outbox_retry.add_argument("--db", help="Browser task queue database path.")
+    outbox_retry.add_argument("--event-id", required=True)
+    outbox_retry.add_argument("--expect-count", type=int, required=True)
+    outbox_run = outbox_subparsers.add_parser("run")
+    outbox_run.add_argument("--db", help="Browser task queue database path.")
+    outbox_run.add_argument("--config", help="Path to email ingest TOML.")
+    outbox_run.add_argument("--skip-notion", action="store_true")
+    outbox_run.add_argument("--limit", type=int, default=100)
+
     database = subparsers.add_parser(
         "db",
         help="Workspace database commands and local Notion binding status.",
@@ -325,6 +395,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _validate_config(args.profile, all_profiles=args.all)
     if args.command == "run":
         return _run(args)
+    if args.command == "serve":
+        return serve(args)
+    if args.command == "serve-enroll-token":
+        return serve_enroll_token(args)
+    if args.command == "browser-search-refresh":
+        return browser_search_refresh(args)
+    if args.command == "browser-email-refresh":
+        return browser_email_refresh(args)
+    if args.command == "browser":
+        if args.browser_command == "status":
+            return browser_status(args)
+        if args.browser_command == "revoke-device":
+            return browser_revoke_device(args)
+        if args.outbox_command == "list":
+            return browser_outbox_list(args)
+        if args.outbox_command == "retry":
+            return browser_outbox_retry(args)
+        if args.outbox_command == "run":
+            return browser_outbox_run(args)
     # "ingest-email" is handled by the raw_argv[0] check above, before
     # build_parser().parse_args() ever runs, so args.command == "ingest-email"
     # is unreachable here. The subparser above stays registered only so

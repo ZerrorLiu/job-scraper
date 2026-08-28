@@ -9,12 +9,15 @@ description = "Composable, agent-friendly job discovery pipeline."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115,<1",
     "python-dotenv>=1.0,<2",
     "tzdata>=2024.1",
+    "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.27,<1",
     "pyright>=1.1.400,<2",
     "pytest>=8,<10",
     "pytest-cov>=6,<8",

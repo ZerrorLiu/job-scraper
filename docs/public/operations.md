@@ -147,9 +147,41 @@ email profile, and keeps normal database and Notion deduplication. Add
 `--skip-status-import` when current Notion job decisions do not need to be
 imported before the repair.
 
-## Browser-assisted Indeed detail repair
+## Networked Codex/Chrome browser worker
 
-When an authorised local browser can render an Indeed listing but direct HTTP
+The production browser lane uses one tenant-local FastAPI process and SQLite
+queue/outbox. Start only one Uvicorn worker for a client instance:
+
+```bash
+uv run job-scraper serve --host 127.0.0.1 --port 8123
+uv run job-scraper serve-enroll-token --ttl-seconds 3600
+uv run job-scraper browser-search-refresh
+uv run job-scraper browser-email-refresh
+```
+
+Put authenticated HTTPS ingress in front of the loopback port. The enrollment
+token is single use; deliver it out of band and never store it in Git or logs.
+Run accepted results outside the HTTP process:
+
+```bash
+uv run job-scraper browser outbox run --limit 100
+uv run job-scraper browser status
+uv run job-scraper browser outbox list --state failed
+uv run job-scraper browser outbox retry --event-id browser:TASK_ID --expect-count 1
+uv run job-scraper browser revoke-device --device-id DEVICE --expect-count 1
+```
+
+The outbox command expands completed search cards into detail tasks and imports
+completed details through the existing pipeline, with Notion last. Automatic
+processing attempts stop after five failures; retry only an inspected exact
+event. `--skip-notion` keeps a run local. The local worker commands and Chrome
+behavior are documented in the `positions-client` repository and its
+`positions-browser-worker` plugin.
+
+## Legacy local browser detail repair
+
+The JSONL lane remains a local migration fallback while network cutover is
+verified. When an authorised local browser can render an Indeed listing but direct HTTP
 or Bright Data cannot, emit a local-only queue from email recommendations:
 
 ```bash
@@ -191,7 +223,7 @@ deduplication, and checkpoints an accepted row as `imported`. Add
 `--skip-notion` to make the import local-only. Do not place these JSONL files
 in the repository: they contain private mailbox context.
 
-## Browser-assisted Indeed search discovery
+## Legacy local browser search discovery
 
 The same local browser workflow can discover new Indeed listing URLs from the
 existing private track query/location matrix. It makes no network request and

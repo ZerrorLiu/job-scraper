@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://positions.example/schemas/browser-result-contract-1.schema.json",
+  "title": "Positions browser result contract 1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["status", "observed_at", "cards"],
+      "properties": {
+        "status": {"const": "complete"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "cards": {"type": "array", "items": {"type": "object", "required": ["url", "title", "company_name", "location_raw", "context"]}}
+      }
+    },
+    {
+      "type": "object",
+      "required": ["status", "observed_at", "title", "company_name", "location_raw", "description"],
+      "properties": {"status": {"const": "complete"}, "observed_at": {"type": "string", "format": "date-time"}, "title": {"type": "string"}, "company_name": {"type": "string"}, "location_raw": {"type": "string"}, "description": {"type": "string", "minLength": 160}}
+    },
+    {
+      "type": "object",
+      "required": ["status", "observed_at", "error"],
+      "properties": {"status": {"enum": ["blocked", "unavailable"]}, "observed_at": {"type": "string", "format": "date-time"}, "error": {"enum": ["login_required", "captcha", "access_denied", "page_unavailable", "unexpected_layout", "navigation_outside_allowlist"]}}
+    }
+  ]
+}

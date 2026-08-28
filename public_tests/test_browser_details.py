@@ -248,6 +248,13 @@ def test_browser_search_task_is_canonical_and_rejects_non_indeed_domain() -> Non
 
     assert task.url == "https://de.indeed.com/jobs?q=fictional+platform+engineer&l=Berlin"
     assert task.task_id == _search_task().task_id
+    next_day = BrowserSearchTask.create(
+        domain="de.indeed.com",
+        query=task.query,
+        location=task.location,
+        created_at=datetime(2026, 8, 28, tzinfo=UTC),
+    )
+    assert next_day.task_id != task.task_id
     with pytest.raises(BrowserDetailContractError, match="Indeed domain"):
         BrowserSearchTask.create(
             domain="example.test",

@@ -327,17 +327,20 @@ Because the workspace is not in Git, moving an existing installation to another
 machine means copying `config/`, `.env`, and the database. Cloning the
 repository alone produces an empty installation.
 
-## Planned multi-client Codex/Chrome worker onboarding
+## Multi-client Codex/Chrome worker onboarding
 
-This section records the approved target user path for the browser client/server
-program. It is **not implemented yet** and must not be presented as a command
-that works in the current release. The authoritative behavior and security
-contract is the
+The queue API, enrollment, lease/result transport, transactional outbox,
+`positions-client` journal, and Codex Chrome worker plugin are implemented. This
+is not yet a turnkey multi-client deployment: the Linux account, systemd
+instance, Cloudflare route, secret store, backup, recurring Codex task, and
+client-specific business configuration must still be provisioned and verified
+for each installation; they are not created by the public Python package. The
+authoritative behavior and security contract is the
 [browser-visible Indeed specification](specs/2026-08-27-browser-indeed-search-discovery.md).
 
 The server-side agent:
 
-1. Runs `create-client` to provision an empty per-client Linux account, runtime,
+1. Provisions an empty per-client Linux account, runtime,
    SQLite queue/outbox, loopback service, Cloudflare ingress route, backup, and
    single-use enrollment token. It copies no profile, query, job, credential,
    CV/evidence, cache, Notion binding, or artifact from another client.
@@ -355,21 +358,23 @@ The server-side agent:
 
 On the client's own computer, the guided Codex setup:
 
-1. Installs the shared `positions-client` CLI and positions browser-worker
+1. Installs the shared `positions-client` CLI and `positions-browser-worker`
    plugin/skill.
-2. Runs `positions-client enroll`; the resulting device credential is stored in
+2. Pipes the one-time token through standard input into
+   `positions-client enroll --server HTTPS_URL --token-stdin --device-id NAME`;
+   the resulting device credential is stored in
    the OS credential manager and is not shown to the Codex worker.
 3. Has the user connect the Chrome plugin from the existing Chrome profile they
    want this client to use. The setup does not enumerate, copy, or read profile
-   files. It records only a local one-way extension-instance fingerprint and
-   fails if that Chrome surface is or was owned by another immutable client
-   identity. The user is told that task URLs, query/location values, and visible
+   files. Version 1 cannot obtain a trustworthy extension-instance identifier,
+   so isolation is operational: one dedicated Codex task and Chrome profile are
+   assigned to exactly one client and are not reused for another client. The
+   user is told that task URLs, query/location values, and visible
    public job content are processed in their own Codex account.
 4. Runs one combined doctor. The CLI checks HTTPS, contract compatibility,
-   device authentication, credential storage, and the local journal. The Codex
-   worker checks its own account, Chrome connection, permanent client ownership
-   of the local extension fingerprint, local mutex, and creation and cleanup of
-   a harmless browser tab.
+   device authentication and the local journal. The Codex worker separately
+   checks its own account, Chrome connection, dedicated-client assignment, and
+   creation and cleanup of a harmless browser tab.
 5. Performs one count-bounded, no-publication search task and one Indeed-email
    detail task. A login wall, CAPTCHA, access block, or unexpected navigation is
    recorded and handed to the user; it is never bypassed.
@@ -396,8 +401,8 @@ disconnected, or the network is down, no server push is attempted. Tasks remain
 durably pending on the VPS and other server-side sources continue normally.
 
 Offboarding disables the recurring Codex heartbeat first, revokes the server
-device credential, deactivates the local browser binding/mutex, and archives or
+device credential, retires the dedicated Chrome/Codex assignment, and archives or
 removes the local journal only with the user's explicit approval. The
-non-secret browser-ownership tombstone remains, preventing that Chrome session
-from being reassigned to another client. Server data, Notion state, backups,
-and browser tabs are not deleted implicitly.
+operator records retain the assignment history so that Chrome profile is not
+reassigned to another client. Server data, Notion state, backups, and browser
+tabs are not deleted implicitly.

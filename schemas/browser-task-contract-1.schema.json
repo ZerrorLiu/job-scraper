@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://positions.example/schemas/browser-task-contract-1.schema.json",
+  "title": "Positions browser task contract 1",
+  "type": "object",
+  "required": ["contract_version", "schema_version", "task_id", "lease_id", "lease_expires_at", "kind", "payload"],
+  "properties": {
+    "contract_version": {"const": "1.0"},
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "lease_id": {"type": "string", "minLength": 1},
+    "lease_expires_at": {"type": "string", "format": "date-time"},
+    "kind": {"enum": ["search", "detail"]},
+    "payload": {"type": "object"}
+  },
+  "additionalProperties": true
+}

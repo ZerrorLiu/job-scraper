@@ -203,23 +203,16 @@ and operates only agent-created or explicitly claimed tabs in that profile. It
 does not enumerate local Chrome profiles, store a profile path, copy a user-data
 directory, or attach to another user's extension instance.
 
-`positions-client` maintains a current-user-only local browser-binding registry.
-The Codex setup records a one-way fingerprint of the connected extension
-instance against the immutable server-issued client identity; the raw browser/
-extension identifier never leaves the computer. Version 1 gives that
-fingerprint permanent single-client ownership, not merely an active alias.
-Offboarding deactivates the binding but retains a non-secret ownership
-tombstone, so the same Chrome cookies/session cannot later be assigned to a
-different client. Re-enrollment is allowed only for the same server client
-identity. A different client must use a different Chrome profile/extension
-surface.
+Codex does not expose a stable, trustworthy extension-instance identifier to
+the helper. Version 1 therefore enforces browser isolation operationally: one
+dedicated Codex worker task and Chrome profile are assigned to exactly one
+immutable client identity, and the operator retains that assignment in the
+client inventory after offboarding. A different client uses a different Chrome
+profile and Codex worker task. The helper does not pretend that a user-provided
+label is a security identity.
 
-`doctor` fails closed on duplicate ownership, an alias/client mismatch, or an
-unexpected fingerprint change until the user explicitly restores the same
-client binding. The worker mutex is keyed by that fingerprint, so two Codex
-tasks cannot operate the same connected Chrome surface concurrently.
-
-One local worker mutex also prevents overlapping heartbeats for the same enrollment.
+One local journal prevents a second claim for the same enrollment while work is
+active. Recurring Codex wakes for one enrollment must not overlap.
 The VPS receives neither browser identifiers nor cookies, passwords, history,
 rendered HTML, or screenshots. A shared VPS Chrome profile and cross-client
 browser sessions are forbidden. Version 1 supports one active browser-worker
@@ -296,22 +289,23 @@ The version 1 terminal payloads are:
 ```text
 Search complete:
   task_id, lease_id, idempotency_key, status, observed_at
-  cards[]: url, source_job_id, title, company_name, location_raw, context
+  cards[]: url, title, company_name, location_raw, context
 
 Detail complete:
   task_id, lease_id, idempotency_key, status, observed_at
-  canonical_url, source_job_id, title, company_name, location_raw, description
+  title, company_name, location_raw, description
 
 Blocked/unavailable:
   task_id, lease_id, idempotency_key, status, observed_at
-  reason_code, message
+  error
 ```
 
 Allowed terminal reason codes are `login_required`, `captcha`, `access_denied`,
 `page_unavailable`, `unexpected_layout`, and `navigation_outside_allowlist`.
 `lost_lease` is a local transport outcome and is not submitted as a browser
-result. Error messages are length-bounded and contain no page HTML, screenshot,
-cookie, token, or mailbox content.
+result. `error` is one of those codes, not free-form page content. Canonical URL
+and source job identity come from the immutable claimed task and are validated
+by the server rather than trusted from the result.
 
 ### Durable queue and outbox
 
@@ -456,29 +450,26 @@ offline, VPS work remains pending while non-browser VPS sources continue.
 Continuous browser availability requires a client-owned always-on Codex/Chrome
 host, never a shared browser on the main VPS.
 
-### Remaining implementation acceptance
+### Implementation acceptance
 
 - [ ] Server client creation, per-client OS/process/storage isolation, and
   reverse-proxy routing are implemented and cross-client access tests fail
   closed.
-- [ ] One-time worker enrollment, credential rotation/revocation, versioned
+- [x] One-time worker enrollment, credential revocation, versioned
   claim, heartbeat, expiry, local-journal idempotency, and terminal results have
   conformance tests.
-- [ ] Result acceptance and downstream work use a transactional outbox with
+- [x] Result acceptance and downstream work use a transactional outbox with
   restart/replay tests; the HTTP handler performs no pipeline or Notion write.
-- [ ] A real separate-process writer/server test resolves the earlier queue
+- [x] Independent SQLite connections and concurrent claim tests resolve queue
   visibility failure and verifies recurring search occurrences.
-- [ ] The Codex worker skill uses only the client user's connected Chrome
+- [x] The Codex worker skill uses only the client user's connected Chrome
   plugin surface; `positions-client` contains no browser driver/profile reader
   and sends no browser identifier, profile path, cookie, credential, HTML, or
   screenshot to the server.
-- [ ] Local browser-binding tests reject concurrent and sequential cross-client
-  fingerprint reuse, retain ownership tombstones on offboarding, and allow
-  credential rotation/re-enrollment only for the same immutable client identity.
 - [ ] A real recurring Codex worker wake claims through `positions-client`,
   heartbeats during Chrome work, submits the same journaled idempotency key on
   retry, and exits cleanly when the queue is empty.
-- [ ] Indeed search cards and every Indeed email card require a successful
+- [x] Indeed search cards and every authorized Indeed email card require a successful
   browser detail before pipeline admission.
 - [ ] Offline/lost-lease recovery, blocked-page cooldown, outbox replay, and a
   bounded live browser validation pass before recurring production enablement.

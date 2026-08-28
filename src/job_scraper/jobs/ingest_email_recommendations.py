@@ -300,6 +300,29 @@ def emit_browser_detail_queue(args: argparse.Namespace) -> int:
     return 0
 
 
+def browser_email_tasks(email_config: EmailIngestConfig) -> tuple[BrowserDetailTask, ...]:
+    """Read authorized recommendation mail and return only Indeed detail work.
+
+    This read-only helper intentionally ignores processed-message state: queue
+    task IDs deduplicate postings, while every Indeed card still receives the
+    required browser-detail opportunity even if another email path ran first.
+    """
+
+    if not email_config.host:
+        raise ValueError("Missing IMAP host in email ingest config")
+    if not email_config.username or not email_config.password:
+        raise ValueError("Missing mailbox credentials for browser email refresh")
+    messages = ImapEmailClient(email_config).fetch_recent_messages()
+    candidates = collect_candidate_tasks(messages, [], email_config.skipped_link_hosts)
+    tasks: dict[str, BrowserDetailTask] = {}
+    for _message, candidate in candidates:
+        if not indeed_detail_url(candidate.url):
+            continue
+        task = BrowserDetailTask.from_candidate(candidate)
+        tasks.setdefault(task.task_id, task)
+    return tuple(tasks.values())
+
+
 def merge_browser_detail_queue(
     candidates: Iterable[EmailJobCandidate],
     current: Sequence[Mapping[str, object]],
@@ -542,27 +565,12 @@ def import_browser_detail_results(args: argparse.Namespace) -> int:
         email_config.track_config_paths = [
             Path(value).resolve() for value in dict.fromkeys(args.track_configs)
         ]
-    started_at = datetime.now(UTC)
-    runtimes = initialize_tracks(
+    import_browser_detail_batch(
+        [result for _index, result in completed],
         email_config,
-        started_at,
         skip_notion=args.skip_notion,
         skip_status_import=args.skip_status_import,
     )
-    if not runtimes:
-        raise ValueError("No enabled email tracks are available for browser detail import")
-    try:
-        for _index, result in completed:
-            raw = raw_from_browser_detail(result, started_at)
-            for runtime in runtimes:
-                process_raw_job(raw, runtime, started_at)
-        for runtime in runtimes:
-            runtime.run.finished_at = datetime.now(UTC)
-            runtime.database.finish_run(runtime.run, "completed")
-        _publish_browser_imports(runtimes, started_at, skip_notion=args.skip_notion)
-    except Exception as exc:
-        _mark_email_runs_failed(runtimes, exc, dashboard=None)
-        raise
 
     for index, _result in completed:
         queue[index]["status"] = "imported"
@@ -570,6 +578,44 @@ def import_browser_detail_results(args: argparse.Namespace) -> int:
     _write_browser_queue(args.browser_results, queue)
     log_line(f"Email | Browser detail import | Imported {len(completed)} complete queue rows")
     return 0
+
+
+def import_browser_detail_batch(
+    results: Sequence[BrowserDetailResult],
+    email_config: EmailIngestConfig,
+    *,
+    skip_notion: bool,
+    skip_status_import: bool = False,
+) -> list[TrackRuntime]:
+    """Run already-validated browser detail results through the normal pipeline.
+
+    Shared by the local JSONL CLI flow (`import_browser_detail_results`) and
+    the networked task-server flow, so both entry paths run exactly the same
+    normalization, filtering, persistence, and publication.
+    """
+
+    started_at = datetime.now(UTC)
+    runtimes = initialize_tracks(
+        email_config,
+        started_at,
+        skip_notion=skip_notion,
+        skip_status_import=skip_status_import,
+    )
+    if not runtimes:
+        raise ValueError("No enabled email tracks are available for browser detail import")
+    try:
+        for result in results:
+            raw = raw_from_browser_detail(result, started_at)
+            for runtime in runtimes:
+                process_raw_job(raw, runtime, started_at)
+        for runtime in runtimes:
+            runtime.run.finished_at = datetime.now(UTC)
+            runtime.database.finish_run(runtime.run, "completed")
+        _publish_browser_imports(runtimes, started_at, skip_notion=skip_notion)
+    except Exception as exc:
+        _mark_email_runs_failed(runtimes, exc, dashboard=None)
+        raise
+    return runtimes
 
 
 def raw_from_browser_detail(result: BrowserDetailResult, scraped_at: datetime) -> RawJobRecord:
@@ -652,6 +698,10 @@ def _publish_browser_imports(
         if result.errors:
             for error in result.errors:
                 log_error(f"Email | Track {runtime.track_label} | Notion | Failed | {error}")
+            raise RuntimeError(
+                f"Notion publication failed for track {runtime.track_label}: "
+                + "; ".join(result.errors)
+            )
 
 
 def _read_browser_queue(path: Path) -> list[dict[str, object]]:

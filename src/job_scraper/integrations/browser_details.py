@@ -299,7 +299,8 @@ class BrowserSearchTask:
         if not normalized_query or not normalized_location:
             raise BrowserDetailContractError("Browser search tasks require query and location")
         url = f"https://{normalized_domain}/jobs?{urlencode({'q': normalized_query, 'l': normalized_location})}"
-        task_id = sha256(url.encode("utf-8")).hexdigest()[:24]
+        occurrence = created_at.astimezone(UTC).date().isoformat()
+        task_id = sha256(f"{url}\n{occurrence}".encode()).hexdigest()[:24]
         return cls(task_id, url, normalized_query, normalized_location, created_at)
 
     def to_dict(self) -> dict[str, object]:
