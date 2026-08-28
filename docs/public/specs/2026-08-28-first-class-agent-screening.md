@@ -177,10 +177,15 @@ compatibility, or data-recovery role.
   results atomically, produced three validated tailored PDFs, published the
   exact eight-job slice through the finalized Notion transition, preserved
   unrelated Notion state, and exited 0. Windows sync copied six cumulative VPS
-  PDFs without deleting local files. Both scheduled units are now inactive with
-  a successful manager state; the acquisition unit description no longer says
-  screening is paused. Host-reboot recovery remains the only unproven Phase 9
-  operational gate and is intentionally not inferred from service-level proof.
+  PDFs without deleting local files. A subsequent run through the installed
+  `fine-screen-daily.service` reused all 117 semantic decisions and three valid
+  tailoring plans, generated one additional validated PDF, performed an
+  idempotent 118-row finalized publication with zero Notion failures, and exited
+  0. The final Windows sync saw seven cumulative PDFs. Both scheduled units are
+  now inactive with a successful manager state; the acquisition unit description
+  no longer says screening is paused. Host-reboot recovery remains the only
+  unproven Phase 9 operational gate and is intentionally not inferred from
+  service-level proof.
 
 ## Acceptance criteria
 
