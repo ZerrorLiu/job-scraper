@@ -29,6 +29,7 @@ uv run job-scraper run --skip-notion            # acquire and export, publish no
 uv run job-scraper run --skip-email             # skip mailbox ingestion
 uv run job-scraper run --skip-export            # skip the cumulative CSV
 uv run job-scraper run --profile-workers 1      # serialize profiles
+uv run job-scraper run --source SOURCE_ID       # only this source of the profile
 ```
 
 ## Inspect before running
@@ -188,6 +189,33 @@ own scheduler — a systemd timer, `cron`, or Task Scheduler — with the workin
 directory set to the installation and `JOB_SCRAPER_CONFIG_DIR` set when the
 workspace lives elsewhere. A scheduled run publishes to external systems on the
 user's behalf, so enable one only with their explicit go-ahead.
+
+### Giving one source its own cadence
+
+A profile's `sources` list says which adapters the track uses, not how often
+each should run. When one source wants a different schedule from the rest --
+typically a board sweep that spends one request per configured employer, where
+running it daily multiplies load on a third party for postings that move
+slowly -- split it across two timers with `--source` rather than duplicating the
+track as a second profile:
+
+```bash
+# daily timer: everything except the sweep
+uv run job-scraper run --profile PROFILE_ID --source SOURCE_A --source SOURCE_B
+
+# weekly timer: the sweep alone
+uv run job-scraper run --profile PROFILE_ID --source SOURCE_C
+```
+
+Both timers name what they run, so a later profile edit cannot silently change
+either one's scope. Selecting a source the profile does not enable is an error
+rather than a quiet no-op, because a timer that acquires nothing after such an
+edit is otherwise indistinguishable from one whose source found nothing new.
+
+The freshness window must be at least the sweep interval. `FreshnessStep`
+filters on `posted_at`, a fixed value, so a posting older than the window is
+rejected on every future run, not just the current one -- a weekly sweep under a
+window shorter than a week loses whatever appeared between runs, permanently.
 
 ## When something looks wrong
 

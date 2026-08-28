@@ -202,6 +202,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Temporarily replace every selected profile's search matrix; repeatable.",
     )
+    run.add_argument(
+        "--source",
+        action="append",
+        help=(
+            "Run only these of the selected profiles' sources; repeatable. "
+            "Use when one source belongs on a different schedule from the rest "
+            "of its profile."
+        ),
+    )
 
     email = subparsers.add_parser(
         "ingest-email",
@@ -520,6 +529,8 @@ def _legacy_run_flags(args: argparse.Namespace) -> list[str]:
         flags.extend(["--post-age-days", str(args.post_age_days)])
     for query in args.query or []:
         flags.extend(["--query", query])
+    for source in args.source or []:
+        flags.extend(["--source", source])
     return flags
 
 

@@ -143,6 +143,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         dest="search_queries",
         help="Temporarily replace the profile search matrix. Repeat to use multiple queries.",
     )
+    parser.add_argument(
+        "--source",
+        action="append",
+        dest="only_sources",
+        help=(
+            "Run only these of the profile's sources. Repeat to select several. "
+            "Use when one source belongs on a different schedule from the rest."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -167,6 +176,8 @@ def main(
     if args.enable_indeed:
         enable_indeed_source(config)
     _disable_brightdata_when_suspended(config)
+    if args.only_sources:
+        restrict_sources(config, args.only_sources, profile_id=args.config)
     if args.search_queries:
         override_search_queries(config, args.search_queries)
     track_label = display_track_label(config.project.track_label)
@@ -502,6 +513,37 @@ def _disable_brightdata_when_suspended(config: AppConfig) -> None:
     source = config.sources.get("indeed_brightdata")
     if source is not None:
         source.enabled = False
+
+
+def restrict_sources(config: AppConfig, only: list[str], *, profile_id: str = "") -> None:
+    """Narrow this run to a subset of the profile's already-enabled sources.
+
+    A profile's `sources` list is a composition decision -- which adapters this
+    track uses at all. It is not a schedule, and some sources do not want the
+    schedule the rest of their profile runs on: a board sweep costing one
+    request per configured employer belongs on a weekly timer beside a daily
+    one, and there is otherwise no way to express that without duplicating the
+    whole track as a second profile.
+
+    Selecting a source the profile does not enable is an error rather than a
+    silent no-op, because the failure it hides -- a timer quietly acquiring
+    nothing after a profile edit renamed or dropped the source -- looks exactly
+    like a source that legitimately found no new postings.
+    """
+
+    requested = list(dict.fromkeys(name.strip() for name in only if name.strip()))
+    if not requested:
+        return
+    enabled = {source_id for source_id, settings in config.sources.items() if settings.enabled}
+    unknown = sorted(set(requested) - enabled)
+    if unknown:
+        where = f" for {profile_id}" if profile_id else ""
+        raise ValueError(
+            f"--source selected {', '.join(unknown)}, which the profile does not enable"
+            f"{where}; enabled sources are {', '.join(sorted(enabled)) or '(none)'}"
+        )
+    for source_id, settings in config.sources.items():
+        settings.enabled = source_id in requested
 
 
 def override_search_queries(config: AppConfig, queries: list[str]) -> None:

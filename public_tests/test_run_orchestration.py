@@ -293,3 +293,67 @@ def test_ignore_post_age_admits_an_old_posting(workspace, monkeypatch) -> None:
     sinks["csv"].published_batches.clear()
     assert _run(workspace, "--skip-notion", "--ignore-post-age") == 0
     assert sinks["csv"].published_batches == [1]
+
+
+def _config_with_sources(tmp_path, **enabled: bool):
+    from job_scraper.config import (
+        AppConfig,
+        FiltersConfig,
+        HttpConfig,
+        NotionConfig,
+        ProjectConfig,
+        SourceConfig,
+    )
+
+    return AppConfig(
+        project=ProjectConfig("UTC", tmp_path / "jobs.db", 24, tmp_path, "Fictional"),
+        filters=FiltersConfig("US", [], [], [], "title", 0.0),
+        http=HttpConfig("fictional", 1, 0, 0, 0),
+        sources={name: SourceConfig(enabled=value) for name, value in enabled.items()},
+        notion=NotionConfig(enabled=False),
+    )
+
+
+def test_source_selection_narrows_a_run_to_part_of_its_profile(tmp_path) -> None:
+    """A profile's source list is a composition decision, not a schedule.
+
+    A board sweep that spends one request per configured employer belongs on a
+    weekly timer beside the profile's daily one. Without a run-scoped
+    selection, expressing that means duplicating the whole track as a second
+    profile just to give one source a different cadence.
+    """
+    config = _config_with_sources(tmp_path, fictional_daily=True, fictional_weekly=True)
+
+    run_daily.restrict_sources(config, ["fictional_weekly"])
+
+    assert config.sources["fictional_weekly"].enabled is True
+    assert config.sources["fictional_daily"].enabled is False
+
+
+def test_selecting_a_source_the_profile_does_not_enable_is_an_error(tmp_path) -> None:
+    """The silent no-op this replaces is indistinguishable from a quiet run.
+
+    A timer that acquires nothing because a profile edit renamed its source
+    looks exactly like a source that legitimately found nothing new, and the
+    difference only surfaces later as missing data.
+    """
+    config = _config_with_sources(tmp_path, fictional_daily=True)
+
+    with pytest.raises(ValueError, match="which the profile does not enable"):
+        run_daily.restrict_sources(config, ["fictional_weekly"])
+
+
+def test_selecting_a_source_the_profile_disabled_is_also_an_error(tmp_path) -> None:
+    """Being present in the runtime config is not the same as being enabled."""
+    config = _config_with_sources(tmp_path, fictional_daily=True, fictional_weekly=False)
+
+    with pytest.raises(ValueError, match="which the profile does not enable"):
+        run_daily.restrict_sources(config, ["fictional_weekly"])
+
+
+def test_an_empty_source_selection_leaves_the_profile_alone(tmp_path) -> None:
+    config = _config_with_sources(tmp_path, fictional_daily=True, fictional_weekly=True)
+
+    run_daily.restrict_sources(config, ["   "])
+
+    assert all(settings.enabled for settings in config.sources.values())
