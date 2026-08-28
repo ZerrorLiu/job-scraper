@@ -190,6 +190,15 @@ agent to resolve a future factual conflict or delete private material: divergent
 claims still require the human owner, and irreversible cleanup remains outside
 this program.
 
+The owner-approved mother-master criterion is now satisfied. The legacy
+`CV/Mother-Resume-Candidates/README.md` maps the reference PDFs to the seven
+editable masters under `resume/variants/`. Direct normalized-text comparison
+shows all seven corresponding `.tex` files in `cv-cover-workspace` are identical
+to those masters. Shared style, profile notes, and the evidence library are also
+identical after newline normalization. This establishes `cv-cover-workspace` as
+the private factual/editable authority; the mother PDFs remain comparison
+references, not ingestible evidence.
+
 ### Implementation status (2026-08-28)
 
 - Phase 0 local baseline is recorded: the component registry exposes one
@@ -301,6 +310,21 @@ this program.
   resolved exactly one core job from cache, made zero model/external writes,
   and exited 0. The checkout-backed service runner was separately replayed as
   its service user, imported one bounded cached result, and exited 0.
+- After explicit maintenance authorization, the VPS completed a confirmed
+  down/up reboot cycle. It returned with `systemctl is-system-running=running`,
+  no failed units, the Positions timer enabled and active with its next run
+  scheduled, both workflow services in successful inactive state, user linger
+  restored, and all three repository revisions unchanged. Release-manifest
+  verification passed after boot. A one-job service-user recovery replay then
+  reused its cached decision, imported exactly one durable result, performed
+  zero model and external-display writes, and exited 0.
+- Indeed/browser acquisition was intentionally not folded into the unattended
+  VPS critical path. The registered `indeed_brightdata` adapter remains a normal
+  acquisition source. Browser-visible Indeed discovery is a local, explicitly
+  authorized queue that must feed the existing normalization, canonical merge,
+  track routing, and screening flow; it is not a second pipeline. It remains
+  unregistered until a bounded live browser validation proves visible-card
+  stability, block handling, and resumability without bypassing access controls.
 
 ## Acceptance criteria
 
@@ -314,7 +338,7 @@ this program.
   private artifacts are never included in bulk cleanup.
 - [x] Superseded docs are consolidated into their canonical homes and removed;
   no two active documents claim authority over the same workflow.
-- [ ] One private evidence/CV authority is declared only after divergent
+- [x] One private evidence/CV authority is declared only after divergent
   masters, shared facts, and compatibility artifacts are reconciled by a human.
 - [x] Exactly one screening implementation and one application orchestration
   path remain runnable after the migration window.
@@ -345,7 +369,7 @@ this program.
   single-client workflow without a sibling code checkout or hard-coded path.
 - [x] The single-client workflow passes offline replay, shadow comparison,
   controlled publication, and the repository quality gates before VPS cutover.
-- [ ] VPS completion separately proves service configuration, authorization,
+- [x] VPS completion separately proves service configuration, authorization,
   bounded execution, backup/restore, and recovery after service and host
   restart.
 - [x] A future server/client split is based on versioned contracts proven by
