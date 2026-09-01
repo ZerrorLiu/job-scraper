@@ -5,17 +5,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# See pipeline.steps.DEFAULT_STEPS for why this order is what it is.
-DEFAULT_PIPELINE = (
-    "country",
-    "freshness",
-    "company",
-    "employment_scope",
-    "excluded_terms",
-    "role",
-    "requirement_exclusion",
-    "language",
-)
+# pipeline.steps.DEFAULT_STEPS is empty: content-quality judgment (country,
+# freshness, company identity, role fit, language, ...) is made downstream by
+# the agent screener, not by a deterministic step list here.
+DEFAULT_PIPELINE: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +53,7 @@ def initialize_profile(request: BootstrapRequest) -> BootstrapResult:
         registry.channels.available(),
         "channels",
     )
-    pipeline = _component_values(
+    pipeline = _optional_component_values(
         request.pipeline,
         registry.steps.available(),
         "pipeline",

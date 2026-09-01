@@ -13,7 +13,6 @@ from job_scraper.integrations.email_recommendations import (
 )
 from job_scraper.jobs import run_all_tracks
 from job_scraper.jobs.run_daily import _acquire_sources, _SourceExecution
-from job_scraper.pipeline.role_filter import has_excluded_keyword, is_full_time_role
 
 
 def test_dashboard_uses_one_fixed_screen_and_one_final_scrollback_table() -> None:
@@ -118,21 +117,6 @@ def test_all_tracks_builds_a_typed_email_request(tmp_path: Path) -> None:
     assert email_request.detail_workers == 6
     assert email_request.folder == "All Mail"
     assert email_request.skip_notion is True
-
-
-def test_title_level_filters_do_not_read_job_description() -> None:
-    description = (
-        "Coordinate internally and externally. During hiring, a recruiter "
-        "will explain the compensation range."
-    )
-
-    assert is_full_time_role("Software Engineer", description, "full-time")
-    assert not has_excluded_keyword(
-        "Advanced Data Analyst",
-        description,
-        "full-time",
-        ["recruiter"],
-    )
 
 
 def test_email_card_context_is_audit_data_not_a_job_description() -> None:

@@ -4,8 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from job_scraper.domain.context import EvaluationContext
-from job_scraper.domain.decisions import RejectionReason
 from job_scraper.domain.models import JobRecord, RawJobRecord
 from job_scraper.domain.policies import FilterPolicy
 from job_scraper.integrations.email_recommendations import (
@@ -24,7 +22,6 @@ from job_scraper.jobs.ingest_email_recommendations import (
     stable_email_dedupe_key,
 )
 from job_scraper.pipeline.normalize import normalize_candidate
-from job_scraper.pipeline.steps import CountryStep
 from job_scraper.storage.db import Database
 
 EFINANCIAL_JOB_URL = (
@@ -409,17 +406,7 @@ def test_efinancial_allows_neighboring_country_location() -> None:
     policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
-    decision = CountryStep().evaluate(
-        job,
-        EvaluationContext(
-            profile_id="fictional-profile",
-            started_at=datetime(2026, 8, 5, tzinfo=UTC),
-            policy=policy,
-        ),
-    )
-
     assert job.country == "NL"
-    assert decision.reason is None
 
 
 def test_efinancial_rejects_explicit_singapore_location() -> None:
@@ -427,17 +414,7 @@ def test_efinancial_rejects_explicit_singapore_location() -> None:
     policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
-    decision = CountryStep().evaluate(
-        job,
-        EvaluationContext(
-            profile_id="fictional-profile",
-            started_at=datetime(2026, 8, 5, tzinfo=UTC),
-            policy=policy,
-        ),
-    )
-
     assert job.country == "SG"
-    assert decision.reason == RejectionReason.NOT_TARGET_COUNTRY
 
 
 def test_location_overrides_stale_default_country_code() -> None:
@@ -446,17 +423,7 @@ def test_location_overrides_stale_default_country_code() -> None:
     policy = email_policy_for_raw(raw, FilterPolicy(countries=("DE",)), NEIGHBOURING_SCOPE)
     job = normalize_candidate(raw, policy)
 
-    decision = CountryStep().evaluate(
-        job,
-        EvaluationContext(
-            profile_id="fictional-profile",
-            started_at=datetime(2026, 8, 5, tzinfo=UTC),
-            policy=policy,
-        ),
-    )
-
     assert job.country == "DE"
-    assert decision.reason == RejectionReason.NOT_TARGET_COUNTRY
 
 
 def test_non_efinancial_source_keeps_germany_only_scope() -> None:

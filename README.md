@@ -11,7 +11,10 @@ without shipping anyone's search profile or workspace configuration.
 - IMAP recommendation-email ingestion
 - Typed domain records and composable pipeline steps
 - SQLite, cumulative CSV, and Notion adapters
-- A versioned JSON feed for a downstream screener
+- Bundled Agent screening, evidence-bound resume tailoring, PDF generation,
+  and release verification
+- A passwordless, server-rendered onboarding/results portal
+- An authenticated browser-task API for the separate `positions-client`
 - Profile orchestration, request coalescing, bounded concurrency, and a live
   terminal dashboard
 - Offline, credential-free quality checks
@@ -38,9 +41,9 @@ uv run job-scraper capabilities --json
 ```
 
 Then hand the agent [the deployment runbook](docs/public/agent-deployment.md).
-It is the complete procedure: the interview, credential acquisition for each
-optional integration, workspace generation, and the offline verification
-ladder. A minimal deployment is one `init` command:
+This is the current operator-bootstrap procedure: the interview, credential
+acquisition for each optional integration, workspace generation, and the
+offline verification ladder. A minimal CLI deployment is one `init` command:
 
 ```bash
 uv run job-scraper init \
@@ -66,6 +69,15 @@ Profiles, sources, and queries are discovered from the private workspace, so
 the normal daily command takes no arguments and no activation flags. See
 [operations](docs/public/operations.md) for exceptional runs, the workspace
 database, the downstream feed, email repair, exports, and scheduling.
+
+For the current Web beta, start the same server with `--portal-db`,
+`--upload-root`, `--public-url`, and `--candidate-workspace`. A new account can
+sign in, upload and analyze a resume, answer the guided questions, approve the
+proposal and preferences, and generate a `positions-client` enrollment token.
+Server-verified browser/pipeline calibration, the final `active` transition,
+and the complete dashboard read model remain implementation gates; operator
+bootstrap is still required for those steps. See the deployment runbook for
+the current boundary and for SMTP, HTTPS, and private workspace requirements.
 
 ## Architecture
 

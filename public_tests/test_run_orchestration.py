@@ -155,27 +155,37 @@ def test_a_clean_run_publishes_matching_jobs_and_exits_zero(workspace, monkeypat
     assert sinks["csv"].published_batches == [2]
 
 
-def test_filtered_jobs_never_reach_a_sink(workspace, monkeypatch) -> None:
-    """Only the engineer matches; the recruiter title is excluded."""
+def test_jobs_a_keyword_filter_used_to_reject_now_reach_the_sink(workspace, monkeypatch) -> None:
+    """Content-quality judgment moved to the downstream agent screener.
+
+    A "Technical Recruiter" title and an "Office Manager" title used to be
+    rejected pre-feed by deterministic keyword steps; both now persist and
+    publish, since nothing here judges relevance anymore.
+    """
     sinks = {"csv": RecordingSink("csv")}
     _install(
         monkeypatch,
         [
             FakeSource(
-                "linkedin", [_job("Software Engineer"), _job("Technical Recruiter", job_id="2")]
+                "linkedin",
+                [
+                    _job("Software Engineer"),
+                    _job("Technical Recruiter", job_id="2"),
+                    _job("Office Manager", job_id="3"),
+                ],
             )
         ],
         sinks,
     )
 
     assert _run(workspace, "--skip-notion") == 0
-    assert sinks["csv"].published_batches == [1]
+    assert sinks["csv"].published_batches == [3]
 
 
-def test_a_run_with_no_matches_still_succeeds(workspace, monkeypatch) -> None:
+def test_a_run_with_no_raw_jobs_still_succeeds(workspace, monkeypatch) -> None:
     """An empty day is not an error."""
     sinks = {"csv": RecordingSink("csv")}
-    _install(monkeypatch, [FakeSource("linkedin", [_job("Office Manager")])], sinks)
+    _install(monkeypatch, [FakeSource("linkedin", [])], sinks)
 
     assert _run(workspace, "--skip-notion") == 0
     assert sinks["csv"].published_batches == [0]
@@ -267,20 +277,6 @@ def test_the_same_job_seen_by_two_sources_is_published_once(workspace, monkeypat
     )
 
     assert _run(workspace, "--skip-notion") == 0
-    assert sinks["csv"].published_batches == [1]
-
-
-def test_ignore_post_age_admits_an_old_posting(workspace, monkeypatch) -> None:
-    stale = _job("Software Engineer")
-    stale.posted_at_text = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-    sinks = {"csv": RecordingSink("csv")}
-    _install(monkeypatch, [FakeSource("linkedin", [stale])], sinks)
-
-    assert _run(workspace, "--skip-notion") == 0
-    assert sinks["csv"].published_batches == [0]
-
-    sinks["csv"].published_batches.clear()
-    assert _run(workspace, "--skip-notion", "--ignore-post-age") == 0
     assert sinks["csv"].published_batches == [1]
 
 

@@ -238,6 +238,29 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument(
         "--db", help="Browser task queue database path. Defaults to data/browser_tasks.db."
     )
+    serve_parser.add_argument("--portal-db", help="Portal database path. Enables the Web portal.")
+    serve_parser.add_argument("--upload-root", help="Private resume storage root.")
+    serve_parser.add_argument("--public-url", help="Public HTTPS base URL used in login email.")
+    serve_parser.add_argument(
+        "--insecure-cookie", action="store_true", help="Development only: allow cookies over HTTP."
+    )
+    serve_parser.add_argument(
+        "--dev-print-login-link",
+        action="store_true",
+        help="Development only: print login links instead of sending SMTP email.",
+    )
+    serve_parser.add_argument(
+        "--dev-basic-resume-analysis",
+        action="store_true",
+        help="Development only: skip Codex and use conservative keyword proposals.",
+    )
+    serve_parser.add_argument("--resume-analysis-model", help="Optional Codex model override.")
+    serve_parser.add_argument(
+        "--candidate-workspace", help="Private fine-screen candidate workspace shown in the portal."
+    )
+    serve_parser.add_argument(
+        "--job-db", help="Canonical tenant jobs SQLite database for the portal."
+    )
 
     enroll_token = subparsers.add_parser(
         "serve-enroll-token",

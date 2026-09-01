@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import smtplib
+from email.message import EmailMessage
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 
+from job_scraper.adapters.processors.codex_resume_analyzer import CodexResumeAnalyzer
 from job_scraper.adapters.server.browser_task_server import (
     create_app,
     drain_outbox,
     refresh_search_tasks,
 )
 from job_scraper.adapters.storage.browser_task_store import BrowserTaskStore
+from job_scraper.adapters.storage.portal_store import PortalStore
 from job_scraper.configuration.loader import get_config_root
 from job_scraper.integrations.email_recommendations import load_email_ingest_config
 from job_scraper.jobs.ingest_email_recommendations import (
@@ -33,8 +39,89 @@ def _resolve_store(args: argparse.Namespace) -> BrowserTaskStore:
 
 
 def serve(args: argparse.Namespace) -> int:
-    uvicorn.run(create_app(store=_resolve_store(args)), host=args.host, port=args.port, workers=1)
+    store = _resolve_store(args)
+    portal_store = None
+    sender = None
+    upload_root = None
+    analyzer = None
+    if args.portal_db:
+        if not args.upload_root or not args.public_url:
+            raise ValueError("--portal-db requires --upload-root and --public-url")
+        portal_store = PortalStore(Path(args.portal_db))
+        portal_store.initialize()
+        upload_root = Path(args.upload_root).resolve()
+        public_url = args.public_url.rstrip("/")
+        public_parts = urlsplit(public_url)
+        if not public_parts.hostname or public_parts.scheme not in {"http", "https"}:
+            raise ValueError("--public-url must be an absolute HTTP(S) URL")
+        if public_parts.scheme != "https" and not args.insecure_cookie:
+            raise ValueError("Production --public-url must use HTTPS")
+        if args.dev_print_login_link:
+
+            def print_login_link(email: str, path: str) -> None:
+                print(f"LOGIN {email} {public_url}{path}")
+
+            sender = print_login_link
+        else:
+            sender = _smtp_sender(public_url)
+        if not args.dev_basic_resume_analysis:
+            configured_homes = tuple(
+                Path(value).expanduser().resolve()
+                for value in os.environ.get("POSITIONS_CODEX_HOMES", "").split(os.pathsep)
+                if value.strip()
+            )
+            analyzer = CodexResumeAnalyzer(
+                model=args.resume_analysis_model, codex_homes=configured_homes
+            )
+    uvicorn.run(
+        create_app(
+            store=store,
+            portal_store=portal_store,
+            upload_root=upload_root,
+            send_login=sender,
+            resume_analyzer=analyzer,
+            candidate_workspace=(
+                Path(args.candidate_workspace).resolve() if args.candidate_workspace else None
+            ),
+            job_db=(Path(args.job_db).resolve() if args.job_db else None),
+            allowed_hosts=(
+                [urlsplit(args.public_url).hostname or "", "127.0.0.1", "localhost"]
+                if args.public_url
+                else None
+            ),
+            secure_cookie=not args.insecure_cookie,
+        ),
+        host=args.host,
+        port=args.port,
+        workers=1,
+    )
     return 0
+
+
+def _smtp_sender(public_url: str):
+    host = os.environ.get("POSITIONS_SMTP_HOST", "")
+    sender_address = os.environ.get("POSITIONS_SMTP_FROM", "")
+    if not host or not sender_address:
+        raise ValueError("Set POSITIONS_SMTP_HOST and POSITIONS_SMTP_FROM")
+    port = int(os.environ.get("POSITIONS_SMTP_PORT", "587"))
+    username = os.environ.get("POSITIONS_SMTP_USERNAME")
+    password = os.environ.get("POSITIONS_SMTP_PASSWORD")
+
+    def send(recipient: str, path: str) -> None:
+        message = EmailMessage()
+        message["Subject"] = "Your Positions sign-in link"
+        message["From"] = sender_address
+        message["To"] = recipient
+        message.set_content(
+            f"Sign in to Positions:\n\n{public_url}{path}\n\nThis link expires in 15 minutes."
+        )
+        with smtplib.SMTP(host, port, timeout=30) as smtp:
+            smtp.starttls()
+            if username and password:
+                smtp.login(username, password)
+            smtp.send_message(message)
+
+    return send
 
 
 def serve_enroll_token(args: argparse.Namespace) -> int:

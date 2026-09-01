@@ -2,8 +2,11 @@
 
 ## Outcome
 
-Establish one understandable and supportable job-search workflow before adding
-new service architecture.
+Establish one understandable and supportable job-search workflow and expose it
+through one server-hosted Web portal plus one local browser connector. The Web
+portal is the only user-facing configuration and results surface. The local
+connector is an implementation detail that launches bounded non-interactive
+Codex CLI runs against the Chrome profile the user explicitly connected.
 
 The work proceeds in this order:
 
@@ -14,8 +17,8 @@ The work proceeds in this order:
 4. Unify acquisition, hard gates, track routing, agent screening, resume
    tailoring, artifact validation, and publication into one workflow.
 5. Prove that workflow for one client locally and on the VPS.
-6. Only then design the physical split between a multi-client server project
-   and local client projects.
+6. Implement the physical split as one server codebase and one local client
+   codebase without adding a separate front-end repository.
 
 The target workflow distinguishes the main career track from broader discovery
 tracks. The main track may use agent screening and resume generation. Tracks
@@ -43,12 +46,27 @@ is the final display sink, not the workflow coordinator or source of truth.
     processing rather than participate in those decisions.
   - Migrate through dry runs, replay, shadow operation, bounded cutover, and a
     documented rollback window.
-  - Prove a single-client local and VPS workflow before adding multi-client
-    infrastructure.
+  - Add passwordless email accounts, tenant-resolved sessions, a resumable Web
+    cold start, profile/evidence/resume administration, results, and worker
+    status to the existing FastAPI server boundary.
+  - Present those capabilities through one simple, white, task-focused
+    dashboard shell with stable navigation, compact tables, and a dedicated
+    resume-and-evidence analysis workspace.
+  - Keep tenant-private runtime data outside tracked source and select a tenant
+    before request-body parsing; an email address is a verified login handle,
+    never the durable tenant identity.
+  - Replace the visible Codex App heartbeat with a user-session background
+    `positions-client` agent that wakes through the server, launches
+    `codex exec`, and lets the installed Chrome plugin operate the connected
+    external Chrome profile.
+  - Prove a single-client local and VPS workflow before enabling more than one
+    tenant in production.
 - Out of scope for this change:
-  - Physically splitting the repository into server and client products.
-  - Building multi-client identity, tenancy administration, billing, web UI,
-    OAuth brokerage, or a public API.
+  - A third front-end repository, SPA build chain, native desktop UI, billing,
+    or public self-service tenant provisioning.
+  - Depending on experimental Codex app-server or remote-control protocols.
+  - Inspecting or transferring Chrome cookies, profile paths, browsing history,
+    screenshots, HTML, passwords, or other browser identity material.
   - Automatic applications, recruitment-site uploads, CAPTCHA bypass, or final
     submission.
   - Deleting databases, PDFs, caches, private workspaces, or historical source
@@ -74,6 +92,12 @@ The existing screening feed and legacy V1 storage remain compatibility
 boundaries only while replay and rollback require them. Their removal is a
 separate, evidence-backed cleanup action, not an assumption made during the
 initial merge.
+
+The former cold start based on hand-editing TOML, copying a private workspace,
+running `positions-client enroll`, and configuring a Codex App heartbeat is
+superseded by the Web onboarding state machine and the background client agent.
+Compatibility CLI commands remain only until the Web path passes fictional
+end-to-end, restart, rollback, and bounded live acceptance.
 
 ## Current assessment
 
@@ -372,8 +396,53 @@ references, not ingestible evidence.
 - [x] VPS completion separately proves service configuration, authorization,
   bounded execution, backup/restore, and recovery after service and host
   restart.
-- [x] A future server/client split is based on versioned contracts proven by
-  the single-client workflow, not on duplicated business logic.
+- [x] The server/client split is based on versioned contracts proven by the
+  single-client workflow, not on duplicated business logic.
+
+### Web cold start and CLI browser agent
+
+- [ ] A fictional new user can verify an email, upload an allowlisted resume,
+  approve extracted evidence, approve one or more track policies, enroll a
+  device, run a no-write calibration, and reach `active` without editing TOML,
+  environment files, or a Git workspace.
+- [ ] Every onboarding transition is durable, idempotent, resumable, and
+  version-aware; changing approved evidence or policy invalidates dependent
+  resume/calibration state.
+- [ ] Server-rendered pages expose onboarding, jobs, profiles, resumes,
+  integrations, browser devices/tasks, runs, account settings, and privacy
+  controls with no separate front-end build.
+- [ ] Authenticated pages use one route-aware dashboard shell with five primary
+  destinations (`Overview`, `Jobs`, `Search directions`, `CV & evidence`, and
+  `Activity`) plus bottom-anchored `Connections & settings`; onboarding appears
+  as a resumable setup action only while the tenant is not `active`.
+- [ ] The resume-and-evidence page uses a two-column analysis layout at desktop
+  widths, never invents an ATS or fit score, and renders persisted provenance,
+  evidence, analysis, track, and artifact state before an approval action.
+- [ ] The dashboard remains fully usable at 1440, 1024, and 390 CSS-pixel
+  viewport widths with keyboard navigation, visible focus, semantic tables and
+  forms, text equivalents for status color, and no externally hosted visual
+  dependency.
+- [ ] Email is a verified login handle while opaque user, tenant, session,
+  device, request, and artifact identifiers enforce authorization. Session
+  cookies are server-side, `HttpOnly`, `Secure` in production, `SameSite=Lax`,
+  rotated after authentication, and protected by CSRF on mutations.
+- [ ] Resume uploads validate size, extension, signature, and content hash,
+  store random filenames outside the Web root, and never become approved
+  evidence without an explicit user action.
+- [ ] `positions-client agent` runs in the interactive user session, waits for
+  work without model calls, launches at most one bounded `codex exec` worker,
+  and preserves existing claim/heartbeat/result idempotency and CAPTCHA/login
+  terminal behavior.
+- [ ] A closed-Desktop test and a Windows sign-in/restart test prove whether
+  the installed Desktop runtime is packaging-only. Failure keeps that runtime
+  as a documented prerequisite; it does not restore a visible App heartbeat.
+- [ ] Fictional cross-tenant tests prove that a Web session, device credential,
+  task, document path, artifact, and integration reference from one tenant
+  cannot select or read another tenant.
+- [ ] The VPS runs only the Positions server checkout and a tenant-private
+  runtime. The local machine runs only the positions-client distribution plus
+  the supported Codex/Chrome runtime; fine-screen and private CV repositories
+  are no longer runtime dependencies after cutover.
 
 ## Vocabulary and policy
 
@@ -636,20 +705,27 @@ path.
 restart-proven, and recoverable. Source workspaces and rollback snapshots remain
 available for the agreed retention period.
 
-### Phase 10: Multi-client server/client split
+### Phase 10: Web server/local client split
 
-This is a separate program after Phase 9. The browser-task slice now has an
-approved concrete implementation contract in
-`2026-08-27-browser-indeed-search-discovery.md`; the remaining screening,
-artifact, administration, and repository-separation slices still require their
-own implementation decisions before they move.
+This is now an approved implementation phase. The browser-task slice has an
+approved concrete contract in
+`2026-08-27-browser-indeed-search-discovery.md`; this specification owns the
+remaining identity, onboarding, profile, evidence, screening, artifact, and
+administration decisions so no second general server/client design is added.
 
-- The future VPS/server project may own acquisition, canonical job storage,
-  scheduling/workers, tenant orchestration, durable lifecycle state, and final
-  external sinks.
-- A future local client project may own private CV/evidence authoring,
-  client-specific policy, local review, credential approval, and artifact
-  download or export.
+- The VPS/server codebase owns the server-rendered Web portal, account and
+  tenant resolution, acquisition, canonical job storage, profile/evidence
+  versions, screening/tailoring orchestration, scheduling/workers, durable
+  lifecycle state, artifacts, and final external sinks.
+- The local client codebase owns enrollment credentials, a user-session
+  background agent, durable local browser-task journaling, bounded `codex exec`
+  invocation, and browser-result transport. It does not own a second copy of
+  profile, screening, tailoring, or artifact business logic.
+- The former `fine-screen` Python package is bundled into the Positions
+  distribution during cutover. Its compatibility commands, validated Agent
+  contract, tailoring, PDF, and release behavior remain available without a
+  separate runtime checkout. The private CV workspace is data, not a codebase,
+  and stays outside the public repository.
 - Shared, versioned contracts must cover canonical jobs, track policy,
   screening requests/results, artifact manifests, synchronization, idempotency,
   authorization, and compatibility.
@@ -707,17 +783,29 @@ metrics contain opaque task/run IDs and remain inside that instance.
 
 #### Client-owned Chrome worker
 
-Browser work is asynchronous and pull-based because a client computer may be
-offline or behind NAT. The VPS stores tasks durably; one dedicated local Codex
-App worker task claims leased work through
-`positions-client`, drives the user's connected Chrome through the Chrome
-plugin, heartbeats while it is running, and submits a versioned result. The
-server never opens a connection to the client, receives Chrome profile paths,
-cookies, credentials, HTML, or screenshots, or controls another client's
-browser session. Each enrolled worker is bound to one client, one Codex worker
-task, and the Chrome extension surface selected by that user. One local lock
-prevents overlapping worker wakes. A standalone `codex exec` process is not the
-browser executor.
+Browser work is asynchronous because a client computer may be offline or
+behind NAT. The VPS stores tasks durably. A user-session `positions-client
+agent` maintains a bounded wait against its enrolled server and launches one
+ephemeral `codex exec` run only when work is available. That run loads the
+installed Positions worker skill, claims leased work through `positions-client`,
+drives the Chrome extension surface selected by the user, heartbeats while it
+is running, and submits a versioned result. One local lock prevents overlapping
+agent or Codex runs.
+
+The standalone CLI path is supported by fresh local evidence: a non-interactive
+`codex exec` selected browser type `extension`, opened and read a neutral page
+in the connected external Chrome, and closed only its task tab. The same
+extension instance was selected on a second bounded run. A security-check page
+kept the site-login result unknown and was not bypassed. Closing the Desktop UI
+and rebooting Windows remain explicit deployment acceptance gates; until they
+pass, the installed Codex Desktop runtime may remain a packaging dependency,
+but its visible task/heartbeat is not part of the product workflow.
+
+The server never receives Chrome profile paths, cookies, credentials, HTML,
+screenshots, browsing history, or extension identity. Each enrolled worker is
+bound to one tenant and device credential. The selected external browser is the
+Chrome profile in which the user installed and connected the extension; the
+worker never enumerates other profiles.
 
 An offline client leaves tasks `pending`. A lost worker lease expires back to
 `pending`; duplicate result delivery is idempotent. Login walls, CAPTCHA,
@@ -738,17 +826,585 @@ track routing, screening, artifact, and Notion flow.
 
 #### Cold start
 
-`create-client` provisions an empty isolated server runtime and a one-time
-enrollment token; it never copies an existing client's profiles. The guided
-server setup then gathers this client's locations/languages/role families and
-per-track `core|review|discovery` policy, configures the client's own Indeed
-mail and Notion destination, and imports only that client's private CV/evidence
-workspace. Local `positions-client enroll` plus Codex worker setup connects the
-user's chosen existing Chrome profile through the Chrome plugin and runs the
-combined transport/browser doctor. A bounded calibration permits no external
-writes, followed by one authorized browser search, one Indeed-email detail, one
-core artifact, and one Notion publication. Only then may the client-specific
-server timers and local Codex heartbeat be enabled.
+An administrator provisions an empty isolated server runtime. The user verifies
+an email login and receives an opaque user/tenant identity through a server-side
+session. The server-rendered Web portal then advances one resumable onboarding
+run through `account_verified -> resume_uploaded -> evidence_approved ->
+tracks_approved -> search_preferences_approved -> integrations_configured ->
+connector_enrolled -> browser_calibrated -> pipeline_calibrated -> active`. A
+failed or stale step never advances the state; changing approved evidence or
+track policy invalidates dependent calibration and pauses activation.
+
+Cold start is conversational rather than a raw configuration form. After a
+resume upload the server starts resume analysis in the background and the page
+asks one plain-language question at a time. Durable answers cover desired work,
+location and remote constraints, working languages, and employment constraints.
+When analysis and the initial answers are both ready, the Agent combines them
+into proposed tracks, representative retrieval keywords, and normalized search
+preferences. The user may refine that proposal with further natural-language
+messages before one explicit approval. Raw TOML, JSON, comma-separated component
+IDs, and internal profile fields are not part of the new-user path.
+
+The portal accepts a bounded allowlisted resume upload, stores it outside the
+Web root under the resolved tenant, records its hash and provenance, and
+presents proposed evidence for explicit approval. Only approved evidence may
+produce track policies or resume variants. The portal gathers locations,
+languages, role families, queries, per-track `core|review|discovery` policy,
+source choices, budgets, schedules, and optional integrations. Account email
+and an IMAP acquisition mailbox are separate concepts.
+
+The browser step creates a single-use enrollment token. `positions-client
+enroll` binds one device credential, and the background agent connects the
+user's chosen Chrome extension profile. A combined transport/browser doctor and
+bounded calibration starts with no external writes. One explicitly authorized
+browser search and one optional Indeed-email detail prove the configured
+browser boundary. The remaining activation gate is derived from approved track
+modes and enabled sinks: every tenant proves durable screening/routing and
+portal display; a tenant with a `core` track validates one core artifact; a
+`review|discovery`-only tenant instead proves that no resume artifact is
+generated; and an external publication is required only for each sink the user
+actually enabled. A tenant with no optional external sink uses the authenticated
+portal as its final display surface and does not fabricate a Notion or other
+publication. Only after the applicable gates pass may tenant timers and the
+local background agent process scheduled work.
+
+The initial portal uses semantic HTML, a white task-focused dashboard, compact
+tables, forms, and restrained buttons rendered by the existing FastAPI server.
+It has no SPA, Node build, WebSocket requirement, or separate front-end
+repository. JSON API contracts remain versioned so another UI can be added
+later without moving the business authority.
+
+#### Dashboard interface contract
+
+This subsection is the approved target for the first styled portal. It records
+a design decision, not deployment evidence: until the acceptance checks below
+pass, the current basic HTML remains the implemented state. The visual reference
+is the general layout of a white resume-analysis application: persistent app
+navigation, a compact top bar, a list/work area, and a separate analysis area.
+No third-party brand, copy, image, icon, source code, or distinctive ornamental
+element is copied. Product names, metrics, states, and actions come only from
+Positions contracts and durable state.
+
+The styled portal replaces the current unstructured navigation line, raw
+snapshot `<pre>`, loose lists, and browser-default controls. It does not replace
+the routes, authorization, CSRF checks, onboarding state machine, upload
+validation, or tenant boundaries that already exist.
+
+##### 2026-08-30 approved redesign amendment
+
+This amendment supersedes the earlier deep-green visual tokens, permissive
+pre-onboarding route behavior, summary-only Jobs table, and multi-question
+onboarding presentation later in this subsection. The rest of the privacy,
+state, read-model, security, and deployment contract remains authoritative.
+It is a planning decision only until implementation and deployment evidence is
+recorded separately.
+
+The visual reference supplied for this amendment is used only for general
+product language: a cold neutral canvas, dark navy controls, sparse blue data
+accents, small line icons, flat white panels, and a high-density B2B dashboard.
+Positions does not copy the reference brand, copy, logo, illustrations, chart
+data, exact component geometry, or code. There are no gradients, glass panels,
+purple-blue template treatments, or green primary controls.
+
+The replacement palette is:
+
+| Token | Value | Use |
+|---|---|---|
+| `--canvas` | `#f3f6f8` | Cold blue-grey application background |
+| `--surface` | `#ffffff` | Sidebar, cards, tables, and forms |
+| `--surface-subtle` | `#eef3f6` | Selected navigation and grouped controls |
+| `--text` | `#102531` | Primary navy text and icons |
+| `--text-muted` | `#6f7d85` | Helper text, metadata, and inactive icons |
+| `--border` | `#dce4e8` | Panel, input, table, and divider borders |
+| `--accent` | `#287fbd` | Primary action, selected state, links, focus |
+| `--accent-hover` | `#1e669a` | Hover and active action state |
+| `--accent-soft` | `#e8f2f9` | Selected rows and icon discs |
+| `--ink-action` | `#062536` | High-emphasis CTA and table-header action |
+| `--coral` / `--coral-soft` | `#f15a57` / `#fff0ef` | Rejected, blocked, destructive, or Drop data |
+| `--teal` / `--teal-soft` | `#24a8a3` / `#e9f8f6` | Completed, healthy, or accepted data |
+| `--warning` / `--warning-soft` | `#a36a00` / `#fff6dc` | Waiting and attention states |
+
+Coral, teal, and blue encode persisted categories only and always have visible
+text or an accessible name. The default primary action is navy or blue, never
+green. Icons are local `18x18` or `20x20` inline SVG using `currentColor`.
+Descriptive statistic tiles use a meaningful icon, the numeric value, and a
+short accessible label such as `Seen`, `Accept`, or `Drop`; they do not contain
+sentence-length explanations. Icon-only controls require `aria-label` and a
+visible tooltip/focus description. No external icon library or asset request is
+introduced.
+
+###### Mandatory onboarding gate
+
+After passwordless verification, every browser HTML route authenticated by the
+portal session except `/onboarding`, logout, and the exact upload/answer/
+finalize endpoints evaluates one shared `dashboard_access_granted` predicate.
+If false, GET requests return `303 /onboarding`; portal mutations outside
+onboarding fail closed. The original destination is not accepted as an
+arbitrary redirect target. `/login`, `/auth/verify`, `/healthz`, and
+`/v1/browser/*` retain their own public, token, or device-bearer contracts. The
+HTML gate is never whole-app middleware and an API request never receives an
+onboarding HTML redirect. A user cannot reach or infer Dashboard, Jobs,
+Activity, CV outputs, or settings data before the gate passes.
+
+`dashboard_access_granted` is durable account-onboarding completion, not the
+same claim as system `active`. It becomes true only when all of these are true:
+
+1. the account email is verified;
+2. a genuine resume is uploaded and analysis is `ready`;
+3. every required natural-language question has a non-empty durable answer;
+4. the complete Agent proposal, search scope, sources, track modes, and evidence
+   proposed for approval have been displayed;
+5. the user explicitly confirms the displayed proposal and evidence.
+
+Connector enrollment, browser calibration, pipeline calibration, optional
+sinks, and schedules remain independent post-onboarding statuses under
+`Connections & settings`. They may prevent `active`, but they do not trap a
+user outside the Dashboard after their account profile is complete. Replacing
+the authoritative resume or invalidating approved evidence revokes Dashboard
+access and returns the user to the exact onboarding review step.
+
+The review and confirmation are version-bound. The review carries an opaque
+server-issued tuple over the current resume document, answer set, proposal, and
+evidence versions. Finalize atomically compares that exact tuple before writing
+approvals and granting access; a mismatch returns to a freshly rendered review.
+Editing any answer invalidates the proposal, review, final confirmation, and
+gate. Replacing the resume additionally invalidates analysis-derived evidence.
+Refinement creates a new proposal version and invalidates only the prior review
+and confirmation. Historical artifacts remain outputs but cannot authorize the
+new gate state.
+
+`/onboarding` is a dedicated full-page flow without the Dashboard sidebar. It
+uses a narrow centered work area, one flat card, and one primary action. The
+header contains the Positions product mark, `Step n of N`, a text step name,
+and a semantic progress bar. Only one required question or approval decision is
+shown per response. Back is permitted after the upload step and preserves
+answers; Continue validates and persists only the current step through
+Post/Redirect/Get. Refreshing or signing in on another device resumes the first
+incomplete step from durable state.
+
+The ordered screen sequence is:
+
+1. Welcome and privacy boundary.
+2. Resume upload and extraction status.
+3. Desired role/direction question.
+4. Location, remote, hybrid, and relocation question.
+5. Working-language question.
+6. Employment type, mandatory conditions, and exclusions question.
+7. Analysis waiting or recoverable failure screen when necessary.
+8. Agent proposal review, including every value that approval will persist.
+9. Optional one-message refinement followed by the revised review screen.
+10. Explicit final confirmation and transition to the Dashboard.
+
+The question screen uses a plain-language prompt, optional short helper copy,
+one textarea or purpose-specific input, Back, and Continue. It never shows raw
+JSON, TOML, source IDs, comma-separated internal fields, or multiple unrelated
+forms. Progress is based on durable completed screens rather than time or
+analysis guesses. Waiting/failure and optional refinement are conditional
+states inside the current numbered step, not extra steps that change `N` or
+make progress move backward. Pending analysis never silently advances approval.
+
+###### Full Jobs data table
+
+`Jobs` is a tenant-scoped, server-side table over the complete canonical job
+projection, not the newest CSV and not an arbitrary 200-row slice. “All” means
+all jobs authorized for the tenant and retained by current data policy. Default
+ordering is `first_seen_at desc, opaque_job_id desc`; pagination is stable and
+does not load all rows into browser memory.
+
+The table columns are job title, company, location, search
+direction, source, validated score, decision, first seen, artifact state, and a
+row-detail action. Missing values render as an em dash. Long values truncate
+visually but remain available in the accessible name and detail page. The
+header is sticky inside the scroll region; density is approximately `48-52px`
+per row. Mobile retains semantic table markup and horizontal scrolling rather
+than silently discarding columns.
+
+One GET form owns filtering and sorting so its state is represented in the URL,
+bookmarkable, and preserved across pagination and detail navigation. It offers:
+
+- free-text search across title, company, normalized location, and canonical
+  description text through the read model;
+- multi-select decision (`Accept`, `Review`, `Drop`, failed/unknown), search
+  direction, source, country/location, processing mode, artifact state, and
+  publication state;
+- first-seen date range, optional validated-score range, and a `has CV` filter;
+- a whitelist of sortable columns: title, company, location, track, source,
+  validated score, decision, and first-seen time;
+- ascending/descending sort via accessible header buttons, a clear-all action,
+  active-filter chips, result count, and page sizes `25`, `50`, or `100`;
+- opaque cursor pagination carrying the deterministic sort tuple. The cursor is
+  integrity-protected and bound to tenant, filter/query hash, sort key and
+  direction, page size, and schema version. Seek pagination defines next and
+  previous behavior and uses the opaque job ID tie-breaker to avoid duplicates
+  as newer rows arrive. Arbitrary SQL expressions, raw column names, unbounded
+  offsets, and client-supplied tenant identity are rejected.
+
+Filter values are parsed into a typed `JobTableQuery`; unknown fields, invalid
+dates/scores, unsupported sort keys, excessive list lengths, and malformed
+cursors return a bounded validation error without querying. The
+`PortalReadModel.jobs(query)` method applies tenant scope before every filter
+and returns rows plus an exact total when the indexed query remains within its
+bounded budget; otherwise the count is explicitly labelled capped and the
+current result window remains exact. Sorting is deterministic,
+case-normalized where appropriate, and defines null placement. A reset link
+returns to the canonical `/jobs` URL. No table action applies for a job.
+
+Implementation extends the existing `portal.py`, `portal_store.py`, canonical
+job/run store, and `PortalReadModel` plan in this specification. It does not add
+a front-end framework, a parallel job database, or a second onboarding state
+machine. Minimal progressive enhancement may be considered later, but the
+complete filter, sort, pagination, back/resume, and gate behavior must work
+with server-rendered HTML and ordinary forms first.
+
+###### Redesign acceptance and rollout
+
+Offline tests use fictional tenants and cover palette/icon markers, every
+onboarding screen and resume point, direct-route redirects before the gate,
+gate revocation after evidence invalidation, no redirect loops, proposal values
+shown before approval, all Job filters and sort directions, null ordering,
+stable cursor pagination without duplicates, malformed-query rejection,
+cursor tamper/cross-filter/cross-tenant rejection, stale-finalize compare-and-
+set, Back/edit invalidation, device APIs remaining outside the HTML gate,
+tenant isolation, escaping, CSRF, and manual-application language. Statistic
+icons that repeat visible labels are `aria-hidden="true"`; accessibility tests
+assert one readable label/value announcement. Query-plan
+tests prove indexed bounded retrieval for the default and high-use filters.
+
+Manual review uses `1440x900`, `1024x768`, and `390x844`, keyboard-only
+navigation, 200 percent zoom, long values, zero/one/many-page tables, empty and
+invalid filters, analysis pending/failure/retry, Back/resume, and direct URLs
+before and after the gate. Deployment is a new immutable wheel release with
+installed markers, service restart, public login/onboarding checks, one
+fictional completed gate, and authenticated Jobs filter/sort verification.
+The current green release remains the deployed state until those checks pass.
+
+##### Information architecture and routes
+
+The authenticated application uses one sidebar and one top bar. The sidebar is
+navigation, not a collection of marketing calls to action. The top bar shows
+the current page title, a compact state indicator when useful, and the account
+menu. There is no permanent global primary action: each page owns the action
+that advances its current task.
+
+| Sidebar destination | Canonical route | Contents |
+|---|---|---|
+| `Overview` | `/` | Current onboarding/activation state, the next required action, the latest run's `Seen`, `Accept`, and `Drop`, browser-task status, active search directions, recent accepted jobs, and recent artifacts |
+| `Jobs` | `/jobs` | Candidate jobs in a compact table with filters, durable decision state, track, source/provenance, Agent reasoning, and links to available artifacts; it always states that job application is never automatic |
+| `Search directions` | `/profile` | Approved and proposed tracks, `core|review|discovery` policy, representative retrieval keywords, locations, countries, languages, employment constraints, sources, and the Agent summary/refinement boundary |
+| `CV & evidence` | `/resumes` | Uploaded source resumes, analysis state, approved factual evidence, generated tailored resumes, provenance, validation state, and downloads in the two-column workspace defined below |
+| `Activity` | `/runs` | Acquisition, screening, browser-task, tailoring, artifact, and sink runs with timestamps, status, counts, bounded error summaries, and artifact references |
+| `Connections & settings` | `/settings` | Local connector/enrollment status, browser-worker availability, optional Email/Notion integration state, schedules/budgets, account/privacy controls, and sign out |
+
+`/settings` gains a `GET` representation while the existing mutation remains a
+CSRF-protected `POST`. `/resumes/{filename}` remains the authenticated download
+route and highlights `CV & evidence`. The onboarding flow remains at
+`/onboarding`, but it is not a permanent sixth primary destination. While the
+tenant is not `active`, a setup module immediately below the product mark shows
+`Continue setup`, the current human-readable step, and `n of 5`; it links to
+`/onboarding`. It disappears after activation, while settings retains a link to
+review the completed configuration. Direct navigation to an authorized route
+continues to work independently of the sidebar.
+
+The five visible onboarding milestones remain:
+
+1. Email verified.
+2. Resume and goals supplied.
+3. Search proposal approved.
+4. Local connector enrolled.
+5. Calibration complete.
+
+They are a presentation over the durable state sequence; they do not introduce
+a second state machine. A later invalidation returns the setup module and names
+the exact step that must be repeated.
+
+##### Page content contracts
+
+`Overview` defaults to the most recent completed run and labels its time range.
+Its three summary values use existing run statistics without reinterpretation:
+
+- `Seen` is `jobs_seen`.
+- `Accept` is `jobs_new + jobs_updated`; it is not labelled or described as
+  only newly discovered jobs.
+- `Drop` is `jobs_filtered`; failed records remain separately visible as an
+  error state and are not silently counted as a policy rejection.
+
+When there is no completed run, the metric strip shows em dashes and an honest
+empty-state sentence rather than zeroes that imply a completed search. The
+overview's next-action panel has precedence over metrics while onboarding is
+incomplete. Browser queue health, external-sink publication, and artifact
+generation are separate statuses; one cannot be used as proof of another.
+
+`Jobs` uses a table rather than one card per job. The initial columns are title,
+company, location, search direction, source, score when a validated score
+exists, decision, and first-seen time. Filters cover `Accept`, `Review`, and
+`Drop`, track, and source. A job detail view shows canonical facts, raw source
+provenance, deterministic gate results, the validated Agent decision and
+reasoning, evidence references, tailoring/artifact state, and publication
+state. Missing values render as an em dash. No button, badge, or empty state may
+imply that Positions submitted an application.
+
+`Search directions` presents each track once. Track cards are permitted here
+because each track is an independent policy object, but the cards are flat,
+compact, and arranged as a list rather than a decorative grid. Each track shows
+its label, mode, representative keywords, locations, languages, employment
+scope, enabled sources, and whether resume generation is allowed. Refinement is
+plain-language Agent input. Before approval, the page renders every value that
+will be persisted; after approval, changes explain which calibration and
+artifact states will be invalidated.
+
+`CV & evidence` is the closest adaptation of the resume-analysis reference:
+
+- The left work area lists the authoritative uploaded resume and other retained
+  versions with filename, media type, observed time, provenance, analysis
+  status, and default/authority state. It contains the accessible file input,
+  upload constraints, and generated tailored-resume list. Generated PDFs are
+  visibly labelled as outputs, never evidence.
+- The right analysis area shows `pending|failed|ready|approved` state, extracted
+  evidence grouped by experience/skill/education or another persisted category,
+  missing or ambiguous information, supported search directions, artifact
+  validation, and the next approval/refinement action.
+- The right area uses disclosure sections for long analysis. Section headers
+  contain a label and a persisted count or status, not a decorative numeric
+  score. A gauge or overall score is forbidden until a named, versioned,
+  deterministic or validated Agent contract persists that value and documents
+  its meaning.
+- Approval is explicit and follows a complete review surface. The page never
+  treats upload, extraction, analysis completion, evidence approval, resume
+  generation, PDF validation, or publication as interchangeable states.
+
+`Activity` uses a fixed-column table with run type, source/track, start and end
+time, state, `Seen`, `Accept`, `Drop`, failed count, and a short detail field.
+Run detail groups acquisition, filtering, Agent screening, tailoring, artifact,
+browser, and sink stages. Raw logs and private payloads are not rendered into
+the Web page. Long errors are summarized and given an opaque run/task reference
+for authorized server-side diagnosis.
+
+`Connections & settings` displays server-known state only. It may create a
+single-use enrollment token and show commands/instructions, but it does not
+enumerate Chrome profiles, choose a Chrome window, read browser identity data,
+or claim to control the extension. Connector, browser calibration, Email
+acquisition, Notion publication, schedule, and account security are separate
+sections with separate statuses.
+
+The login page is a narrow, centered, single-purpose form without the
+authenticated sidebar. It explains passwordless email sign-in, never asks for a
+password, and uses the same typography, controls, focus state, and privacy
+language as the dashboard.
+
+##### Visual system
+
+The interface is white and neutral, with a restrained deep-green action color.
+Purple/blue template gradients, glassmorphism, blurred floating panels,
+marketing hero sections, oversized display type, excessive pills, and rounded
+cards inside rounded cards are excluded. Decorative gradients are not used in
+the initial portal. A future chart may use solid semantic segments, but color
+must encode persisted data and must have a text equivalent.
+
+The exact initial tokens are:
+
+| Token | Value | Use |
+|---|---|---|
+| `--canvas` | `#f5f7f5` | App background behind content surfaces |
+| `--surface` | `#ffffff` | Sidebar, top bar, panels, tables, and forms |
+| `--surface-subtle` | `#eef2ef` | Active navigation and grouped rows |
+| `--text` | `#18201d` | Primary copy and headings |
+| `--text-muted` | `#65706a` | Secondary copy, timestamps, and helper text |
+| `--border` | `#dfe5e1` | Panel, input, table, and divider borders |
+| `--accent` | `#245e52` | Primary action, selected control, and focus ring |
+| `--accent-hover` | `#194a40` | Primary hover/active state |
+| `--accent-soft` | `#e7f1ed` | Selected rows and positive neutral emphasis |
+| `--success` / `--success-soft` | `#257052` / `#edf7f1` | Completed and healthy states |
+| `--warning` / `--warning-soft` | `#8a6400` / `#fff7d6` | Waiting and attention states |
+| `--danger` / `--danger-soft` | `#9b3a3a` / `#fff0f0` | Failed state and destructive actions |
+
+The font stack is `Inter, ui-sans-serif, system-ui, -apple-system,
+BlinkMacSystemFont, "Segoe UI", sans-serif`; the application never downloads
+Inter or another remote font. Type sizes and line heights are `12/16`, `14/20`,
+`16/24`, `20/28`, and `28/36` CSS pixels. `28/36` is the page title, `20/28`
+the section title, `16/24` emphasized body text, `14/20` the default control and
+table text, and `12/16` metadata. Font weights are limited to `400`, `500`,
+`600`, and `700`; body copy is never justified or letter-spaced for decoration.
+
+Spacing uses a `4, 8, 12, 16, 20, 24, 32, 40, 48` pixel scale. Buttons are
+`36` pixels high on desktop and at least `44` pixels high on touch layouts;
+inputs are `40` pixels high, textareas have a `120` pixel minimum height, table
+headers are `40` pixels high, and normal data rows target `52` pixels. Corners
+are `4` pixels for buttons, `6` for inputs and status controls, and `8` for
+panels. Fully rounded shapes are reserved for short status badges. Panels have
+a one-pixel border and no default shadow; only menus/dialogs may use
+`0 8px 24px rgb(24 32 29 / 12%)`.
+
+The desktop sidebar is `224` pixels wide and full height. The top bar is `64`
+pixels high. Main content has a `1440` pixel maximum width, `32` pixel desktop
+padding, and `24` pixel gaps. The resume-analysis workspace uses
+`minmax(520px, 3fr) minmax(360px, 2fr)`. Page headers use no hero treatment and
+remain close to the task content. The active navigation row has a subtle solid
+background and a three-pixel accent edge; inactive rows are transparent. Icons
+are simple `18x18` inline SVGs using `currentColor`, marked decorative when the
+text label is present. No external icon font or third-party image is loaded.
+
+One task region has at most one solid primary button. Secondary actions use a
+one-pixel border; tertiary actions are text buttons. Destructive actions use
+danger text and require an explicit confirmation step. Status badges always
+include text. Empty states use one plain sentence and, only when useful, one
+next action; they do not use illustrations.
+
+##### Responsive and interaction behavior
+
+The layout has four explicit modes:
+
+| Viewport width | Behavior |
+|---|---|
+| `>= 1280px` | Full `224px` sidebar, `64px` top bar, and two-column analysis workspace |
+| `960-1279px` | `72px` icon rail with accessible labels/tooltips; two columns remain only while both minimum widths fit |
+| `720-959px` | `72px` rail and a single content column; the analysis area follows the work area |
+| `< 720px` | Sidebar becomes a top-bar menu implemented with semantic disclosure; content padding is `16px`, controls meet the `44px` touch target, and all workspaces are one column |
+
+Tables keep semantic table markup at every width. A labelled overflow wrapper
+allows horizontal scrolling on narrow screens; columns are not silently hidden
+unless the same values are available in an explicit row-detail view. The mobile
+menu, long analysis sections, and account menu use native `<details>` and
+`<summary>` in the initial implementation, so navigation and disclosure do not
+depend on JavaScript. Mutations remain normal forms followed by
+Post/Redirect/Get. Background analysis displays an honest pending state and a
+manual refresh action; there is no hidden polling or WebSocket.
+
+Hover and focus transitions last `120-160ms`; content does not animate into
+place. `prefers-reduced-motion: reduce` removes non-essential transition and
+spinner motion. A spinner is never the only status signal.
+
+##### Accessibility, privacy, and rendering constraints
+
+Every page provides a skip link, `header`, `nav`, `main`, and one `h1`. The
+active navigation link uses `aria-current="page"`. Form controls have visible
+labels; help and error text are connected with `aria-describedby`. Tables use
+captions when their purpose is not already named, `scope` on header cells, and
+text for every status. Keyboard focus uses a two-pixel accent outline with a
+two-pixel offset and is never removed. Normal text and controls meet WCAG AA
+contrast; color is not the sole carrier of state.
+
+The first implementation extends the existing
+`src/job_scraper/adapters/server/portal.py` renderer rather than adding a second
+front-end home. The existing `_page` shell becomes the shared dashboard shell;
+one `PORTAL_CSS` constant and small semantic render helpers supply the tokens,
+navigation, panels, statuses, forms, and tables. This is the closest existing
+home and is sufficient for the initial server-rendered UI, so no template
+engine, static-asset pipeline, JavaScript bundle, or new UI module is added.
+
+The HTML contains no remote font, analytics, image, script, or stylesheet
+request. All icons are local inline SVG. All tenant, resume, job, source, Agent,
+error, and filename values are escaped at output. GET routes do not mutate;
+forms remain CSRF protected; file access stays resolved under the authorized
+tenant workspace. UI convenience never weakens upload validation, session
+cookies, authorization, artifact validation, or browser-worker isolation.
+
+The portal sends a restrictive response policy compatible with the inline
+style block: `default-src 'self'; style-src 'self' 'unsafe-inline'; img-src
+'self' data:; script-src 'none'; object-src 'none'; base-uri 'none';
+frame-ancestors 'none'; form-action 'self'`. It also sends
+`Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and denies
+framing. No private payload appears in HTML comments, data attributes, CSS,
+client logs, or analytics.
+
+##### Implementation prerequisites and staged rollout
+
+The styled shell must not conceal incomplete product wiring. As of the design
+approval, the existing Web path reaches connector enrollment but does not yet
+contain server-verified transitions for `browser_calibrated`,
+`pipeline_calibrated`, or `active`. The current jobs and resume pages also read
+CSV filenames and generated artifacts that do not carry every field required by
+the page contracts above. Styling these surfaces alone is not completion.
+
+Implementation proceeds in this order:
+
+1. **Correct the state model.** Add `search_preferences_approved` between
+   `tracks_approved` and `integrations_configured`. Saving locations, countries,
+   languages, employment scope, and sources advances only to
+   `search_preferences_approved`. `integrations_configured` requires durable,
+   tenant-scoped runtime policy plus the explicitly enabled optional
+   integrations; it does not mean merely that a preferences form was saved.
+   The idempotent schema migration maps existing `integrations_configured`
+   portal rows back to `search_preferences_approved` unless the portal store has
+   durable evidence for every required integration/configuration binding.
+2. **Complete activation transitions.** Enrollment redemption advances only to
+   `connector_enrolled`. A server-validated browser calibration result advances
+   to `browser_calibrated`; a bounded authorized pipeline calibration with
+   separately verified acquisition and screening outcomes advances toward
+   `pipeline_calibrated`. Artifact and sink gates are mode-aware and
+   configuration-aware: validate one artifact only when an approved `core`
+   track enables resume generation; assert no artifact for
+   `review|discovery`-only policy; validate publication only for enabled
+   external sinks; otherwise validate durable authenticated portal display.
+   Only the final activation transaction enables schedules/worker operation and
+   records `active`. `/onboarding` renders waiting, failed, retry, skipped-as-
+   not-applicable, and next-action content for every state.
+3. **Quarantine source resumes.** Upload stores the original document, hash,
+   extracted text, and analysis under a tenant-scoped unapproved document
+   version. It must not create or select a resume variant used by screening or
+   tailoring. Explicit evidence/authority approval creates a new versioned
+   authoritative variant. Re-upload creates another source-document version and
+   invalidates dependent proposal/calibration state; it never silently retains
+   the first imported variant as authority. Existing compatibility workspaces
+   are migrated without deleting source documents or generated artifacts.
+4. **Provide one tenant-scoped read model.** Introduce a server-side
+   `PortalReadModel` projection assembled from the authoritative portal store,
+   canonical job/run store, browser task store, approved evidence state, and
+   artifact manifests. It is a read projection, not a second source-of-truth
+   database and not a cache of raw private payloads. The first contract contains:
+
+   | Projection | Required fields |
+   |---|---|
+   | `overview` | activation state, next action, latest completed run ID/time range, `jobs_seen`, `jobs_new`, `jobs_updated`, `jobs_filtered`, `jobs_failed`, active track summaries, browser queue summary, recent accepted-job IDs, recent artifact IDs |
+   | `jobs` | opaque job ID, title, company, location, track, source, optional validated score, durable decision/disposition, first-seen time, Agent-reason reference, artifact references |
+   | `tracks` | opaque track ID/version, label, mode, keywords, locations/countries, languages, employment scope, sources, resume-generation policy, approval state |
+   | `documents` | opaque document ID/version, escaped display filename, media type, upload time, content hash reference, provenance, authority state, analysis state |
+   | `evidence` | opaque evidence ID/version, category, claim text, source reference, approval state, ambiguity state |
+   | `artifacts` | opaque artifact ID, source job/document reference, kind, created time, validation/publication state, authorized download reference |
+   | `activity` | opaque run/task ID, kind, source/track, times, stage/state, `Seen`, `Accept`, `Drop`, failed count, bounded error summary |
+   | `connections` | connector enrollment, browser calibration, pipeline calibration, Email/Notion state, schedule state, and last verified time as independent fields |
+
+   The job table links to `/jobs/{opaque_job_id}`; that route resolves the
+   opaque ID through the tenant before reading detail. The renderer does not
+   infer `decision`, source, location, or authority from a filename or from a
+   CSV column that has another meaning. Unknown data remains unknown.
+5. **Close the Web security gaps.** Logout and every other mutation require the
+   session-bound CSRF token and Post/Redirect/Get. The shared response wrapper
+   supplies the CSP and headers above. Existing tenant/path/upload checks remain
+   fail-closed. These controls are prerequisites for styled-interface
+   acceptance, not visual polish to defer.
+6. **Stage the user-visible claim.** Before the prerequisites pass, public docs
+   call the Web path a beta that covers login, resume analysis, conversational
+   proposal review, preference approval, and connector enrollment. Operator
+   bootstrap/calibration remains the compatibility path. Only a fictional
+   end-to-end test through `active`, followed by restart and authorization
+   checks, permits the docs and dashboard to call the Web flow complete.
+
+##### Interface verification
+
+Offline tests use fictional tenant, resume, track, job, run, and artifact data
+and verify:
+
+- all authenticated pages render the shared landmarks and correct active
+  navigation destination;
+- incomplete tenants see one resumable setup module and active tenants do not;
+- `Seen`, `Accept`, and `Drop` bind to `jobs_seen`,
+  `jobs_new + jobs_updated`, and `jobs_filtered` respectively;
+- the CV/evidence page distinguishes source documents, approved evidence,
+  generated outputs, and every analysis/approval state;
+- empty, pending, failed, ready, and approved states have visible text and a
+  valid next action;
+- untrusted content is escaped, POSTs enforce CSRF, cross-tenant IDs and paths
+  fail closed, and no external asset URL is emitted;
+- the sidebar, two-column workspace, one-column breakpoints, table overflow,
+  focus treatment, reduced-motion rule, and print-safe download links are
+  present in the generated HTML/CSS.
+
+Manual browser review uses fictional data at `1440x900`, `1024x768`, and
+`390x844`. It checks visual hierarchy, overflow, keyboard-only navigation,
+focus order, zoom at 200 percent, error messages, long company/job/filename
+values, and the full upload -> analysis -> refinement -> approval path. No
+personal screenshot becomes a committed golden fixture. The standard Ruff,
+Pyright, and pytest gates still run because the renderer is Python code.
 
 Repository separation is permitted only after fictional conformance fixtures
 exercise major-version rejection, minor-version forwarding, duplicate delivery,
@@ -782,6 +1438,76 @@ service-user execution, configuration and credentials, bounded no-submission
 behavior, backup/restore, and recovery after service and host restart. A source
 checkout, configured service, successful live run, and restart proof are four
 different completion states and must be reported separately.
+
+### 2026-08-30 Dashboard deployment evidence
+
+- The server-rendered Dashboard shell, responsive navigation, honest empty-run
+  metrics, proposal/approval labeling, CSRF-protected logout, and security
+  headers passed the repository's offline Ruff, Pyright, and Pytest gates.
+- A wheel built from that verified workspace was installed into the immutable
+  VPS release `/opt/positions/releases/20260830-dashboard/.venv`. The installed
+  package was checked for Dashboard and CSP markers before service cutover.
+- `positions-browser-api.service` was switched from the prior conversation
+  release to that Dashboard release. Its loopback `/healthz` and the public
+  deployment endpoint returned HTTP 200 with contract version `1.0`; the public
+  login response contained the new auth shell and the
+  expected CSP, `Referrer-Policy`, and frame-denial headers.
+- An explicit service stop/start restored loopback and public responses, while
+  the Cloudflare Tunnel service remained active. This is service-restart proof,
+  not a whole-host reboot or proof of a completed client browser calibration.
+- The deployed Dashboard remains honest about the current Web beta boundary:
+  client-owned Chrome enrollment/calibration and a complete tenant-scoped run
+  read model are separate acceptance gates and are not inferred from public UI
+  or health availability.
+
+### 2026-08-30 Dashboard redesign deployment evidence
+
+- The white B2B shell, blue/ink palette, icon-led summary metrics,
+  one-question onboarding sequence, mandatory HTML-route onboarding gate, and
+  canonical SQLite-backed Jobs table passed Ruff format/check, Pyright, and the
+  complete offline test suite (`474 passed, 1 skipped`).
+- The Jobs page reads all matching canonical rows from the configured jobs
+  database, provides validated search/source/location/decision filters,
+  whitelisted column sorting, exact totals, and server pagination; active
+  filter state is preserved across sorting and pagination.
+- The verified wheel was installed into immutable release
+  `/opt/positions/releases/20260830-redesign/.venv`. The production unit was
+  switched to that executable with explicit
+  `--job-db /srv/positions/data/jobs.db`; the prior unit was retained as
+  `/etc/systemd/system/positions-browser-api.service.pre-redesign-20260830`.
+- After service restart, `positions-browser-api.service` and `cloudflared` were
+  active, loopback `/healthz` returned contract version `1.0`, the public login
+  returned HTTP 200 with the redesign marker, and unauthenticated public
+  `/jobs` redirected to `/login`. Existing tenant onboarding state was not
+  modified during deployment verification.
+
+#### Onboarding navigation correction
+
+- A tenant may retain up to five source resumes. The upload control accepts a
+  batch, validates the complete batch before persistence, and reports the
+  retained-document count. Adding another source does not overwrite an
+  existing private workspace configuration.
+- Every question after the resume screen has a Back action. Returning to an
+  answered question pre-fills its durable answer; saving an edit regenerates
+  the proposal once all required answers and resume analysis are ready.
+- The first question can return to the resume screen to add another source.
+  Final confirmation redirects directly to `/`; it must not strand the user
+  on an empty or completed onboarding page.
+- A retained resume with a missing analysis row is a recoverable historical
+  state, not an empty review screen. The final step shows an explicit
+  re-analysis action; the POST recreates pending state from retained extracted
+  text and regenerates the proposal without requiring another upload.
+- Pending analysis renders a live status region, reduced-motion-safe activity
+  indicator, explanatory copy, and a bounded four-second document refresh.
+  Failures retain a bounded internal diagnostic and distinguish temporary
+  Agent usage-capacity exhaustion from a generic unavailable service without
+  exposing resume text or credentials.
+- An installation may configure an ordered list of separately authorized
+  `CODEX_HOME` directories. Resume analysis and proposal refinement retry the
+  next identity only for explicit usage/rate/quota capacity errors. Invalid
+  output, authentication errors, timeouts, and other failures remain fail-
+  closed. Logs record only the one-based identity slot, never its path or auth
+  material.
 
 ## Follow-ups
 

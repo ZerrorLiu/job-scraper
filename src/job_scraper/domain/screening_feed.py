@@ -59,3 +59,4 @@ class ScreeningFeedRecord:
     application_status: str
     publication: Publication
     processing_mode: str = "core"
+    employment_type: str = ""

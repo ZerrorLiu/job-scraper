@@ -23,16 +23,6 @@ from job_scraper.domain.policies import FilterPolicy
 from job_scraper.integrations.email_recommendations import EmailIngestConfig
 from job_scraper.integrations.notion import NotionClient
 from job_scraper.pipeline.engine import CandidatePipeline
-from job_scraper.pipeline.steps import (
-    CompanyStep,
-    CountryStep,
-    EmploymentScopeStep,
-    ExcludedTermsStep,
-    FreshnessStep,
-    LanguageStep,
-    RequirementExclusionStep,
-    RoleStep,
-)
 from job_scraper.ports.channels import JobChannel
 from job_scraper.ports.sinks import JobSink
 from job_scraper.ports.sources import JobSource
@@ -93,14 +83,6 @@ def create_builtin_registry() -> ComponentRegistry:
     registry.register_source("arbeitnow_direct", _build_arbeitnow)
     registry.register_source("berlinstartupjobs_direct", _build_berlinstartupjobs)
     registry.register_channel("email_imap", _build_email)
-    registry.register_step("country", CountryStep)
-    registry.register_step("freshness", FreshnessStep)
-    registry.register_step("company", CompanyStep)
-    registry.register_step("employment_scope", EmploymentScopeStep)
-    registry.register_step("excluded_terms", ExcludedTermsStep)
-    registry.register_step("role", RoleStep)
-    registry.register_step("requirement_exclusion", RequirementExclusionStep)
-    registry.register_step("language", LanguageStep)
     registry.register_sink("csv", _build_csv_sink)
     registry.register_sink("notion_daily", _build_notion_sink)
     return registry

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from job_scraper.domain.identity import canonical_identity
 from job_scraper.domain.locations import merge_locations
 from job_scraper.domain.models import JobRecord
-from job_scraper.pipeline.language_filter import english_ratio, matches_requirement_patterns
+from job_scraper.pipeline.language_filter import english_ratio
 from job_scraper.pipeline.normalize import known_location_country
 
 
@@ -104,8 +104,3 @@ def test_english_ratio_still_scores_confident_english_text() -> None:
     )
 
     assert english_ratio(english_text) >= 0.75
-
-
-def test_matches_requirement_patterns_uses_word_boundaries() -> None:
-    assert matches_requirement_patterns("Germane experience is a plus.", ("german",)) is False
-    assert matches_requirement_patterns("German language required.", ("german",)) is True

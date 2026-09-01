@@ -153,7 +153,11 @@ The production browser lane uses one tenant-local FastAPI process and SQLite
 queue/outbox. Start only one Uvicorn worker for a client instance:
 
 ```bash
-uv run job-scraper serve --host 127.0.0.1 --port 8123
+uv run job-scraper serve --host 127.0.0.1 --port 8123 \
+  --portal-db /private/positions/portal.db \
+  --upload-root /private/positions/uploads \
+  --public-url https://positions.example \
+  --candidate-workspace /private/positions/candidate-workspace
 uv run job-scraper serve-enroll-token --ttl-seconds 3600
 uv run job-scraper browser-search-refresh
 uv run job-scraper browser-email-refresh
@@ -161,6 +165,19 @@ uv run job-scraper browser-email-refresh
 
 Put authenticated HTTPS ingress in front of the loopback port. The enrollment
 token is single use; deliver it out of band and never store it in Git or logs.
+
+For a token-managed Cloudflare Tunnel, add the public hostname in **Zero Trust
+→ Networks → Tunnels → Public Hostnames** and route it to
+`http://127.0.0.1:8500`. Keep Uvicorn bound to loopback; do not open port 8500
+in the VPS firewall. Verify both `https://HOST/healthz` and the authenticated
+browser-worker contract after saving the hostname. Cloudflare Access must not
+be placed in front of `/v1/browser/*` until `positions-client` has explicit
+Access service-token headers; its device bearer token already authenticates
+that API. Cloudflare rate limits/WAF may still protect `/login`.
+
+Install `deploy/systemd/positions-web.env.example` as the private mode-0600
+`/etc/positions/positions-web.env`, then install the updated
+`positions-browser-api.service`. The same loopback process serves Web and API.
 Run accepted results outside the HTTP process:
 
 ```bash
@@ -170,6 +187,31 @@ uv run job-scraper browser outbox list --state failed
 uv run job-scraper browser outbox retry --event-id browser:TASK_ID --expect-count 1
 uv run job-scraper browser revoke-device --device-id DEVICE --expect-count 1
 ```
+
+The Web portal uses passwordless email login. Set `POSITIONS_SMTP_HOST`,
+`POSITIONS_SMTP_PORT`, `POSITIONS_SMTP_FROM`, and, when required,
+`POSITIONS_SMTP_USERNAME`/`POSITIONS_SMTP_PASSWORD` in the service secret
+store. `--dev-print-login-link` and `--insecure-cookie` are local development
+options only. Uploaded resumes live under `--upload-root`, outside Git and the
+Web root.
+
+Production resume analysis uses a shell-free, read-only `codex exec` call with
+a strict output schema. `--resume-analysis-model` optionally pins its model.
+`--dev-basic-resume-analysis` is a local fixture mode and must not be used to
+activate a real user's profile.
+
+Screening, evidence-bound tailoring, PDF generation, result persistence, and
+release verification use the bundled `fine-screen` and `fine-screen-release`
+commands. A separate fine-screen code installation is no longer part of the
+runtime; continue to pass the private workspace explicitly.
+When `--candidate-workspace` is configured, the authenticated Web portal lists
+the latest screening CSV results, run manifests, and generated PDFs. Downloads
+are restricted to exact PDF filenames under that workspace's
+`CV/Fine-Screened` directory.
+The first resume upload may bootstrap an empty workspace. Review the generated
+`resume/variants/imported.tex` before the first apply run; it is deliberately
+plain and evidence-preserving, not a claim that arbitrary PDF layout was
+reconstructed. Re-uploading never replaces an existing workspace.
 
 The outbox command expands completed search cards into detail tasks and imports
 completed details through the existing pipeline, with Notion last. Automatic

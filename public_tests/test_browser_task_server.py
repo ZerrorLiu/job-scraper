@@ -26,6 +26,25 @@ def _setup(tmp_path: Path) -> tuple[TestClient, BrowserTaskStore, dict[str, str]
     return client, store, auth
 
 
+def test_wake_is_authenticated_and_does_not_claim(tmp_path: Path) -> None:
+    client, store, auth = _setup(tmp_path)
+    assert client.get("/v1/browser/wake").status_code == 401
+    assert client.get("/v1/browser/wake", headers=auth).json()["pending"] is False
+    store.enqueue("search", "wake-1", {"url": "https://example.test"})
+    ready = client.get("/v1/browser/wake", headers=auth).json()
+    assert ready["pending"] is True
+    assert ready["pending_count"] == 1
+    assert store.status()["tasks"]["pending"] == 1
+
+
+def test_health_and_security_headers(tmp_path: Path) -> None:
+    client, _, _ = _setup(tmp_path)
+    response = client.get("/healthz")
+    assert response.json() == {"ok": True, "contract_version": "1.0"}
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+
+
 def test_auth_versioned_routes_and_transactional_search_expansion(tmp_path: Path) -> None:
     client, store, auth = _setup(tmp_path)
     assert client.post("/v1/browser/tasks/claim?kind=search", json={}).status_code == 401

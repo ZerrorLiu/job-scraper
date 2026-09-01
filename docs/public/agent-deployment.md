@@ -329,14 +329,55 @@ repository alone produces an empty installation.
 
 ## Multi-client Codex/Chrome worker onboarding
 
-The queue API, enrollment, lease/result transport, transactional outbox,
-`positions-client` journal, and Codex Chrome worker plugin are implemented. This
-is not yet a turnkey multi-client deployment: the Linux account, systemd
-instance, Cloudflare route, secret store, backup, recurring Codex task, and
-client-specific business configuration must still be provisioned and verified
-for each installation; they are not created by the public Python package. The
+The Web portal, passwordless account, tenant-scoped onboarding records, resume
+upload and analysis review, queue API, enrollment, lease/result transport,
+transactional outbox, `positions-client` journal, background agent, and Codex
+Chrome worker plugin are implemented. Linux service/ingress, SMTP secrets,
+backup, and user-session client autostart remain deployment responsibilities. The
 authoritative behavior and security contract is the
 [browser-visible Indeed specification](specs/2026-08-27-browser-indeed-search-discovery.md).
+
+The current Web path is a beta, not the complete activation path. It covers
+login, resume analysis, guided questions, proposal/preferences approval, and
+creation of a connector enrollment token. It does not yet advance the durable
+state through server-verified browser calibration, pipeline calibration, and
+`active`, and its results pages do not yet expose the complete dashboard read
+model. Until the unchecked Web acceptance criteria in
+[`2026-08-28-first-class-agent-screening.md`](specs/2026-08-28-first-class-agent-screening.md)
+pass, use the operator procedure below for the remaining configuration and
+calibration and do not describe a healthy portal or enrolled connector as a
+completed new-user deployment.
+
+`POSITIONS_CODEX_HOMES` may contain an ordered, platform-path-separated list
+of independently authorized Codex homes for resume-analysis capacity failover.
+Keep those directories and auth files private. The service tries the next
+identity only for explicit usage, rate, quota, or capacity errors; other
+failures remain fail-closed.
+
+Until the shared queue schema carries tenant identity end to end, deploy one
+portal/queue database pair and one service instance per client account. Do not
+place two email accounts behind one browser queue: device credentials and task
+claims are instance-scoped in the current released contract.
+
+The `fine_screen` package and its `fine-screen`/`fine-screen-release`
+compatibility commands ship in the same `job-scraper` distribution. Do not
+install or deploy a sibling fine-screen checkout. The candidate workspace,
+evidence library, editable resume sources, generated artifacts, credentials,
+and runtime reports remain private deployment inputs outside this repository.
+If the configured candidate workspace is empty, the first authenticated resume
+upload initializes it from the bundled template, writes the candidate identity
+and contact email, preserves the original PDF/DOCX, and creates one conservative
+`imported` LaTeX variant containing only extracted source lines. The fictional
+blank variant is removed so it cannot be selected for a real screening run.
+An existing workspace is never overwritten; a non-empty directory without
+`workspace.toml` fails closed for operator review.
+
+That immediate `imported` variant is compatibility behavior in the current Web
+beta, not the approved end state. Do not authorize automatic tailoring from it
+merely because upload succeeded. The target flow quarantines each source resume
+until explicit evidence/authority approval creates a versioned authoritative
+variant; replacement uploads invalidate dependent proposal and calibration
+state without deleting prior source documents or generated artifacts.
 
 The server-side agent:
 
@@ -379,8 +420,9 @@ On the client's own computer, the guided Codex setup:
    detail task. A login wall, CAPTCHA, access block, or unexpected navigation is
    recorded and handed to the user; it is never bypassed.
 6. After transport, lease expiry, idempotent replay, outbox replay, and one
-   client-specific downstream publication are proven, creates one recurring
-   Codex App heartbeat attached to a dedicated worker task.
+   client-specific downstream publication are proven, starts
+   `positions-client agent` in the signed-in user's session. The agent polls the
+   authenticated wake endpoint and starts `codex exec` only when work exists.
 
 Before enabling the heartbeat, the server agent runs the target browser status
 contract, proves the calibration outbox event is `applied`, and confirms there
@@ -389,7 +431,7 @@ at most five times with capped backoff. A poison item remains visible in
 `failed`; the agent inspects it and may retry only one exact event with an
 expected count. Stored result bytes are never edited or deleted during replay.
 
-Each heartbeat claims through `positions-client`, processes detail before
+Each Codex run claims through `positions-client`, processes detail before
 search, and runs sequentially for at most three tasks or fifteen minutes. The
 worker uses normal visible Chrome navigation, clicking, scrolling, waiting,
 expansion, and reading. It makes no direct Indeed HTTP request and performs no
@@ -400,7 +442,7 @@ If the computer is off, the Codex local host is unavailable, Chrome is
 disconnected, or the network is down, no server push is attempted. Tasks remain
 durably pending on the VPS and other server-side sources continue normally.
 
-Offboarding disables the recurring Codex heartbeat first, revokes the server
+Offboarding disables the local background agent first, revokes the server
 device credential, retires the dedicated Chrome/Codex assignment, and archives or
 removes the local journal only with the user's explicit approval. The
 operator records retain the assignment history so that Chrome profile is not

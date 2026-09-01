@@ -9,14 +9,15 @@ Group=dev
 WorkingDirectory=/srv/positions
 Environment=HOME=/home/dev
 Environment=PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/dev/.local/bin/uv run job-scraper serve --host 127.0.0.1 --port 8500
+EnvironmentFile=/etc/positions/positions-web.env
+ExecStart=/home/dev/.local/bin/uv run job-scraper serve --host 127.0.0.1 --port 8500 --portal-db ${POSITIONS_PORTAL_DB} --upload-root ${POSITIONS_UPLOAD_ROOT} --public-url ${POSITIONS_PUBLIC_URL} --candidate-workspace ${POSITIONS_CANDIDATE_WORKSPACE} --job-db /srv/positions/data/jobs.db
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/srv/positions /home/dev
+ReadWritePaths=/srv/positions /home/dev /srv/positions-private
 UMask=0027
 
 [Install]

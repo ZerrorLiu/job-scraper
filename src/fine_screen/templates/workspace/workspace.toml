@@ -1,0 +1,19 @@
+# Copy this file to the root of your private workspace and edit it.
+#
+# Nothing here is secret, but everything here is yours: the screener writes
+# files named after `file_slug`, so changing it after a batch has been
+# generated will orphan the files already written under the old name.
+
+[candidate]
+# Used in prompts and documents, exactly as you would write it.
+name = "Your Name"
+
+# Prefix for every generated file, e.g. YourName_CV_Company_Role.pdf.
+# Letters, digits, '-' and '_' only -- it becomes a filename on three
+# operating systems and a Notion attachment name.
+file_slug = "YourName"
+
+# Slugs an earlier naming scheme used. Never written; matched only, so that
+# cleanup still recognizes and archives files generated under an old name
+# instead of leaving them behind. Leave empty unless you have renamed.
+legacy_file_slugs = []

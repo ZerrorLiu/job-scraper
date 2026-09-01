@@ -502,6 +502,7 @@ class Database:
                 """
                 SELECT
                     j.id, j.normalized_title, j.company_name, j.city,
+                    j.location_text, j.employment_type,
                     j.description_language, j.canonical_url, j.source_url,
                     j.description_full, j.first_seen_at,
                     n.notion_page_id, n.notion_data_source_id,
@@ -521,12 +522,13 @@ class Database:
                 profile_id=profile_id,
                 title=row["normalized_title"] or "",
                 company=row["company_name"] or "",
-                location=row["city"] or "",
+                location=row["location_text"] or row["city"] or "",
                 language=row["description_language"] or "",
                 url=row["canonical_url"] or row["source_url"] or "",
                 description=row["description_full"] or "",
                 first_seen_at=row["first_seen_at"] or "",
                 application_status=row["application_status"] or "new",
+                employment_type=row["employment_type"] or "",
                 publication=Publication(
                     sink_id="notion_daily" if row["notion_page_id"] else "",
                     external_id=row["notion_page_id"] or "",

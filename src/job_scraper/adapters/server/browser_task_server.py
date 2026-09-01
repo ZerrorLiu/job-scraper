@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from job_scraper.adapters.storage.browser_task_store import (
@@ -15,6 +16,7 @@ from job_scraper.adapters.storage.browser_task_store import (
     LostLeaseError,
     OutboxEvent,
 )
+from job_scraper.adapters.storage.portal_store import PortalStore
 from job_scraper.integrations.browser_details import (
     BrowserDetailContractError,
     BrowserDetailResult,
@@ -26,6 +28,7 @@ from job_scraper.jobs.ingest_email_recommendations import (
     browser_search_tasks,
     import_browser_detail_batch,
 )
+from job_scraper.ports.resume_analysis import ResumeAnalyzer
 
 BLOCK_REASONS = frozenset(
     {
@@ -70,11 +73,61 @@ class BrowserTaskApplication:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or revoked device token")
 
 
-def create_app(*, store: BrowserTaskStore) -> FastAPI:
+def create_app(
+    *,
+    store: BrowserTaskStore,
+    portal_store: PortalStore | None = None,
+    upload_root: Any = None,
+    send_login: Callable[[str, str], None] | None = None,
+    resume_analyzer: ResumeAnalyzer | None = None,
+    candidate_workspace: Any = None,
+    job_db: Any = None,
+    allowed_hosts: list[str] | None = None,
+    secure_cookie: bool = True,
+) -> FastAPI:
     """Build one tenant's API. Ingress selects this process before body parsing."""
 
     application = BrowserTaskApplication(store)
     app = FastAPI(title="Positions browser worker API", version="1.0.0")
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+    @app.middleware("http")
+    async def security_headers(request: Any, call_next: Callable[[Any], Any]) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+        )
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response
+
+    @app.get("/healthz")
+    def health() -> dict[str, object]:
+        return {"ok": True, "contract_version": "1.0"}
+
+    if portal_store is not None:
+        from pathlib import Path
+
+        from job_scraper.adapters.server.portal import create_portal_router
+
+        if send_login is None:
+            raise ValueError("send_login is required when the portal is enabled")
+        app.include_router(
+            create_portal_router(
+                portal_store=portal_store,
+                browser_store=store,
+                upload_root=Path(upload_root),
+                send_login=send_login,
+                analyzer=resume_analyzer,
+                candidate_workspace=(Path(candidate_workspace) if candidate_workspace else None),
+                job_db=(Path(job_db) if job_db else None),
+                secure_cookie=secure_cookie,
+            )
+        )
 
     @app.get("/v1/instance")
     def instance() -> dict[str, str]:
@@ -82,7 +135,7 @@ def create_app(*, store: BrowserTaskStore) -> FastAPI:
 
     @app.exception_handler(BrowserDetailContractError)
     async def contract_error(_request: Any, exc: BrowserDetailContractError) -> Response:
-        return _json_error(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
+        return _json_error(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
 
     @app.exception_handler(LostLeaseError)
     async def lease_error(_request: Any, exc: LostLeaseError) -> Response:
@@ -100,8 +153,17 @@ def create_app(*, store: BrowserTaskStore) -> FastAPI:
         if authorization is None or not authorization.startswith(prefix):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing enrollment token")
         token = authorization[len(prefix) :].strip()
+        device_token = store.redeem_enrollment_token(token, device_id=body.device_id)
+        if portal_store is not None:
+            with portal_store.connect() as connection:
+                tenant = connection.execute("SELECT id FROM portal_tenants LIMIT 1").fetchone()
+            if (
+                tenant is not None
+                and portal_store.state(str(tenant["id"])) == "integrations_configured"
+            ):
+                portal_store.advance(str(tenant["id"]), "connector_enrolled")
         return {
-            "device_token": store.redeem_enrollment_token(token, device_id=body.device_id),
+            "device_token": device_token,
             "client_id": store.instance_id(),
             "contract_version": "1.0",
         }
@@ -129,6 +191,20 @@ def create_app(*, store: BrowserTaskStore) -> FastAPI:
     def doctor() -> dict[str, str]:
         return {"ok": "true", "contract_version": "1.0"}
 
+    @app.get("/v1/browser/wake", dependencies=[Depends(application.authorize)])
+    def wake() -> dict[str, object]:
+        """Cheap poll used by the local agent before it starts Codex."""
+        queue_status = store.status()
+        tasks = queue_status["tasks"]
+        assert isinstance(tasks, dict)
+        pending = int(tasks.get("pending", 0))
+        return {
+            "contract_version": "1.0",
+            "pending": pending > 0,
+            "pending_count": pending,
+            "oldest_pending_at": queue_status["oldest_pending_at"],
+        }
+
     @app.post(
         "/v1/browser/tasks/{task_id}/heartbeat", dependencies=[Depends(application.authorize)]
     )
@@ -143,7 +219,7 @@ def create_app(*, store: BrowserTaskStore) -> FastAPI:
         submitted = body.model_dump(mode="json", exclude_none=True)
         if body.status != "complete" and body.error not in BLOCK_REASONS:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown terminal reason code"
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown terminal reason code"
             )
         payload = stored["payload"]
         assert isinstance(payload, dict)

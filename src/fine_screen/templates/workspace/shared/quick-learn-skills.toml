@@ -1,0 +1,12 @@
+# Skills you could genuinely pick up quickly, and how you would prove it.
+#
+# The screener may add one of these to a tailored resume when a job asks for
+# it, but only from this list -- an agent cannot invent a skill claim. Each
+# entry is a promise you are willing to make in an interview.
+
+# [[skill]]
+# match = "mqtt"                                   # matched against the job text
+# phrase = "MQTT (active project practice)"        # what appears on the resume
+# hours = 6                                        # honest ramp-up estimate
+# project = "Publish simulated telemetry to a local broker."
+# interview_check = "Explain QoS levels and reconnect behavior."

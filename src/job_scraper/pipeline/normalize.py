@@ -218,39 +218,6 @@ def build_dedupe_key(
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
 
-def looks_like_germany(location_raw: str, country: str) -> bool:
-    return looks_like_target_countries(location_raw, country, "DE")
-
-
-def looks_like_target_countries(
-    location_raw: str,
-    country: str,
-    target_country_filter: str,
-    raw_country: object = None,
-) -> bool:
-    target_codes = parse_country_codes(target_country_filter)
-    if not target_codes:
-        return True
-
-    location_country_code = known_location_country(location_raw)
-    if location_country_code:
-        return location_country_code in target_codes
-
-    raw_country_code = country_to_code(str(raw_country or ""))
-    if raw_country_code and raw_country_code in target_codes:
-        return True
-
-    country_code = country_to_code(country)
-    if country_code and country_code not in target_codes:
-        return False
-
-    normalized_location = normalize_location_key(location_raw)
-    if not normalized_location:
-        return bool(country_code and country_code in target_codes)
-
-    return any(location_matches_country(normalized_location, code) for code in target_codes)
-
-
 def parse_country_codes(value: str) -> list[str]:
     raw = normalize_whitespace(value)
     if not raw:
@@ -431,6 +398,14 @@ def infer_country(raw_country: object, location_raw: str, default_country: str) 
         country_code = country_to_code(normalized_country)
         if country_code:
             return country_code
+        # Some sources mislabel this field with a city rather than a country
+        # (e.g. "Munich"). `country_to_code` only recognizes country names, so
+        # fall back to the city/region hint table before giving up -- storing
+        # the raw city string here made it look like a "known" value to
+        # downstream consumers even though it never resolved to a country.
+        city_country_code = known_location_country(normalized_country)
+        if city_country_code:
+            return city_country_code
         return normalized_country
     return known_location_country(location_raw)
 

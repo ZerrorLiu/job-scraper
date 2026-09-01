@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",
     "python-dotenv>=1.0,<2",
+    "python-multipart>=0.0.20,<1",
+    "pypdf>=5,<7",
     "tzdata>=2024.1",
     "uvicorn>=0.34,<1",
 ]
@@ -26,12 +28,21 @@ dev = [
 
 [project.scripts]
 job-scraper = "job_scraper.cli.main:main"
+fine-screen = "fine_screen.screen:main"
+fine-screen-release = "fine_screen.release:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+fine_screen = [
+    "agent/*.md",
+    "agent/*.json",
+    "templates/workspace/**/*",
+]
 
 [tool.ruff]
 target-version = "py311"

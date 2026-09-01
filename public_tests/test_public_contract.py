@@ -275,7 +275,7 @@ def test_search_plan_uses_only_runtime_profile_values(tmp_path: Path) -> None:
         enabled=True,
         sources=("linkedin_direct",),
         channels=(),
-        pipeline=("role",),
+        pipeline=(),
         sinks=("csv",),
         base_queries=("Role One", "Role Two"),
         locations=("Region One",),
@@ -306,7 +306,7 @@ runtime_config = "../runtime.toml"
 enabled = true
 sources = ["linkedin_direct"]
 channels = []
-pipeline = ["role"]
+pipeline = []
 sinks = ["csv"]
 base_queries = ["Role One"]
 locations = ["Region One"]

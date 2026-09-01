@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from functools import lru_cache
 
 ENGLISH_HINTS = {
     "about",
@@ -136,68 +135,6 @@ def describe_language(text: str) -> tuple[str, float]:
 
 def classify_description_language(text: str) -> str:
     return describe_language(text)[0]
-
-
-def is_english_job(language: str, ratio: float, threshold: float) -> bool:
-    normalized_language = " ".join((language or "").split()).strip().lower()
-    return normalized_language == "english" and ratio >= threshold
-
-
-def is_allowed_description_language(
-    language: str,
-    english_score: float,
-    english_threshold: float,
-    *,
-    require_english: bool,
-    allowed_languages: tuple[str, ...],
-) -> bool:
-    """Decide whether a description's language passes the policy.
-
-    The three keys are one interacting contract, not three independent
-    knobs: a non-empty `allowed_languages` decides the verdict by label
-    membership alone, full stop. `english_threshold` governs only the empty
-    branch below. Consulting it for a membership hit would gate a single
-    label (English) behind a bar the other admitted labels never faced,
-    which rejects a more-English description while a less-English one
-    admitted through a different label passes -- see
-    `docs/public/specs/2026-08-27-description-language-policy-defect.md`.
-    `config.load_config` refuses to load a profile that sets both, so this
-    function never has to choose between the two at runtime.
-    """
-    normalized_language = " ".join((language or "").split()).strip().casefold()
-    normalized_allowed = {
-        " ".join(value.split()).strip().casefold() for value in allowed_languages if value.strip()
-    }
-    if normalized_allowed:
-        return normalized_language in normalized_allowed
-    return not require_english or is_english_job(language, english_score, english_threshold)
-
-
-def matches_requirement_patterns(text: str, patterns: tuple[str, ...]) -> bool:
-    """True when any excluded requirement phrase appears in the text.
-
-    One alternation over one normalized copy of the text, rather than
-    re-normalizing each phrase and scanning the whole description once per
-    phrase. The phrases come from configuration and do not change between
-    candidates, so the compiled form is cached against them.
-    """
-    regex = _requirement_pattern(patterns)
-    if regex is None:
-        return False
-    return regex.search(normalize_language_text(text)) is not None
-
-
-@lru_cache(maxsize=256)
-def _requirement_pattern(patterns: tuple[str, ...]) -> re.Pattern[str] | None:
-    normalized = sorted(
-        {text for pattern in patterns if (text := normalize_language_text(pattern))},
-        key=len,
-        reverse=True,
-    )
-    if not normalized:
-        return None
-    alternation = "|".join(re.escape(text).replace(r"\ ", r"\s+") for text in normalized)
-    return re.compile(rf"(?<![a-z0-9])(?:{alternation})(?![a-z0-9])")
 
 
 def normalize_language_text(text: str) -> str:

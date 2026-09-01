@@ -1,0 +1,66 @@
+% A blank resume variant. Copy it to `resume/variants/<direction>.tex`, one per
+% direction you apply in (say `backend.tex`, `data.tex`), and fill it with your
+% own history. The screener picks a variant per job and rewrites it from there.
+%
+% You can hand this file and your existing resume to an agent and ask it to
+% produce the same structure with your content. Four rules make that work:
+%
+%   1. Exactly one skills-insertion marker -- the lone comment line inside the
+%      Skills list below. Keep it, and do not add a second anywhere in the
+%      file (not even in a comment): the screener refuses a variant with zero
+%      or two, because guessing where a skills line goes would silently put it
+%      in the wrong section.
+%   2. Every experience entry is `\resumeSubheading` followed by
+%      `\resumeItemListStart`, `\resumeBullet` lines, `\resumeItemListEnd`.
+%      That nesting is how bullets get rewritten per job.
+%   3. Sections are `\section{Title}`. The screener may reorder, shorten, or
+%      drop a section by its title, so use plain descriptive titles.
+%   4. Only claims you can defend in an interview. The screener is allowed to
+%      re-emphasize what is here; it is not allowed to invent, and it rejects
+%      an agent plan whose evidence is not backed by this file.
+
+\documentclass[a4paper,10pt]{article}
+
+\input{../../shared/contact.tex}
+\input{../shared/resume-style.tex}
+
+\begin{document}
+
+\resumeHeader
+
+\resumeHeadline{One line on what you do and what you are looking for.}
+
+\section{Skills}
+\begin{itemize}[leftmargin=*, itemsep=2pt, topsep=2pt]
+   \item \textbf{Group:} Comma-separated tools you would be comfortable being asked about.
+   \item \textbf{Another group:} Keep groups short; long lists read as noise.
+% FINE_SCREEN_SKILLS_INSERTION_POINT
+\end{itemize}
+
+\section{Experience}
+\resumeSubheading{Your Role}{Mon YYYY -- Mon YYYY}{Employer}{City, Country}
+\resumeItemListStart
+  \resumeBullet{What you built or ran, and what changed because of it. Prefer a
+    number you can source over an adjective.}
+  \resumeBullet{A second bullet, on a different kind of work than the first.}
+\resumeItemListEnd
+
+\resumeSubheading{Earlier Role}{Mon YYYY -- Mon YYYY}{Employer}{City, Country}
+\resumeItemListStart
+  \resumeBullet{Older entries can be shorter. The screener trims from the
+    bottom when a tailored resume runs long.}
+\resumeItemListEnd
+
+\section{Projects}
+\resumeSubheading{Project Name}{YYYY}{Personal or Open Source}{Link or repo}
+\resumeItemListStart
+  \resumeBullet{What it does, and the part that was actually hard.}
+\resumeItemListEnd
+
+\section{Education}
+\resumeSubheading{Degree}{YYYY -- YYYY}{Institution}{City, Country}
+\resumeItemListStart
+  \resumeBullet{Only if it earns the space: thesis topic, relevant coursework.}
+\resumeItemListEnd
+
+\end{document}

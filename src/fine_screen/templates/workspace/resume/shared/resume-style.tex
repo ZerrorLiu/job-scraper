@@ -1,0 +1,42 @@
+% Minimal style defining the commands a fine-screen resume template must use.
+%
+% The screener rewrites your resume by pattern, not by parsing LaTeX, so these
+% four shapes are the contract:
+%
+%   \section{Title}          -- a section it may reorder, trim, or drop
+%   \resumeSubheading{...}   -- one experience entry; must be followed by an
+%                               item list and closed by \resumeItemListEnd
+%   \resumeItemListStart/End -- the bullets under one entry, which it rewrites
+%   \resumeBullet{...}       -- one bullet
+%
+% Restyle freely. Keep the command names and the nesting, or the rewriter will
+% leave your resume untouched rather than corrupt it.
+
+\usepackage[margin=1.6cm]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+\pagestyle{empty}
+
+\titleformat{\section}{\large\bfseries}{}{0pt}{}[\titlerule]
+\titlespacing{\section}{0pt}{10pt}{6pt}
+
+\newcommand{\contactSep}{\hspace{0.5em}\textbar\hspace{0.5em}}
+
+% #1 role, #2 dates, #3 employer, #4 location
+\newcommand{\resumeSubheading}[4]{%
+  \vspace{4pt}%
+  \noindent\textbf{#1} \hfill #2\\%
+  \textit{#3} \hfill \textit{#4}%
+  \vspace{2pt}%
+}
+
+\newcommand{\resumeBullet}[1]{\item\small{#1}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=*, itemsep=2pt, topsep=2pt]}
+\newcommand{\resumeItemListEnd}{\end{itemize}}
+\newcommand{\resumeSubHeadingListStart}{\begin{list}{}{\leftmargin=0pt}}
+\newcommand{\resumeSubHeadingListEnd}{\end{list}}
+
+\newcommand{\resumeHeadline}[1]{\begin{center}\small #1\end{center}\vspace{4pt}}
+\newcommand{\resumeStatusLine}[1]{\begin{center}\small\textit{#1}\end{center}}

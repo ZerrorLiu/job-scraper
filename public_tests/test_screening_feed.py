@@ -88,6 +88,7 @@ def test_record_serializes_every_contract_field():
         "application_status",
         "publication",
         "processing_mode",
+        "employment_type",
     }
     assert record["publication"] == {
         "sink_id": "notion_daily",

@@ -1,0 +1,121 @@
+{
+  "title": "Fine-screen resume tailoring response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "summary",
+    "skills",
+    "experience_order",
+    "experiences",
+    "projects",
+    "ramp_up"
+  ],
+  "properties": {
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "summary": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/text_with_evidence"}
+    },
+    "skills": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "text", "evidence"],
+        "properties": {
+          "label": {"type": "string", "minLength": 1, "maxLength": 80},
+          "text": {"type": "string", "minLength": 1, "maxLength": 350},
+          "evidence": {"$ref": "#/$defs/evidence"}
+        }
+      }
+    },
+    "experience_order": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 100}
+    },
+    "experiences": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["experience_id", "bullets"],
+        "properties": {
+          "experience_id": {"type": "string", "minLength": 1, "maxLength": 100},
+          "bullets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {"$ref": "#/$defs/text_with_evidence"}
+          }
+        }
+      }
+    },
+    "projects": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "bullets"],
+        "properties": {
+          "evidence_id": {"type": "string", "minLength": 1, "maxLength": 100},
+          "bullets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {"$ref": "#/$defs/text_with_evidence"}
+          }
+        }
+      }
+    },
+    "ramp_up": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "terms"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Exact character-for-character copy of one label in skills."
+          },
+          "terms": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "items": {"type": "string", "minLength": 1, "maxLength": 100}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {"type": "string", "minLength": 8, "maxLength": 500}
+    },
+    "text_with_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "evidence"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    }
+  }
+}

@@ -217,8 +217,8 @@ uv run job-scraper feed --profile PROFILE_ID --published-only
 It emits versioned JSON — `schema_version`, `generated_at`, `window`,
 `record_count`, `records` — where each record carries `job_id`, `profile_id`,
 `processing_mode`, `title`, `company`, `location`, `language`, `url`, `description`,
-`first_seen_at`, `application_status`, and a `publication` object naming the
-sink, the external object ID, and its container.
+`employment_type`, `first_seen_at`, `application_status`, and a `publication`
+object naming the sink, the external object ID, and its container.
 
 That last object is what lets a screener write its verdict back to the same
 Notion page the user is already reading, which is why `--published-only`

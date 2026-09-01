@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Projects the screener may surface when a job calls for them.",
+    "Every fact here must be defensible: the agent may select and re-word",
+    "these, but a tailored resume that cites evidence not backed by this",
+    "file or by a resume variant is rejected rather than published."
+  ],
+  "cards": [
+    {
+      "id": "example-project",
+      "organization": "Example Project",
+      "location": "Remote",
+      "role": "Author",
+      "dates": "2026",
+      "facts": [
+        "One checkable statement about what this project does.",
+        "A second, on a different aspect than the first."
+      ]
+    }
+  ]
+}
