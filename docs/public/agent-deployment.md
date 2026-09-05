@@ -327,7 +327,56 @@ Because the workspace is not in Git, moving an existing installation to another
 machine means copying `config/`, `.env`, and the database. Cloning the
 repository alone produces an empty installation.
 
+## Local Indeed with connected Chrome
+
+This is the default setup for one person collecting Indeed on one computer.
+Install Git and uv, then clone and install:
+
+```powershell
+git clone https://github.com/ZerrorLiu/job-scraper.git
+cd job-scraper
+uv sync
+uv run job-scraper browser local --help
+```
+
+Open this checkout in your interactive coding agent and connect your own Chrome
+using the agent's supported browser tool. Ask it to read
+[`skills/positions-browser-worker/SKILL.md`](../../skills/positions-browser-worker/SKILL.md)
+and collect jobs for your query, location, country, and desired result count.
+The operational skill is in this repository; no separate personal plugin or
+`positions-client` installation is required. If the agent cannot access connected
+Chrome, connect it first; Python does not install or replace that browser tool.
+
+For example, replace the uppercase values with your own search:
+
+```powershell
+uv run job-scraper browser local search --query "SEARCH_QUERY" --location "SEARCH_LOCATION" --country DE --max-results 10
+```
+
+That command **queues** work. The agent then reads the search page and full
+descriptions using the bundled skill. No server process, device token, `.env`,
+profile TOML, mailbox or Bright Data subscription is required. Browser challenges
+remain a real boundary: a CAPTCHA/login block stops collection and is reported.
+
+```powershell
+uv run job-scraper browser local status
+uv run job-scraper browser local export
+```
+
+Results live in ignored `data/browser-local/browser_tasks.db`; export writes
+`data/browser-local/jobs.csv`. It includes full collected descriptions and retains
+earlier jobs, deduplicated by Indeed URL. These are collected observations, not
+profile-screened jobs or Notion publications. Use one operator per workspace.
+To relocate data, pass the same absolute `--workspace PATH` after each local
+subcommand. Keep that directory private. After an interruption, use the same
+workspace and ask the agent to continue; live leases resume, expired leases can
+be reclaimed, and unchanged completion files can be replayed.
+
 ## Multi-client Codex/Chrome worker onboarding
+
+The following is the separate network deployment path, not a prerequisite for
+the local setup above. Its client packaging and unattended activation remain
+outside the local installation contract.
 
 The queue API, enrollment, lease/result transport, transactional outbox,
 `positions-client` journal, and Codex Chrome worker plugin are implemented. This

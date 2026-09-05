@@ -15,6 +15,7 @@ from job_scraper.cli.bootstrap import (
     BootstrapRequest,
     initialize_profile,
 )
+from job_scraper.cli.browser_local import add_local_parser, run_local
 from job_scraper.cli.database import (
     import_screening_results,
     initialize_profiles,
@@ -267,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
         "browser", help="Inspect and operate the durable browser queue."
     )
     browser_subparsers = browser.add_subparsers(dest="browser_command", required=True)
+    add_local_parser(browser_subparsers)
     browser_status_parser = browser_subparsers.add_parser("status")
     browser_status_parser.add_argument("--db", help="Browser task queue database path.")
     browser_revoke = browser_subparsers.add_parser("revoke-device")
@@ -357,8 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    load_dotenv()
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    if raw_argv[:2] != ["browser", "local"]:
+        load_dotenv()
     if raw_argv and raw_argv[0] == "ingest-email":
         return ingest_email_recommendations.main(raw_argv[1:])
     args = build_parser().parse_args(raw_argv)
@@ -404,6 +407,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "browser-email-refresh":
         return browser_email_refresh(args)
     if args.command == "browser":
+        if args.browser_command == "local":
+            return run_local(args)
         if args.browser_command == "status":
             return browser_status(args)
         if args.browser_command == "revoke-device":

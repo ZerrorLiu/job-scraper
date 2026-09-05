@@ -142,7 +142,9 @@ class BrowserTaskStore:
             )
             return inserted.rowcount == 1
 
-    def claim(self, kind: str, *, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> ClaimedTask | None:
+    def claim(
+        self, kind: str, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, resume_active: bool = False
+    ) -> ClaimedTask | None:
         if kind not in TASK_KINDS:
             raise BrowserTaskStoreError(f"Unknown task kind {kind!r}")
         if lease_seconds <= 0:
@@ -155,6 +157,18 @@ class BrowserTaskStore:
                 "WHERE status='in_progress' AND lease_expires_at<=?",
                 (now.isoformat(), now.isoformat()),
             )
+            if resume_active:
+                active = connection.execute(
+                    "SELECT * FROM browser_tasks WHERE status='in_progress' ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                if active is not None:
+                    return ClaimedTask(
+                        active["task_id"],
+                        active["lease_id"],
+                        active["lease_expires_at"],
+                        active["kind"],
+                        json.loads(active["payload_json"]),
+                    )
             row = connection.execute(
                 "SELECT task_id,kind,payload_json FROM browser_tasks WHERE kind=? AND status='pending' "
                 "ORDER BY created_at,task_id LIMIT 1",
@@ -255,6 +269,15 @@ class BrowserTaskStore:
             "payload": json.loads(row["payload_json"]),
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
         }
+
+    def completed_details(self) -> list[dict[str, object]]:
+        """Return collected details in completion order for cumulative local export."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT result_json FROM browser_tasks WHERE kind='detail' AND status='complete' "
+                "ORDER BY updated_at,task_id"
+            ).fetchall()
+        return [json.loads(row["result_json"]) for row in rows]
 
     def claim_outbox(self, *, event_id: str | None = None) -> OutboxEvent | None:
         clock = _now()

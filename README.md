@@ -8,6 +8,7 @@ without shipping anyone's search profile or workspace configuration.
 
 - LinkedIn public-job collection
 - Indeed collection through Bright Data datasets
+- Local Indeed collection through your connected Chrome, with SQLite and CSV output
 - IMAP recommendation-email ingestion
 - Typed domain records and composable pipeline steps
 - SQLite, cumulative CSV, and Notion adapters
@@ -22,6 +23,12 @@ data. Those live in the ignored `config/`, `data/`, and `.env` workspace on
 each installation.
 
 ## Installation
+
+For Indeed on one computer, start with
+[the local Chrome setup](docs/public/agent-deployment.md#local-indeed-with-connected-chrome).
+It needs no VPS, paid scraper, mailbox, or separate client repository. An
+interactive agent with a connected Chrome performs the page reading; installing
+the Python package alone does not control a browser.
 
 This project is installed and configured with an agent rather than distributed
 as an executable. You describe what you want to find; the agent generates your

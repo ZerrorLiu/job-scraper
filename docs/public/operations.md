@@ -147,6 +147,35 @@ email profile, and keeps normal database and Notion deduplication. Add
 `--skip-status-import` when current Notion job decisions do not need to be
 imported before the repair.
 
+## Local Chrome browser collection
+
+After the [local setup](agent-deployment.md#local-indeed-with-connected-chrome),
+ask the connected Chrome agent to use the repository's
+[worker instructions](../../skills/positions-browser-worker/SKILL.md).
+`browser local search` queues a search; it does not launch a browser by itself.
+`claim`, `heartbeat`, and `complete` are the agent's transport commands.
+
+```powershell
+uv run job-scraper browser local status
+uv run job-scraper browser local export
+```
+
+All local commands accept `--workspace PATH`, defaulting to `data/browser-local`
+under the current directory. The same workspace must be used throughout a run.
+`claim` returns exit code 4 for an empty queue; invalid results return 2. A live
+claim is resumed, not replaced; a worker must stop when a heartbeat loses its
+lease. Re-submit an unchanged result file after interrupted completion. Pending
+search expansion is recovered on the next local command. Blocked/unavailable
+tasks remain visible in status and never become exported jobs. Same-day searches
+with identical query/location/country retain the first result bound and terminal
+state; repeating `search` does not bypass a block or change that bound.
+
+The CSV is an atomic, cumulative snapshot of completed detail results in the
+workspace queue. Re-export after collecting more details. If a spreadsheet locks
+the CSV, close it and retry export; SQLite results remain intact. The CSV escapes
+formula-like cells; original validated text remains in SQLite. Local collection
+does not invoke paid sources, email import, profile filtering, or publication.
+
 ## Networked Codex/Chrome browser worker
 
 The production browser lane uses one tenant-local FastAPI process and SQLite

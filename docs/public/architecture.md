@@ -68,6 +68,12 @@ effects. The local `positions-client` stores claims and exact result bytes befor
 showing or uploading them, while Codex operates the user's connected Chrome.
 No caller-supplied client identifier selects a tenant process.
 
+The same-machine `browser local` transport uses the same task store, leases,
+result contracts, and outbox without HTTP or device credentials. It owns a
+separate private workspace, expands search results into detail tasks locally,
+and exports completed details from SQLite. It does not run the profile pipeline
+or external sinks; the network consumer's pipeline behavior remains separate.
+
 ## External writes
 
 Requests that create a Notion object are never replayed after a server error
