@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
@@ -111,8 +111,8 @@ def create_app(*, store: BrowserTaskStore) -> FastAPI:
         dependencies=[Depends(application.authorize)],
         response_model=None,
     )
-    def claim(kind: Literal["search", "detail"] = "detail") -> Any:
-        claimed = store.claim(kind)
+    def claim(kind: Literal["search", "detail"] = "detail", created_on: date | None = None) -> Any:
+        claimed = store.claim(kind, created_on=created_on)
         if claimed is None:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
         return {

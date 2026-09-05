@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,24 @@ def test_claim_is_atomic_across_connections(tmp_path: Path) -> None:
     with ThreadPoolExecutor(max_workers=2) as pool:
         claims = list(pool.map(lambda _: BrowserTaskStore(store.path).claim("search"), range(2)))
     assert sum(claim is not None for claim in claims) == 1
+
+
+def test_claim_can_be_limited_to_a_berlin_calendar_day(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.enqueue("detail", "before-berlin-day", {"url": "https://example.test/before"})
+    store.enqueue("detail", "inside-berlin-day", {"url": "https://example.test/inside"})
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE browser_tasks SET created_at='2026-09-04T21:59:59+00:00' "
+            "WHERE task_id='before-berlin-day'"
+        )
+        connection.execute(
+            "UPDATE browser_tasks SET created_at='2026-09-05T10:00:00+00:00' "
+            "WHERE task_id='inside-berlin-day'"
+        )
+    claim = store.claim("detail", created_on=date(2026, 9, 5))
+    assert claim is not None
+    assert claim.task_id == "inside-berlin-day"
 
 
 def test_expired_lease_is_reclaimed_and_stale_heartbeat_fails(tmp_path: Path) -> None:

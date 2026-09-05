@@ -214,6 +214,11 @@ fifteen minutes, and exits successfully when the queue is empty. A lost lease,
 browser block, contract error, or repeated transport failure ends that wake
 without starting another task.
 
+For a daytime recurring worker, use `positions-client claim --json --today`.
+The server limits that claim to tasks created in the current `Europe/Berlin`
+calendar day, so a historical queue backlog is retained for explicit repair
+rather than silently consumed by today's browser work.
+
 ## Legacy local browser detail repair
 
 The JSONL lane remains a local migration fallback while network cutover is

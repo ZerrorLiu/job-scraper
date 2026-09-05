@@ -103,3 +103,21 @@ def test_stale_lease_and_unknown_block_reason_fail_closed(tmp_path: Path) -> Non
         ).status_code
         == 422
     )
+
+
+def test_claim_can_limit_work_to_a_calendar_day(tmp_path: Path) -> None:
+    client, store, auth = _setup(tmp_path)
+    store.enqueue("detail", "old-task", {"url": "https://de.indeed.com/viewjob?jk=old"})
+    store.enqueue("detail", "today-task", {"url": "https://de.indeed.com/viewjob?jk=today"})
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE browser_tasks SET created_at='2026-09-04T21:00:00+00:00' WHERE task_id='old-task'"
+        )
+        connection.execute(
+            "UPDATE browser_tasks SET created_at='2026-09-05T10:00:00+00:00' WHERE task_id='today-task'"
+        )
+    claimed = client.post(
+        "/v1/browser/tasks/claim?kind=detail&created_on=2026-09-05", headers=auth, json={}
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["task_id"] == "today-task"

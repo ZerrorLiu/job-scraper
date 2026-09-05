@@ -8,9 +8,10 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 TASK_KINDS = frozenset({"search", "detail"})
 TERMINAL_STATUSES = frozenset({"complete", "blocked", "unavailable"})
@@ -18,6 +19,7 @@ DEFAULT_LEASE_SECONDS = 600
 ENROLLMENT_TOKEN_TTL_SECONDS = 3600
 MAX_OUTBOX_ATTEMPTS = 5
 BASE_SCHEMA_VERSION = 2
+BERLIN = ZoneInfo("Europe/Berlin")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -143,7 +145,12 @@ class BrowserTaskStore:
             return inserted.rowcount == 1
 
     def claim(
-        self, kind: str, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, resume_active: bool = False
+        self,
+        kind: str,
+        *,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        resume_active: bool = False,
+        created_on: date | None = None,
     ) -> ClaimedTask | None:
         if kind not in TASK_KINDS:
             raise BrowserTaskStoreError(f"Unknown task kind {kind!r}")
@@ -169,11 +176,23 @@ class BrowserTaskStore:
                         active["kind"],
                         json.loads(active["payload_json"]),
                     )
-            row = connection.execute(
-                "SELECT task_id,kind,payload_json FROM browser_tasks WHERE kind=? AND status='pending' "
-                "ORDER BY created_at,task_id LIMIT 1",
-                (kind,),
-            ).fetchone()
+            if created_on is None:
+                row = connection.execute(
+                    "SELECT task_id,kind,payload_json FROM browser_tasks WHERE kind=? AND status='pending' "
+                    "ORDER BY created_at,task_id LIMIT 1",
+                    (kind,),
+                ).fetchone()
+            else:
+                start = datetime.combine(created_on, datetime.min.time(), tzinfo=BERLIN).astimezone(
+                    UTC
+                )
+                end = start + timedelta(days=1)
+                row = connection.execute(
+                    "SELECT task_id,kind,payload_json FROM browser_tasks "
+                    "WHERE kind=? AND status='pending' AND created_at>=? AND created_at<? "
+                    "ORDER BY created_at,task_id LIMIT 1",
+                    (kind, start.isoformat(), end.isoformat()),
+                ).fetchone()
             if row is None:
                 return None
             lease_id = secrets.token_urlsafe(24)
