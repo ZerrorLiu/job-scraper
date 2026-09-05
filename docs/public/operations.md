@@ -205,7 +205,14 @@ completed details through the existing pipeline, with Notion last. Automatic
 processing attempts stop after five failures; retry only an inspected exact
 event. `--skip-notion` keeps a run local. The local worker commands and Chrome
 behavior are documented in the `positions-client` repository and its
-`positions-browser-worker` plugin.
+`positions-browser-worker` plugin. Create one dedicated Codex App task and one
+recurring heartbeat per client; it must use that client's connected Chrome
+profile and invoke `positions-client claim --json` itself. Do not replace this
+task with a host scheduler or `codex exec`: the app task is the browser-plugin
+host. Each wake processes detail before search, stops after three tasks or
+fifteen minutes, and exits successfully when the queue is empty. A lost lease,
+browser block, contract error, or repeated transport failure ends that wake
+without starting another task.
 
 ## Legacy local browser detail repair
 
