@@ -1,5 +1,9 @@
 # Standardize the agent development workflow
 
+Historical rationale. Superseded on 2026-09-05 by the task-proportional rules
+in `AGENTS.md`: workflow skills, routine specifications, and independent reviews
+are no longer mandatory. The duplicate project skill has been removed.
+
 ## Outcome
 
 Make future repository work follow one lightweight, documented lifecycle:

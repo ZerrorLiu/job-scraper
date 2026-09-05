@@ -1,86 +1,26 @@
 # Agent development workflow
 
-This is the project-local harness for making changes. It combines the task
-specification, the repeatable development skill, existing repository rules,
-and verification into one small lifecycle. `AGENTS.md` makes it mandatory.
-The triggerable project-local skill is
-[`skills/job-scraper-development/SKILL.md`](../../skills/job-scraper-development/SKILL.md).
+This guide offers optional practices. `AGENTS.md` holds the binding project
+rules for architecture, privacy, data safety, and relevant verification.
+No workflow skill, fixed sequence, specification, or independent reviewer is
+a prerequisite for every change.
 
-## The lifecycle
+## Choose the process
 
-```text
-Discuss outcome -> write or update spec -> survey what exists -> implement ->
-verify -> independent user-path review -> handoff with follow-ups
-```
+Start from the user's intended outcome and inspect the relevant existing code.
+For a small fix, implement it directly and check the affected behavior. For a
+complex contract or migration, record decisions and acceptance criteria using
+the optional [spec template](spec-template.md). Extend an existing specification
+when it already covers the concern.
 
-### 1. Discuss outcome
+Prefer existing modules and Ports. Explain a new abstraction when it materially
+affects the design. Update public documentation when the public contract changes;
+keep private runtime configuration and real payloads out of examples and tests.
 
-Begin by confirming the problem, desired result, acceptance criteria, scope,
-and constraints. Identify material choices and ask only when they would change
-the result or create risk. Do not request or record private runtime inputs
-unless they are essential to a user-authorized local operation.
+## Verification
 
-Define potentially ambiguous outcome words (for example, whether "resolved"
-means configured values or a fully composed runtime result) in the spec. Do
-not let an implementation silently choose that boundary.
-
-### 2. Record the specification
-
-For a behavior, contract, architecture, configuration, or extension change,
-copy [the specification template](spec-template.md) to
-`docs/public/specs/YYYY-MM-DD-<slug>.md` and complete it before code changes.
-Update the relevant public documentation when that contract changes. A typo,
-format-only edit, or provably behavior-preserving refactor may skip a new spec;
-record the reason in the handoff.
-
-The spec answers *why* and *what*. It is concise, reviewable, and public-safe;
-it never stores credentials, personal search choices, live payloads, or
-external workspace identifiers.
-
-### 3. Survey what already exists
-
-`AGENTS.md` requires extending an existing thing rather than adding a parallel
-one. This is where that check happens, and it happens *before* the first line
-is written, because it is what decides the shape of the change.
-
-Locate the concern's existing home:
-
-```bash
-rg -n "<the concept, and its likely synonyms>" src public_tests docs
-ls docs/public/ && ls src/job_scraper/*/
-uv run job-scraper capabilities --json
-```
-
-Then decide, and carry the answer into the handoff:
-
-| Finding | Change |
-|---|---|
-| An existing module or document covers this | Edit it. Do not add a sibling. |
-| An existing Port covers the behavior | Add an adapter or step behind it, register the ID |
-| Something covers it but is wrong or stale | Fix or remove it in this change, not alongside it |
-| Nothing covers it | Say where you searched, then add one thing in its documented home |
-
-If the change supersedes anything — a document, a module, a test, a CLI flag —
-list it now. Removing it is part of this change, not a follow-up.
-
-### 4. Implement with the project skill
-
-Use this repeatable development procedure:
-
-1. Read `AGENTS.md`, the active spec, and affected public contract documents.
-2. Inspect the smallest relevant code path and select the appropriate
-   architectural boundary or Port.
-3. Make the smallest composable change that satisfies the acceptance criteria.
-4. Add or adjust focused offline, credential-free tests using fictional data.
-5. Keep the dependency direction and privacy boundary intact.
-
-For extensions, follow the existing Port -> adapter or pure step -> registry ->
-private runtime configuration -> contract test sequence. Do not introduce
-import-time side effects or concrete adapters in application orchestration.
-
-### 5. Verify
-
-Run focused tests while implementing, then run the repository quality gates:
+Use focused offline tests for meaningful behavior. For code changes spanning
+multiple components, run the full project checks:
 
 ```powershell
 uv run ruff format --check .
@@ -89,53 +29,18 @@ uv run pyright
 uv run pytest
 ```
 
-For Domain, Pipeline, or configuration behavior changes, retain at least 90%
-focused branch coverage for the changed core behavior. Run live tests only
-when explicitly requested and credentials are available.
+For narrower changes, choose the relevant checks. Documentation-only changes
+need diff, link, and consistency checks rather than unrelated Python tests.
+Use the configured `uv` environment. If a check cannot run, explain the actual
+obstacle and continue work that does not depend on it; never claim a pass.
 
-If `uv` is unavailable, stop executable Python verification and report the gate
-as blocked. Do not substitute system Python or direct virtual-environment
-executables, and never report an unavailable gate as passed.
+An independent user-path or code review can help with unfamiliar interfaces,
+complex changes, or consequential migrations. Use it when useful or requested,
+not as an unconditional approval gate. Reviewers receive no private runtime
+data and do not mutate the executor's files concurrently.
 
-### 6. Simulate the user path
+## Handoff
 
-For a non-trivial CLI, configuration, public extension/API, or architecture
-change, ask an independent subagent to perform the intended user task using
-only the request and repository artifacts. Give it no expected conclusion or
-private context. Have it inspect the natural entry points, follow the documented
-path, and report friction, ambiguity, safety concerns, and improvement ideas.
-
-Treat this as evaluation, not approval: the implementing agent remains
-responsible for validating the result. A mechanical behavior-preserving change
-can skip the simulation; document why in the handoff.
-
-### 7. Handoff and improve
-
-Lead with the result. Report the spec and documentation updated, code and tests
-changed, commands run and outcomes, user-path findings, and clearly separated
-follow-up suggestions. Fix a finding immediately only when it violates the
-active acceptance criteria or safety rules; otherwise present it as a proposed
-follow-up for the requester to prioritize. Turn accepted recurring feedback
-into a spec or this workflow; keep one-off preferences out of public repository
-defaults.
-
-## Trigger guide
-
-| Change type | Spec | User-path simulation |
-| --- | --- | --- |
-| Typo, formatting, generated lock refresh | Optional | No |
-| Bug fix with observable behavior | Update or add | When the flow is non-trivial |
-| CLI/configuration/API/extension change | Required | Required |
-| Domain, pipeline, or architecture change | Required | Required |
-| Internal behavior-preserving refactor | Optional, state why | No |
-| Anything that adds a file, module, command, or config key | Required; must name what was surveyed | Per the row above |
-
-## Responsibilities
-
-- **Spec:** captures the change outcome and acceptance criteria, including what
-  this change removes and any removal condition it defers.
-- **Skill:** the implementation and verification procedure in this document.
-- **Harness:** `AGENTS.md`, repository tooling, privacy rules, tests, and the
-  lifecycle above.
-- **Subagent review:** independently exercises the user experience and returns
-  evidence-based improvement suggestions.
+State what changed, the verification actually performed, and material remaining
+limitations. Distinguish source changes from deployment and observed runtime
+behavior. Keep the response proportional to the task.

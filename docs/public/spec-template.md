@@ -1,7 +1,7 @@
 # Change specification template
 
-Copy this template to `docs/public/specs/YYYY-MM-DD-<slug>.md` before making a
-non-mechanical change. Keep examples fictional and omit all runtime data,
+Use this optional template in `docs/public/specs/YYYY-MM-DD-<slug>.md` when a
+change needs durable rationale or a migration contract. Keep examples fictional and omit all runtime data,
 credentials, search preferences, and external workspace identifiers.
 
 # <Change title>
@@ -35,8 +35,7 @@ architecture or configuration document rather than duplicating it.
 
 ## Verification
 
-List focused tests, manual checks, and required quality gates. State whether an
-independent user-path simulation is required and why.
+List relevant tests and checks. Include independent review when it adds value.
 
 ## Follow-ups
 

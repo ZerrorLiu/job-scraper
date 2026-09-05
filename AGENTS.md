@@ -172,7 +172,9 @@ belong in the ignored `local/` archive, not in `docs/`.
 
 ## Quality gates
 
-Run before handing work back:
+For code changes, run the relevant checks below before handoff. Run all four
+for changes spanning multiple components. For documentation-only edits, check
+the diff, links, and consistency instead of running unrelated Python tests.
 
 ```powershell
 uv run ruff format --check .
@@ -188,45 +190,23 @@ available.
 
 ## Development operating mode
 
-Use the repository workflow in
-[`docs/public/agent-development-workflow.md`](docs/public/agent-development-workflow.md)
-for every change. It is the project's agent harness. For implementation work,
-read the project-local skill at
-[`skills/job-scraper-development/SKILL.md`](skills/job-scraper-development/SKILL.md)
-before acting.
+Use judgment to choose the smallest process that fits the task. No workflow
+skill is required. The optional
+[development guide](docs/public/agent-development-workflow.md) provides examples.
 
-### Workflow priority
+- Establish the intended outcome from the request and context; ask only when
+  ambiguity materially affects the result or an action needs authorization.
+- Inspect the existing implementation and extend it within the architecture.
+- Write or update a specification when a complex contract, migration, or
+  important trade-off needs durable rationale. Simple changes need no new spec.
+- Keep public documentation consistent with changed behavior. Use focused,
+  offline tests where they verify meaningful behavior.
+- Use independent review when it improves confidence or the user requests it;
+  it is not an unconditional gate. Give reviewers no private runtime data.
+- Report what changed, fresh verification results, and material limitations.
 
-- For code-changing work, use the installed `vibe-flow` skill first to select the
-  smallest suitable process, then follow this repository's workflow and constraints.
-- Prefer the installed Vibe Skills for routing, bootstrap, and fresh verification.
-  The mandatory `job-scraper-development` skill remains required for implementation.
-  Any other older, prompt-only local skill is supplementary; when guidance conflicts,
-  use this `AGENTS.md` and the mandatory project-local skill.
-- This repository's privacy, architecture, and quality-gate rules remain authoritative
-  over generic Vibe defaults.
-
-1. Discuss the requested outcome first. Restate scope, acceptance criteria,
-   constraints, and meaningful trade-offs. Ask for a decision only when it
-   cannot be safely inferred.
-2. Before implementation, create or update a neutral specification under
-   `docs/public/specs/` using
-   [`docs/public/spec-template.md`](docs/public/spec-template.md). Update the
-   relevant public architecture, configuration, or extension documentation in
-   the same documentation phase when its contract changes.
-3. Implement in small, reviewable steps, then add or update focused offline
-   tests. Run the quality gates before handoff.
-4. For a non-trivial change to a CLI flow, configuration, public extension
-   point, public API, or architecture, use an independent subagent to walk the
-   intended user path from the request and visible artifacts. Do not expose the
-   intended solution or private runtime data. Summarize actionable friction and
-   follow-up suggestions. Skip this only for a mechanical, behavior-preserving
-   change and state why.
-
-Treat a specification as the source of truth for why and what changes; keep
-procedural instructions in the workflow document. Do not let either contain
-private search strategy, identities, credentials, workspace IDs, or runtime
-payloads.
+The privacy, architecture, data-safety, and relevant verification rules above
+remain authoritative regardless of workflow choice.
 
 ## Data safety
 

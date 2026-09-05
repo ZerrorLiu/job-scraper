@@ -37,5 +37,5 @@ Implement an existing Port, register a stable component ID in
 `registry/builtins.py`, use fake transports in tests, and update
 [the extension guide](docs/public/extension-guide.md) and
 [the configuration reference](docs/public/configuration.md).
-[The development workflow](docs/public/agent-development-workflow.md) covers
-the specification step that precedes a non-mechanical change.
+[The development guide](docs/public/agent-development-workflow.md) describes
+optional planning and review practices to choose according to the change.

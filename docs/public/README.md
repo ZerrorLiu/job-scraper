@@ -18,8 +18,8 @@ Two audiences, kept separate. Find your row first.
 | [`AGENTS.md`](../../AGENTS.md) | Before any change. Privacy boundary, architecture rules, quality gates. Authoritative. |
 | [Architecture](architecture.md) | Understanding the layers, concurrency, external-write, and schema-evolution rules. |
 | [Extension guide](extension-guide.md) | Adding a source, pipeline step, or sink. |
-| [Development workflow](agent-development-workflow.md) | The specification-to-handoff lifecycle every change follows. |
-| [Spec template](spec-template.md) | Starting a new change. Copy it into `specs/`. |
+| [Development workflow](agent-development-workflow.md) | Choosing planning, testing, and review practices appropriate to a change. |
+| [Spec template](spec-template.md) | A complex change needs durable rationale or a migration contract. Optional for simple work. |
 | [`specs/`](specs/) | Why a behavior is the way it is. One dated document per change. |
 
 ## What is not here

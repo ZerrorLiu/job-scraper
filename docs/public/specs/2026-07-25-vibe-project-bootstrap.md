@@ -1,5 +1,9 @@
 # Vibe project bootstrap
 
+Historical rationale. Superseded on 2026-09-05: Vibe Skills are no longer
+required. `.vibe/project.yaml` remains only a passive list of check commands;
+current development rules live in `AGENTS.md`.
+
 ## Outcome
 
 Make the repository's established setup and offline verification commands available to
