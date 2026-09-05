@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS portal_users(id TEXT PRIMARY KEY,email TEXT NOT NULL 
 CREATE TABLE IF NOT EXISTS portal_tenants(id TEXT PRIMARY KEY,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_memberships(user_id TEXT NOT NULL REFERENCES portal_users(id),tenant_id TEXT NOT NULL REFERENCES portal_tenants(id),role TEXT NOT NULL,PRIMARY KEY(user_id,tenant_id));
 CREATE TABLE IF NOT EXISTS portal_login_tokens(token_hash TEXT PRIMARY KEY,email TEXT NOT NULL,expires_at TEXT NOT NULL,used_at TEXT);
+CREATE TABLE IF NOT EXISTS portal_google_login_states(state_hash TEXT PRIMARY KEY,expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_google_identities(subject TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES portal_users(id),created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES portal_users(id),tenant_id TEXT NOT NULL REFERENCES portal_tenants(id),csrf_token TEXT NOT NULL,expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_onboarding(tenant_id TEXT PRIMARY KEY REFERENCES portal_tenants(id),state TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_documents(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL REFERENCES portal_tenants(id),storage_key TEXT NOT NULL,sha256 TEXT NOT NULL,media_type TEXT NOT NULL,size INTEGER NOT NULL,extracted_text TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -133,6 +135,76 @@ class PortalStore:
             connection.execute(
                 "UPDATE portal_login_tokens SET used_at=? WHERE token_hash=?",
                 (now.isoformat(), _hash(token)),
+            )
+        return user_id, tenant_id
+
+    def create_google_login_state(self, state: str, *, ttl_seconds: int = 600) -> None:
+        if not state or ttl_seconds <= 0:
+            raise ValueError("Google login state is invalid")
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM portal_google_login_states WHERE expires_at<=?",
+                (_now().isoformat(),),
+            )
+            connection.execute(
+                "INSERT INTO portal_google_login_states VALUES (?,?)",
+                (_hash(state), (_now() + timedelta(seconds=ttl_seconds)).isoformat()),
+            )
+
+    def redeem_google_identity(self, state: str, *, subject: str, email: str) -> tuple[str, str]:
+        normalized = email.strip().casefold()
+        if not state or not subject.strip() or "@" not in normalized:
+            raise ValueError("Google identity is invalid")
+        now = _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            valid_state = connection.execute(
+                "DELETE FROM portal_google_login_states WHERE state_hash=? AND expires_at>? RETURNING state_hash",
+                (_hash(state), now.isoformat()),
+            ).fetchone()
+            if valid_state is None:
+                raise ValueError("Google sign-in state is invalid or expired")
+            identity = connection.execute(
+                "SELECT user_id FROM portal_google_identities WHERE subject=?", (subject.strip(),)
+            ).fetchone()
+            if identity is not None:
+                user_id = str(identity["user_id"])
+            else:
+                owner = connection.execute(
+                    "SELECT id,email FROM portal_users ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                if owner is not None and str(owner["email"]) != normalized:
+                    raise ValueError("Google account is not authorized for this portal")
+                user = connection.execute(
+                    "SELECT id FROM portal_users WHERE email=?", (normalized,)
+                ).fetchone()
+                if user is None:
+                    user_id, tenant_id = secrets.token_urlsafe(18), secrets.token_urlsafe(18)
+                    connection.execute(
+                        "INSERT INTO portal_users VALUES (?,?,?)",
+                        (user_id, normalized, now.isoformat()),
+                    )
+                    connection.execute(
+                        "INSERT INTO portal_tenants VALUES (?,?)", (tenant_id, now.isoformat())
+                    )
+                    connection.execute(
+                        "INSERT INTO portal_memberships VALUES (?,?,?)",
+                        (user_id, tenant_id, "owner"),
+                    )
+                    connection.execute(
+                        "INSERT INTO portal_onboarding VALUES (?,?,?)",
+                        (tenant_id, "account_verified", now.isoformat()),
+                    )
+                else:
+                    user_id = str(user["id"])
+                connection.execute(
+                    "INSERT INTO portal_google_identities VALUES (?,?,?)",
+                    (subject.strip(), user_id, now.isoformat()),
+                )
+            tenant_id = str(
+                connection.execute(
+                    "SELECT tenant_id FROM portal_memberships WHERE user_id=?", (user_id,)
+                ).fetchone()[0]
             )
         return user_id, tenant_id
 

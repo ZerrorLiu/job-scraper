@@ -18,6 +18,7 @@ from job_scraper.adapters.server.browser_task_server import (
     drain_outbox,
     refresh_search_tasks,
 )
+from job_scraper.adapters.server.google_oauth import GoogleOAuthClient
 from job_scraper.adapters.storage.browser_task_store import BrowserTaskStore
 from job_scraper.adapters.storage.portal_store import PortalStore
 from job_scraper.configuration.loader import get_config_root
@@ -44,6 +45,7 @@ def serve(args: argparse.Namespace) -> int:
     sender = None
     upload_root = None
     analyzer = None
+    google_oauth = None
     if args.portal_db:
         if not args.upload_root or not args.public_url:
             raise ValueError("--portal-db requires --upload-root and --public-url")
@@ -73,6 +75,18 @@ def serve(args: argparse.Namespace) -> int:
             analyzer = CodexResumeAnalyzer(
                 model=args.resume_analysis_model, codex_homes=configured_homes
             )
+        google_client_id = os.environ.get("POSITIONS_GOOGLE_OAUTH_CLIENT_ID", "").strip()
+        google_client_secret = os.environ.get("POSITIONS_GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+        if bool(google_client_id) != bool(google_client_secret):
+            raise ValueError(
+                "Set both POSITIONS_GOOGLE_OAUTH_CLIENT_ID and POSITIONS_GOOGLE_OAUTH_CLIENT_SECRET"
+            )
+        if google_client_id:
+            google_oauth = GoogleOAuthClient(
+                client_id=google_client_id,
+                client_secret=google_client_secret,
+                redirect_uri=f"{public_url}/auth/google/callback",
+            )
     uvicorn.run(
         create_app(
             store=store,
@@ -80,6 +94,7 @@ def serve(args: argparse.Namespace) -> int:
             upload_root=upload_root,
             send_login=sender,
             resume_analyzer=analyzer,
+            google_oauth=google_oauth,
             candidate_workspace=(
                 Path(args.candidate_workspace).resolve() if args.candidate_workspace else None
             ),

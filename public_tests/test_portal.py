@@ -5,10 +5,12 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
 from job_scraper.adapters.server.browser_task_server import create_app
+from job_scraper.adapters.server.google_oauth import GoogleIdentity
 from job_scraper.adapters.storage.browser_task_store import BrowserTaskStore
 from job_scraper.adapters.storage.portal_store import PortalStore
 from job_scraper.domain.models import JobRecord
@@ -44,6 +46,48 @@ def _setup(tmp_path: Path) -> tuple[TestClient, list[tuple[str, str]], PortalSto
         job_db=tmp_path / "jobs.db",
     )
     return TestClient(app), links, portal
+
+
+class _GoogleOAuth:
+    def authorization_url(self, state: str) -> str:
+        return f"https://accounts.example/authorize?state={state}"
+
+    def exchange(self, code: str) -> GoogleIdentity:
+        if code != "accepted-code":
+            raise ValueError("unexpected code")
+        return GoogleIdentity(subject="google-subject-1", email="person@example.test")
+
+
+def test_google_login_creates_a_session_without_a_magic_link(tmp_path: Path) -> None:
+    browser = BrowserTaskStore(tmp_path / "browser.db")
+    browser.initialize()
+    portal = PortalStore(tmp_path / "portal.db")
+    portal.initialize()
+    app = create_app(
+        store=browser,
+        portal_store=portal,
+        upload_root=tmp_path / "private-uploads",
+        send_login=lambda _email, _link: None,
+        secure_cookie=False,
+        google_oauth=_GoogleOAuth(),
+    )
+    client = TestClient(app)
+    assert "Continue with Google" in client.get("/login").text
+    start = client.get("/auth/google", follow_redirects=False)
+    assert start.status_code == 303
+    state = parse_qs(urlsplit(start.headers["location"]).query)["state"][0]
+    completed = client.get(
+        f"/auth/google/callback?code=accepted-code&state={state}", follow_redirects=True
+    )
+    assert completed.status_code == 200
+    assert "Start with your resumes" in completed.text
+    assert client.cookies.get("positions_session")
+    assert (
+        client.get(
+            f"/auth/google/callback?code=accepted-code&state={state}", follow_redirects=False
+        ).status_code
+        == 400
+    )
 
 
 def _insert_job(tmp_path: Path, *, job_id: str, title: str, source: str = "fictional") -> None:

@@ -31,6 +31,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pypdf import PdfReader
 
+from job_scraper.adapters.server.google_oauth import GoogleOAuth, GoogleOAuthError, new_state
 from job_scraper.adapters.storage.browser_task_store import BrowserTaskStore
 from job_scraper.adapters.storage.portal_store import ONBOARDING_STATES, PortalStore
 from job_scraper.adapters.workspace_bootstrap import initialize_candidate_workspace
@@ -235,6 +236,7 @@ def create_portal_router(
     upload_root: Path,
     send_login: Callable[[str, str], None],
     analyzer: ResumeAnalyzer | None = None,
+    google_oauth: GoogleOAuth | None = None,
     candidate_workspace: Path | None = None,
     job_db: Path | None = None,
     secure_cookie: bool = True,
@@ -285,10 +287,54 @@ def create_portal_router(
 
     @router.get("/login", response_class=HTMLResponse)
     def login_page() -> HTMLResponse:
+        google_button = (
+            "<p><a class='button' href='/auth/google'>Continue with Google</a></p><p class='muted'>"
+            "Google verifies your identity; Positions never sees your Google password.</p>"
+            if google_oauth is not None
+            else ""
+        )
         return _page(
             "Sign in",
-            "<form method=post><label>Email<br><input name=email type=email required></label><br><button>Send sign-in link</button></form>",
+            google_button
+            + "<form method=post><label>Email<br><input name=email type=email required></label><br><button>Send sign-in link</button></form>",
         )
+
+    @router.get("/auth/google")
+    def google_login() -> RedirectResponse:
+        if google_oauth is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Google sign-in is not configured")
+        state = new_state()
+        portal_store.create_google_login_state(state)
+        return RedirectResponse(
+            google_oauth.authorization_url(state), status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @router.get("/auth/google/callback")
+    def google_callback(code: str = "", state: str = "", error: str = "") -> RedirectResponse:
+        if google_oauth is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Google sign-in is not configured")
+        if error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Google sign-in was cancelled")
+        try:
+            identity = google_oauth.exchange(code)
+            user_id, tenant_id = portal_store.redeem_google_identity(
+                state, subject=identity.subject, email=identity.email
+            )
+        except (GoogleOAuthError, ValueError) as exc:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Google sign-in could not be completed"
+            ) from exc
+        session_token, _ = portal_store.create_session(user_id, tenant_id)
+        response = RedirectResponse("/onboarding", status_code=status.HTTP_303_SEE_OTHER)
+        response.set_cookie(
+            SESSION_COOKIE,
+            session_token,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="lax",
+            max_age=30 * 86400,
+        )
+        return response
 
     @router.post("/login", response_class=HTMLResponse)
     def login(email: Annotated[str, Form()]) -> HTMLResponse:
